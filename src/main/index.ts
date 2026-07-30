@@ -63,7 +63,7 @@ import {
   type AnnotationCapabilities,
 } from '../format/annotate.js';
 import { listSymbols, importSymbol } from '../format/symbol.js';
-import { placeGear, parseDimensions } from '../format/place.js';
+import { placeGear, placeTracedIcon, parseDimensions } from '../format/place.js';
 import { verifyWritable } from '../format/write.js';
 import { Session } from './session.js';
 import { canonicalPath, pathIdentity, samePath } from './paths.js';
@@ -113,6 +113,7 @@ import {
 } from '../inventory/classify.js';
 import { loadInventoryWithStatus, saveInventory, inventoryPath } from '../inventory/store.js';
 import { exportInventoryPack, importInventoryPack } from '../inventory/share.js';
+import { seedStarterInventory } from '../inventory/seed.js';
 import { atomicWriteFile, atomicWriteJson } from './storage.js';
 import {
   copyShowForSaveAs,
@@ -2771,13 +2772,28 @@ app.whenReady().then(async () => {
         }
       }
       const from = source;
-      if (!from) return placeAsBox();
+      if (!from) {
+        // Prefer the item's own traced silhouette over a generic box when the
+        // harvested symbol file is missing.
+        if (item.tracedIcon?.paths?.length) {
+          return applyEdit((s) =>
+            placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+          );
+        }
+        return placeAsBox();
+      }
       // A matched item borrows a shape drawn under a different name — the gear
       // list says "Panasonic PT-RZ21KU", the drawing says "LCD Projector".
       const lookFor = item.symbolName ?? item.name;
       const imported = applyEdit((s) => importSymbol(s.loaded.document, s.index, from, lookFor, x, y));
       // Fall through to a drawn box only if the symbol could not be brought in.
       if (imported.ok) return imported;
+    }
+
+    if (item.tracedIcon?.paths?.length) {
+      return applyEdit((s) =>
+        placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+      );
     }
 
     return placeAsBox();
@@ -3679,11 +3695,30 @@ app.whenReady().then(async () => {
   if (loadedInventory.migration?.changed) {
     inventoryMessages.push('Updated the Equipment Library to the current safe format.');
   }
+
+  // First launch (or an empty unused library from an older build): fill the
+  // private inventory from the bundled starter pack so the palette already has
+  // placeable shapes. Libraries with any import history are left alone.
+  const starter = await seedStarterInventory({
+    inventoryFile,
+    inventory,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  });
+  if (starter.seeded) {
+    inventoryMessages.push(
+      `Loaded ${starter.items} starter equipment items with shapes ready to place.`,
+    );
+  } else if (!starter.ok && inventory.items.length === 0) {
+    inventoryMessages.push(starter.reason ?? 'The starter equipment pack could not be loaded.');
+  }
+
   inventoryNotice = inventoryMessages.length ? inventoryMessages.join(' ') : undefined;
   // Inventories saved before categories existed get them filled in on load.
   const filledCategories = ensureCategories(inventory);
   if (
     filledCategories > 0 ||
+    starter.seeded ||
     (loadedInventory.migration?.changed && !loadedInventory.warnings.some((message) => message.includes('could not be read')))
   ) {
     await persistInventory();

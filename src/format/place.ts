@@ -9,6 +9,10 @@
  *      result is indistinguishable from one placed in Room Viewer.
  *   2. **Synthesize.** Otherwise build a labelled box at the right size, taken
  *      from dimensions in the description ("4' x 8' Stage Deck", "65\" TV").
+ *   3. **Traced icon.** An inventory item that carries its own outline (from a
+ *      datasheet trace or the starter catalog) becomes a real placed shape via
+ *      `createShape`, so a blank plan still gets the silhouette rather than a
+ *      generic box.
  *
  * Cloning is preferred: a copy of a shape already in the file keeps the pen and
  * brush blocks — which this project only partly decodes — byte-valid, and comes
@@ -17,10 +21,31 @@
  * the box is built from scratch instead.
  */
 
-import { walk, type RVDocument, type RVNode } from './rv.js';
+import { walk, type Point, type RVDocument, type RVNode } from './rv.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from './rv.js';
 import { addRoot, appendChild, duplicateNode, moveNode, type DocumentIndex, type EditResult } from './edit.js';
 import { boxOutline, createShape } from './synthesize.js';
+
+/** Flat catalog/trace path list → outline runs for `createShape`. */
+export function outlineFromTracedPaths(
+  paths: Array<{ points: number[]; closed: boolean }>,
+): Point[][] {
+  const outline: Point[][] = [];
+  for (const path of paths) {
+    const run: Point[] = [];
+    for (let i = 0; i + 1 < path.points.length; i += 2) {
+      run.push({ x: path.points[i], y: path.points[i + 1] });
+    }
+    if (run.length < 2) continue;
+    if (path.closed) {
+      const first = run[0];
+      const last = run[run.length - 1];
+      if (first.x !== last.x || first.y !== last.y) run.push({ x: first.x, y: first.y });
+    }
+    outline.push(run);
+  }
+  return outline;
+}
 
 /** Default footprint when a description carries no dimensions: 2ft x 2ft. */
 const DEFAULT_SIZE = 2 * UNITS_PER_FOOT;
@@ -318,6 +343,40 @@ function placeSynthesized(
   if (!added.ok) return { ok: false, reason: added.reason };
 
   return { ok: true, created: [built.node.id], method: 'synthesized', size };
+}
+
+/**
+ * Places an inventory item from its traced (or catalog) outline.
+ *
+ * Paths are already centred on the insertion point, matching `createShape`.
+ */
+export function placeTracedIcon(
+  doc: RVDocument,
+  index: DocumentIndex,
+  description: string,
+  x: number,
+  y: number,
+  icon: { paths: Array<{ points: number[]; closed: boolean }>; width: number; height: number },
+): PlaceResult {
+  void index;
+  const outline = outlineFromTracedPaths(icon.paths);
+  if (!outline.length) return { ok: false, reason: 'the traced outline is empty' };
+
+  const built = createShape(doc, { name: description, x, y, outline });
+  if (!built.ok || !built.node) return { ok: false, reason: built.reason };
+
+  const host = placementHost(doc);
+  const added = host ? appendChild(doc, host, built.node) : addRoot(doc, built.node);
+  if (!added.ok) return { ok: false, reason: added.reason };
+
+  const width = icon.width > 0 ? icon.width : parseDimensions(description).width;
+  const height = icon.height > 0 ? icon.height : parseDimensions(description).height;
+  return {
+    ok: true,
+    created: [built.node.id],
+    method: 'synthesized',
+    size: { width, height, source: 'parsed' },
+  };
 }
 
 /** The room container a new placement belongs in, if this plan has one. */
