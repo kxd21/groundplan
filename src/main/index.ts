@@ -24,6 +24,12 @@ import {
   installAppUpdate,
   stageAppUpdate,
 } from '../update/app-update.js';
+import {
+  findReleaseFolder,
+  planUsbUpdate,
+  readUsbSource,
+  stageUsbUpdate,
+} from '../update/usb-update.js';
 import { loadBuffer } from '../format/index.js';
 import { findCatalogPath, loadCatalog, lookup, type Catalog } from '../format/catalog.js';
 import {
@@ -1392,6 +1398,103 @@ async function runAppUpdate(interactive: boolean): Promise<void> {
   }
 }
 
+/**
+ * Installs an update from a folder on a USB stick.
+ *
+ * Shares the last two thirds of `runAppUpdate` — verify, stage, swap — and
+ * differs only in where the bytes come from. The signature and hash checks are
+ * the same ones, so accepting a stick from a colleague is exactly as safe as
+ * accepting a download, and neither is trusted on the strength of where it came
+ * from.
+ */
+async function runUsbUpdate(): Promise<void> {
+  const picked = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Install update from USB',
+    message: 'Choose the Groundplan release folder on the drive',
+    properties: ['openDirectory'],
+    buttonLabel: 'Use this folder',
+  });
+  if (picked.canceled || !picked.filePaths[0]) return;
+
+  // Accept either the release folder or the drive it sits on, because both are
+  // reasonable things to point at.
+  const chosen = picked.filePaths[0];
+  const folder = (await findReleaseFolder(chosen)) ?? chosen;
+
+  const { source, reason } = await readUsbSource(folder);
+  if (!source) {
+    await dialog.showMessageBox({
+      type: 'error',
+      message: 'That folder does not hold a Groundplan update',
+      detail: reason ?? 'Unknown problem.',
+      buttons: ['OK'],
+    });
+    return;
+  }
+
+  const plan = planUsbUpdate(source, {
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+  });
+
+  if (!plan.available) {
+    await dialog.showMessageBox({
+      type: 'info',
+      message: 'Nothing to install',
+      detail: plan.reason ?? 'That drive has no newer version for this computer.',
+      buttons: ['OK'],
+    });
+    return;
+  }
+
+  const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
+  const answer = await dialog.showMessageBox({
+    type: 'info',
+    message: `Install Groundplan ${plan.latestVersion} from this drive?`,
+    detail:
+      `${plan.notes ? `${plan.notes}\n\n` : ''}You are on ${plan.currentVersion}. ${size} will be copied off the drive ` +
+      `and checked against its signature before anything is replaced.\n\nGroundplan will restart to finish installing.`,
+    buttons: ['Install', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (answer.response !== 0) return;
+
+  const staging = join(app.getPath('userData'), 'updates');
+  await cleanStaging(staging);
+  mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received: 0, total: plan.package?.bytes });
+
+  const staged = await stageUsbUpdate(source, plan, staging);
+  mainWindow?.setProgressBar(-1);
+
+  if (!staged.ok) {
+    mainWindow?.webContents.send('app:update-progress', { phase: 'failed', message: staged.reason });
+    await dialog.showMessageBox({
+      type: 'error',
+      message: 'The update could not be installed',
+      detail: `${staged.reason ?? 'The copy did not finish.'}\n\nGroundplan ${plan.currentVersion} is unchanged and still works.`,
+      buttons: ['OK'],
+    });
+    return;
+  }
+
+  const bundlePath =
+    process.platform === 'darwin'
+      ? app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]*$/, '')
+      : app.getPath('exe');
+
+  const installed = await installAppUpdate(staged, bundlePath, () => app.quit());
+  if (!installed.ok) {
+    await dialog.showMessageBox({
+      type: 'error',
+      message: 'The update could not be installed',
+      detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${plan.currentVersion} is unchanged.`,
+      buttons: ['OK'],
+    });
+  }
+}
+
 function createWindow(): void {
   closeConfirmed = false;
   rendererReady = false;
@@ -1516,6 +1619,7 @@ function buildMenu(): void {
               { role: 'about' as const },
               { type: 'separator' as const },
               { label: 'Check for Updates…', click: () => void runAppUpdate(true) },
+              { label: 'Install Update from USB…', click: () => void runUsbUpdate() },
               { type: 'separator' as const },
               {
                 label: 'Settings…',
@@ -1644,7 +1748,10 @@ function buildMenu(): void {
     { role: 'windowMenu' },
     {
       label: '&Help',
-      submenu: [{ label: 'Check for Updates…', click: () => void runAppUpdate(true) }],
+      submenu: [
+        { label: 'Check for Updates…', click: () => void runAppUpdate(true) },
+        { label: 'Install Update from USB…', click: () => void runUsbUpdate() },
+      ],
     },
   ];
 
@@ -3239,6 +3346,11 @@ app.whenReady().then(async () => {
 
   handle('app:check-update', async () => {
     await runAppUpdate(true);
+    return { ok: true };
+  });
+
+  handle('app:update-from-usb', async () => {
+    await runUsbUpdate();
     return { ok: true };
   });
 

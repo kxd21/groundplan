@@ -137,6 +137,34 @@ Groundplan checks for updates on start and installs them in the background. Each
 update is signed, and one with a signature that does not verify is discarded
 rather than installed. **Help → Check for Updates** forces a check.
 
+### Updating with no internet
+
+Machines in back-of-house offices and convention centre basements often have no
+usable network, so a release also travels on a USB stick.
+
+**To install one:** plug the stick in, open Groundplan, and choose
+**Help → Install Update from USB…**, then pick the release folder (or just the
+drive — it will find the folder). It copies the update off the stick, checks it,
+and restarts.
+
+**It is checked exactly like a downloaded one.** The manifest must carry a
+signature from Groundplan's key, and the archive must match the hash that signed
+manifest names. A stick someone hands you is therefore no more dangerous than a
+web server — both have to clear the same two gates. Editing any file in the
+folder will cause the update to be refused, which is the point.
+
+**To prepare one** (needs the signing key):
+
+```bash
+npm run build && npx electron-builder --mac --win
+npm run usb -- --version 1.1.0 --out /Volumes/YOUR_USB/GROUNDPLAN
+```
+
+That writes one folder holding the signed manifest, the self-update packages,
+and the installers for a machine that has never had Groundplan on it — so the
+same stick serves both "update mine" and "put it on this laptop". A `README.txt`
+in the folder explains which to use.
+
 ---
 
 ## Uninstalling

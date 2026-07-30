@@ -124,6 +124,8 @@ const api = {
     overBy?: number;
   }> => ipcRenderer.invoke('print:pdf', payload),
   checkAppUpdate: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('app:check-update'),
+  /** Installs a release from a folder on a USB stick, signature checked. */
+  updateFromUsb: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('app:update-from-usb'),
   settingsGet: (): Promise<unknown> => ipcRenderer.invoke('settings:get'),
   settingsPatch: (patch: unknown): Promise<{ ok: boolean; settings?: unknown }> =>
     ipcRenderer.invoke('settings:patch', patch),

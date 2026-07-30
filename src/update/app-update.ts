@@ -65,7 +65,14 @@ export interface AppUpdatePlan {
 }
 
 /** Verifies a manifest against the keys compiled into this build. */
-function verify(manifest: AppManifest): boolean {
+/**
+ * True when a manifest carries a signature from a key we pinned.
+ *
+ * Exported because it is the whole trust boundary, and a second source of
+ * updates — a folder on a USB stick — must clear exactly the same bar as the
+ * network one rather than a lower one.
+ */
+export function verifyManifest(manifest: AppManifest): boolean {
   if (!manifest.signature) return false;
   let signature: Buffer;
   try {
@@ -108,7 +115,7 @@ export async function checkForAppUpdate(input: CheckInput): Promise<AppUpdatePla
   if (!manifest) return { ...base, reason: 'could not reach the update server' };
 
   // Signature first: nothing else in the manifest means anything until it holds.
-  if (!verify(manifest)) return { ...base, reason: 'the update manifest is not correctly signed' };
+  if (!verifyManifest(manifest)) return { ...base, reason: 'the update manifest is not correctly signed' };
 
   if (compareVersions(manifest.version, input.currentVersion) <= 0) {
     return { ...base, latestVersion: manifest.version, reason: 'the application is up to date' };
