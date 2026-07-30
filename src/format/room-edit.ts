@@ -282,6 +282,30 @@ export function offsetWall(room: RoomModel, index: number, distance: number): Ro
   return moveCorner(moved.room!, next, { x: target.end.x + nx, y: target.end.y + ny });
 }
 
+/**
+ * Sets a wall's chord length, keeping its start corner fixed.
+ *
+ * Curved walls must be straightened first — changing the chord under a bulge
+ * silently changes the arc in a way that is hard to explain in the UI.
+ */
+export function setWallLength(room: RoomModel, index: number, length: number): RoomEditResult {
+  if (index < 0 || index >= room.walls.length) return { ok: false, reason: 'no such wall' };
+  if (!(length > 0) || !Number.isFinite(length)) return { ok: false, reason: 'enter a positive length' };
+  const target = room.walls[index];
+  if (target.bulge) return { ok: false, reason: 'Straighten the wall before changing its length.' };
+
+  const dx = target.end.x - target.start.x;
+  const dy = target.end.y - target.start.y;
+  const current = Math.hypot(dx, dy);
+  if (current < 1e-6) return { ok: false, reason: 'that wall has no direction to extend' };
+
+  const endCorner = (index + 1) % room.walls.length;
+  return moveCorner(room, endCorner, {
+    x: target.start.x + (dx / current) * length,
+    y: target.start.y + (dy / current) * length,
+  });
+}
+
 /** Bows a straight wall into an arc, or straightens one. */
 export function curveWall(room: RoomModel, index: number, bulge: number): RoomEditResult {
   if (index < 0 || index >= room.walls.length) return { ok: false, reason: 'no such wall' };

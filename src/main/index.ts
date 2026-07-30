@@ -47,7 +47,7 @@ import {
   deleteNode,
   duplicateNode,
   recolorNode,
-  relabelNode,
+  renameNode,
   rotateNode,
   resizeNode,
   measureNode,
@@ -138,6 +138,7 @@ import {
   curveRoomWall,
   drawShape,
   dimensionTheRoom,
+  lengthenRoomWall,
   openPlanModel,
   planAllocation,
   planModelView,
@@ -911,6 +912,7 @@ const RESULT_CHANNELS = new Set([
   'plan:room-create',
   'plan:room-reshape',
   'plan:room-curve',
+  'plan:room-wall-length',
   'plan:room-dimension',
   'plan:seating-apply',
   'plan:stage-add',
@@ -2208,7 +2210,7 @@ app.whenReady().then(async () => {
     applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
       if (!node) return { ok: false, reason: 'object no longer exists' };
-      return relabelNode(s.loaded.document, node, text);
+      return renameNode(s.loaded.document, node, text);
     }),
   );
 
@@ -3018,8 +3020,12 @@ app.whenReady().then(async () => {
     height: number,
   ) => applyEdit((s) => reshapeRoom(s, op, x, y, width, height, unitSystem())));
 
-  handle('plan:room-curve', (_event, wallIndex: number, radius: number) =>
-    applyEdit((s) => curveRoomWall(s, wallIndex, radius, unitSystem())),
+  handle('plan:room-curve', (_event, wallIndex: number, radius: number, major = false) =>
+    applyEdit((s) => curveRoomWall(s, wallIndex, radius, unitSystem(), major === true)),
+  );
+
+  handle('plan:room-wall-length', (_event, wallIndex: number, length: number) =>
+    applyEdit((s) => lengthenRoomWall(s, wallIndex, length, unitSystem())),
   );
 
   handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
@@ -3318,7 +3324,8 @@ app.whenReady().then(async () => {
       text: node.cls === 'RVLabel' ? name : undefined,
       color: session.scene.primitives.find((primitive) => primitive.selectId === nodeId)?.color ?? node.color,
       canDelete: !session.index.shared.has(node),
-      canRelabel: node.cls === 'RVLabel' && node.fields.textAt != null,
+      canRelabel:
+        (node.cls === 'RVLabel' && node.fields.textAt != null) || node.fields.nameAt != null,
       widthUnits: measured.width,
       heightUnits: measured.height,
       x: (node.bounds.left + node.bounds.right) / 2,

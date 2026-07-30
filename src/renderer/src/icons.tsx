@@ -190,6 +190,15 @@ export function IconMagnet({ size = 16, className }: IconProps) {
   );
 }
 
+export function IconGrid({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="1.25" />
+      <path d="M2.25 6.5h11.5M2.25 10.5h11.5M6.5 2.25v11.5M10.5 2.25v11.5" />
+    </svg>
+  );
+}
+
 export function IconPrint({ size = 16, className }: IconProps) {
   return (
     <svg {...base(size)} className={className}>

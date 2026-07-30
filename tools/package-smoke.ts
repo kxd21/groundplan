@@ -42,6 +42,13 @@ function packagedAppAt(path: string): PackagedApp | null {
       archive: join(dirname(path), 'resources', 'app.asar'),
     };
   }
+  // electron-builder linux-unpacked puts the binary next to resources/app.asar.
+  if (basename(path) === 'Groundplan') {
+    const archive = join(dirname(path), 'resources', 'app.asar');
+    if (existsSync(archive)) {
+      return { root: dirname(path), executable: path, archive };
+    }
+  }
   return null;
 }
 
@@ -56,8 +63,15 @@ function findPackagedApps(root: string): PackagedApp[] {
     }
     if (!statSync(path).isDirectory()) return;
     for (const entry of readdirSync(path, { withFileTypes: true })) {
-      if (!entry.isDirectory() && !entry.name.toLowerCase().endsWith('.exe')) continue;
-      visit(join(path, entry.name), depth + 1);
+      const name = entry.name;
+      const child = join(path, name);
+      if (entry.isDirectory()) {
+        visit(child, depth + 1);
+        continue;
+      }
+      if (name.toLowerCase().endsWith('.exe') || name === 'Groundplan') {
+        visit(child, depth + 1);
+      }
     }
   };
   visit(root, 0);

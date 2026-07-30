@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-5041 -3241 10082 6482" width="1008.2" height="648.2">
+<rect x="-5041" y="-3241" width="10082" height="6482" fill="#ffffff"/>
+<g stroke-linejoin="round" stroke-linecap="round">
+<polyline points="-4801,3001 4801,3001" fill="none" stroke="#2b2b2b" stroke-width="12"/>
+<polyline points="4801,3001 4801,-3001" fill="none" stroke="#2b2b2b" stroke-width="12"/>
+<polyline points="4801,-3001 -4801,-3001" fill="none" stroke="#2b2b2b" stroke-width="12"/>
+<polyline points="-4801,-3001 -4801,3001" fill="none" stroke="#2b2b2b" stroke-width="12"/>
+<text x="2976" y="462" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">16 ft  0 in</text>
+<polyline points="2976.31,-498.33 2976.31,1421.67" fill="none" stroke="#2b2b2b" stroke-width="5" stroke-dasharray="40,30"/>
+<text x="-110" y="1749" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">42 ft  0 in</text>
+<polygon points="-1888,1471 -2608,1471 -2608,511 -1888,511" fill="none" stroke="rgb(0,128,255)" stroke-width="5"/>
+<polygon points="-1167,1469 -1887,1469 -1887,509 -1167,509" fill="none" stroke="rgb(0,128,255)" stroke-width="5"/>
+<polygon points="-455,1477 -1175,1477 -1175,517 -455,517" fill="none" stroke="rgb(0,128,255)" stroke-width="5"/>
+<polygon points="267,1476 -453,1476 -453,516 267,516" fill="none" stroke="rgb(0,128,255)" stroke-width="5"/>
+<polygon points="988,1474 268,1474 268,514 988,514" fill="none" stroke="rgb(0,128,255)" stroke-width="5"/>
+<polygon points="1700,1472 980,1472 980,512 1700,512" fill="none" stroke="rgb(0,128,255)" stroke-width="5"/>
+<polygon points="2419,1470 1699,1470 1699,510 2419,510" fill="none" stroke="rgb(0,128,255)" stroke-width="5"/>
+<polygon points="-1156,511 -1636,511 -1636,31 -1156,31" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polygon points="-1644,511 -2124,511 -2124,31 -1644,31" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polygon points="-2127,509 -2607,509 -2607,29 -2127,29" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polygon points="1454,510 974,510 974,30 1454,30" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polygon points="2426,517 1946,517 1946,37 2426,37" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polygon points="1939,512 1459,512 1459,32 1939,32" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polygon points="972,514 732,514 732,274 972,274" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polyline points="965.24,42.97 965.01,42.96 964.33,42.95 963.22,42.93 961.68,42.92 959.72,42.91 957.36,42.92 954.62,42.96 951.49,43.02 947.99,43.12 944.14,43.26 939.94,43.45 935.41,43.7 930.55,44.01 925.39,44.38 919.93,44.83 914.18,45.35 908.15,45.97 901.86,46.68 895.32,47.48 888.54,48.4 881.52,49.42 874.29,50.56 866.85,51.83 859.22,53.23 851.41,54.77 843.42,56.45 835.27,58.28 826.97,60.27 818.54,62.42 809.98,64.74 801.31,67.24 792.53,69.92 783.67,72.79 774.72,75.85 765.71,79.12 756.64,82.59 747.52,86.28 738.37,90.18 729.2,94.32 720.02,98.68 710.84,103.29 701.68,108.14 692.54,113.25 683.43,118.61 674.38,124.24 665.38,130.14 656.45,136.32 647.61,142.79 638.85,149.54 630.21,156.59 621.68,163.95 613.28,171.61 605.02,179.59 596.91,187.9 588.97,196.53 581.19,205.5 573.61,214.8 566.22,224.46 559.05,234.47 552.09,244.85 545.36,255.59 538.88,266.7 532.66,278.19 526.7,290.07 521.02,302.35 515.63,315.02 510.55,328.09 505.77,341.58 501.32,355.49 497.21,369.82 493.45,384.59 490.04,399.79 487.01,415.43 484.35,431.52 482.1,448.08 480.24,465.09 478.81,482.57 477.8,500.53 477.24,518.97 724.96,518.97 725.26,509.6 725.77,500.48 726.5,491.6 727.43,482.95 728.56,474.55 729.88,466.37 731.39,458.43 733.08,450.71 734.95,443.22 736.98,435.94 739.18,428.89 741.55,422.04 744.06,415.41 746.72,408.98 749.52,402.75 752.47,396.73 755.54,390.9 758.73,385.27 762.05,379.82 765.48,374.57 769.01,369.5 772.65,364.61 776.39,359.89 780.21,355.35 784.13,350.99 788.12,346.79 792.18,342.75 796.32,338.87 800.52,335.16 804.77,331.6 809.07,328.19 813.43,324.92 817.82,321.81 822.24,318.83 826.69,316 831.17,313.29 835.67,310.72 840.17,308.28 844.68,305.97 849.19,303.78 853.7,301.7 858.2,299.74 862.68,297.9 867.13,296.16 871.56,294.53 875.95,293 880.31,291.58 884.62,290.24 888.88,289.01 893.08,287.86 897.22,286.79 901.3,285.81 905.3,284.92 909.22,284.09 913.05,283.34 916.8,282.67 920.45,282.05 924,281.51 927.44,281.02 930.77,280.59 933.97,280.21 937.06,279.89 940.01,279.61 942.83,279.38 945.51,279.18 948.04,279.03 950.41,278.91 952.63,278.82 954.69,278.76 956.57,278.72 958.28,278.71 959.81,278.71 961.15,278.73 962.3,278.76 963.25,278.8 964,278.84 964.54,278.89 964.86,278.93 964.96,278.97" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polygon points="-915,516 -1155,516 -1155,276 -915,276" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polyline points="-689.17,521.01 -689.17,520.78 -689.15,520.11 -689.13,518.99 -689.12,517.45 -689.11,515.5 -689.13,513.14 -689.16,510.39 -689.22,507.26 -689.32,503.76 -689.47,499.91 -689.66,495.71 -689.9,491.18 -690.21,486.33 -690.58,481.16 -691.03,475.7 -691.56,469.95 -692.17,463.92 -692.88,457.63 -693.69,451.09 -694.6,444.31 -695.62,437.3 -696.77,430.06 -698.04,422.63 -699.43,414.99 -700.97,407.18 -702.65,399.19 -704.49,391.04 -706.47,382.75 -708.63,374.31 -710.95,365.75 -713.44,357.08 -716.12,348.31 -718.99,339.44 -722.05,330.49 -725.32,321.48 -728.79,312.41 -732.48,303.29 -736.38,294.15 -740.52,284.98 -744.89,275.8 -749.49,266.62 -754.35,257.45 -759.45,248.31 -764.82,239.21 -770.45,230.15 -776.35,221.15 -782.53,212.22 -788.99,203.38 -795.74,194.63 -802.79,185.98 -810.15,177.45 -817.81,169.05 -825.79,160.79 -834.1,152.68 -842.73,144.74 -851.7,136.97 -861.01,129.38 -870.66,122 -880.68,114.82 -891.05,107.86 -901.79,101.14 -912.9,94.66 -924.4,88.43 -936.28,82.47 -948.55,76.8 -961.22,71.41 -974.3,66.32 -987.79,61.55 -1001.69,57.1 -1016.03,52.98 -1030.79,49.22 -1045.99,45.81 -1061.63,42.78 -1077.73,40.13 -1094.28,37.87 -1111.29,36.02 -1128.77,34.58 -1146.73,33.58 -1165.17,33.01 -1165.17,280.73 -1155.8,281.03 -1146.68,281.55 -1137.8,282.27 -1129.16,283.2 -1120.75,284.33 -1112.58,285.65 -1104.63,287.16 -1096.92,288.85 -1089.42,290.72 -1082.15,292.76 -1075.09,294.96 -1068.24,297.32 -1061.61,299.83 -1055.18,302.49 -1048.96,305.3 -1042.93,308.24 -1037.1,311.31 -1031.47,314.5 -1026.03,317.82 -1020.77,321.25 -1015.7,324.79 -1010.81,328.42 -1006.1,332.16 -1001.56,335.99 -997.19,339.9 -992.99,343.89 -988.95,347.96 -985.08,352.09 -981.36,356.29 -977.8,360.54 -974.39,364.85 -971.13,369.2 -968.01,373.59 -965.03,378.01 -962.2,382.47 -959.5,386.94 -956.93,391.44 -954.49,395.94 -952.17,400.46 -949.98,404.97 -947.9,409.47 -945.95,413.97 -944.1,418.45 -942.36,422.9 -940.73,427.33 -939.21,431.73 -937.78,436.08 -936.45,440.39 -935.21,444.65 -934.06,448.86 -933,453 -932.02,457.07 -931.12,461.07 -930.3,464.99 -929.55,468.83 -928.87,472.57 -928.26,476.22 -927.71,479.77 -927.22,483.21 -926.79,486.54 -926.41,489.75 -926.09,492.83 -925.81,495.78 -925.58,498.6 -925.38,501.28 -925.23,503.81 -925.11,506.19 -925.02,508.41 -924.96,510.46 -924.92,512.34 -924.91,514.05 -924.91,515.58 -924.93,516.92 -924.96,518.07 -925,519.02 -925.04,519.77 -925.09,520.31 -925.13,520.63 -925.17,520.73" fill="none" stroke="rgb(255,255,128)" stroke-width="5"/>
+<polyline points="-2748.21,-28.44 -2748.21,-408.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="-2748.21,-408.44 -2614.21,-408.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="-2614.21,-408.44 -2614.21,-28.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="-2614.21,-28.44 -2748.21,-28.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="-2856.21,-49.44 -2856.21,-384.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="-2856.21,-384.44 -2748.21,-384.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="-2748.21,-384.44 -2748.21,-49.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="-2748.21,-49.44 -2856.21,-49.44" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2562.41,-407.06 2562.41,-27.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2562.41,-27.06 2428.41,-27.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2428.41,-27.06 2428.41,-407.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2428.41,-407.06 2562.41,-407.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2670.41,-386.06 2670.41,-51.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2670.41,-51.06 2562.41,-51.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2562.41,-51.06 2562.41,-386.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<polyline points="2562.41,-386.06 2670.41,-386.06" fill="none" stroke="#2b2b2b" stroke-width="5"/>
+<text x="-101" y="980" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">House Riser 8' X 42' at 32&quot; Height</text>
+<text x="-45" y="-304" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">House Riser 8' x 42' at 24&quot; Height</text>
+<text x="-2391" y="270" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+4 X 4
+8&quot; H</text>
+<text x="-1906" y="278" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+4 X 4
+8&quot; H</text>
+<text x="-1391" y="278" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+4 X 4
+8&quot; H</text>
+<text x="1199" y="278" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+4 X 4
+8&quot; H</text>
+<text x="1722" y="278" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+4 X 4
+8&quot; H</text>
+<text x="2171" y="269" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+4 X 4
+8&quot; H</text>
+<text x="789" y="306" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+Curved
+4 X 4</text>
+<text x="-950" y="313" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">LEMG
+Curved
+4 X 4</text>
+<text x="-101" y="447" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">Edge Rope Lighting</text>
+<text x="1693" y="-45" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">Edge Rope Lighting</text>
+<text x="134" y="-1656" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">2 Pieces of Carpet
+1 - 12' X 42'
+1 - 8' X 42'</text>
+<text x="-1888" y="-62" font-size="90" font-family="Helvetica, Arial, sans-serif" fill="rgb(0,0,0)" text-anchor="middle" dominant-baseline="middle">Edge Rope Lighting</text>
+<polyline points="2409.89,1749.09 -2630.11,1749.07" fill="none" stroke="#2b2b2b" stroke-width="5" stroke-dasharray="40,30"/>
+</g>
+</svg>

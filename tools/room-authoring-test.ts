@@ -18,6 +18,8 @@ import {
   rectRoom,
   removeCorner,
   roomProblems,
+  setWallLength,
+  setWallRadius,
 } from '../src/format/room-edit.js';
 import { applyRoom } from '../src/format/room-render.js';
 import {
@@ -173,6 +175,31 @@ console.log('\nediting corners\n');
   const straightened = curveWall(bowed.room!, 0, 0);
   check('and straightened again', straightened.room!.walls[0].bulge === undefined);
   check('back to where it started', sqft(straightened.room!) === 1200);
+
+  const lengthened = setWallLength(room, 0, 50 * F);
+  check('a wall length can be set', lengthened.ok, lengthened.reason);
+  check(
+    'keeping the start corner fixed',
+    lengthened.ok &&
+      lengthened.room!.walls[0].start.x === room.walls[0].start.x &&
+      lengthened.room!.walls[0].start.y === room.walls[0].start.y,
+  );
+  check(
+    'and extending the end',
+    lengthened.ok && Math.abs(lengthened.room!.walls[0].end.x - room.walls[0].start.x - 50 * F) < 1e-6,
+  );
+  check('a curved wall refuses length edits', !setWallLength(bowed.room!, 0, 50 * F).ok);
+
+  const byRadius = setWallRadius(room, 0, 30 * F);
+  check('a wall can be curved by radius', byRadius.ok && !!byRadius.room!.walls[0].bulge, byRadius.reason);
+  const major = setWallRadius(room, 0, 30 * F, true);
+  check(
+    'major arc takes the other bulge sign or magnitude',
+    major.ok &&
+      major.room!.walls[0].bulge !== undefined &&
+      major.room!.walls[0].bulge !== byRadius.room!.walls[0].bulge,
+    major.reason,
+  );
 }
 
 {

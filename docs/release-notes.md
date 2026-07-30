@@ -14,6 +14,7 @@ OS-detected button and Gatekeeper / SmartScreen steps — or pick a file below.
 | Mac, Intel | `Groundplan-__VERSION__-mac-x64.dmg` |
 | Windows 10/11 | `Groundplan-Setup-__VERSION__-win-x64.exe` |
 | Windows, no admin | `Groundplan-Portable-__VERSION__-win-x64.exe` |
+| Linux (x64) | `Groundplan-__VERSION__-linux-x64.AppImage` |
 
 ### First open
 

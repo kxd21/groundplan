@@ -74,6 +74,8 @@ portable:
   artifactName: ${productName}-Portable-${version}-win-${arch}.${ext}
 
 linux:
-  target:
-    - AppImage
   category: Graphics
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+  target:
+    - target: AppImage
+      arch: [x64]

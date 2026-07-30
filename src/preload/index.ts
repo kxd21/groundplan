@@ -243,8 +243,10 @@ const api = {
     height: number,
   ): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-reshape', op, x, y, width, height),
-  roomCurve: (wallIndex: number, radius: number): Promise<EditReply & { note?: string }> =>
-    ipcRenderer.invoke('plan:room-curve', wallIndex, radius),
+  roomCurve: (wallIndex: number, radius: number, major?: boolean): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-curve', wallIndex, radius, major === true),
+  roomWallLength: (wallIndex: number, length: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-wall-length', wallIndex, length),
   roomDimension: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:room-dimension'),
 
   seatingPreview: (request: SeatingRequestView): Promise<SeatingPreview | null> =>

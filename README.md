@@ -2,7 +2,7 @@
 
 A cross-platform rebuild of Room Viewer — the Windows-only event-diagramming
 tool (TimeSaver Software, last built 2013) — that reads **and edits** the
-original plan files directly. It runs on **Windows and macOS** and needs no
+original plan files directly. It runs on **Windows, macOS, and Linux** and needs no
 Windows VM.
 
 The original `RV.exe` is a 32-bit Win32 binary that cannot run on modern macOS
@@ -16,7 +16,7 @@ overhead drawing of a venue — which is exactly what these files hold.*
 
 **First-time install:** open the
 [download page](https://kxd21.github.io/groundplan/download/) — it picks the
-installer for your Mac or Windows PC — or grab a file from
+installer for your Mac, Windows, or Linux machine — or grab a file from
 [Releases](https://github.com/kxd21/groundplan/releases/latest).
 
 | Your machine | File |
@@ -25,6 +25,7 @@ installer for your Mac or Windows PC — or grab a file from
 | Mac, Intel | `Groundplan-<version>-mac-x64.dmg` |
 | Windows 10 or 11 | `Groundplan-Setup-<version>-win-x64.exe` |
 | Windows, no admin | `Groundplan-Portable-<version>-win-x64.exe` |
+| Linux (x64) | `Groundplan-<version>-linux-x64.AppImage` |
 
 Gatekeeper / SmartScreen will warn on first open (builds are not Apple-notarised
 or Authenticode-signed yet). Right-click → Open on Mac, or More info → Run

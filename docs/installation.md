@@ -17,9 +17,7 @@ detects your computer and offers one primary installer. Or pick a file from
 | Mac, Intel | `Groundplan-<version>-mac-x64.dmg` |
 | Windows 10 or 11 | `Groundplan-Setup-<version>-win-x64.exe` |
 | Windows, no admin rights | `Groundplan-Portable-<version>-win-x64.exe` |
-
-Linux AppImage packaging exists in the builder config but is **not** published
-by the release pipeline yet — use Mac or Windows builds for production installs.
+| Linux (x64) | `Groundplan-<version>-linux-x64.AppImage` |
 
 To check which Mac you have: **Apple menu → About This Mac**. "Apple M1", "M2",
 "M3" or "M4" means arm64. Downloading the wrong one is not harmful — it just
@@ -64,13 +62,17 @@ equipment inventory are still saved to your user profile.
 
 ## Linux
 
-AppImage packaging is configured but not yet published with each GitHub Release.
-If you build locally (`electron-builder --linux`), run:
+1. Download the `.AppImage`.
+2. Make it executable and run it:
 
 ```bash
-chmod +x Groundplan-<version>.AppImage
-./Groundplan-<version>.AppImage
+chmod +x Groundplan-<version>-linux-x64.AppImage
+./Groundplan-<version>-linux-x64.AppImage
 ```
+
+On some distributions you may need FUSE support for AppImages. If the file will
+not start, check your distro’s AppImage / FUSE docs, or extract with
+`--appimage-extract` and run the binary inside.
 
 If it will not start, install FUSE (`sudo apt install libfuse2` on Debian and
 Ubuntu), or extract it with `--appimage-extract` and run the binary inside.

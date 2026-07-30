@@ -20,6 +20,7 @@ import {
   IconRedo,
   IconRuler,
   IconMagnet,
+  IconGrid,
   IconPrint,
   IconSave,
   IconSearch,
@@ -211,6 +212,7 @@ export function App() {
   const [showGrid, setShowGrid] = useState(true);
   const [bulkDeleteWarning, setBulkDeleteWarning] = useState(25);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [rotationDraft, setRotationDraft] = useState('15');
   const [colorDraft, setColorDraft] = useState('#20252b');
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
@@ -832,6 +834,14 @@ export function App() {
     });
   }, [cancelPlacement, doc?.annotationCapabilities?.dimension, notify]);
 
+  const toggleGrid = useCallback(() => {
+    setShowGrid((current) => {
+      const next = !current;
+      void api.settingsPatch({ drawing: { showGrid: next } }).catch(() => undefined);
+      return next;
+    });
+  }, []);
+
   const importGear = useCallback(async () => {
     setBusy(true);
     setBusyMessage('Importing gear…');
@@ -1227,7 +1237,7 @@ export function App() {
       .then((info) => {
         if (!live) return;
         setSelection(info as Selection | null);
-        setLabelDraft(info?.text ?? '');
+        setLabelDraft(info?.text ?? info?.name ?? '');
         setSizeDraft(
           info
             ? {
@@ -1339,6 +1349,11 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (shortcutsOpen) {
+          e.preventDefault();
+          setShortcutsOpen(false);
+          return;
+        }
         if (newPlanOpen) {
           e.preventDefault();
           setNewPlanOpen(false);
@@ -1355,6 +1370,11 @@ export function App() {
         target &&
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
       ) {
+        return;
+      }
+      if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+        e.preventDefault();
+        setShortcutsOpen((open) => !open);
         return;
       }
       const mod = e.metaKey || e.ctrlKey;
@@ -1393,6 +1413,11 @@ export function App() {
       if (e.key.toLowerCase() === 's' && !mod && doc) {
         e.preventDefault();
         setSnapStep((v) => (v ? 0 : FOOT));
+        return;
+      }
+      if (e.key.toLowerCase() === 'g' && !mod && doc) {
+        e.preventDefault();
+        void toggleGrid();
         return;
       }
       if (e.key.toLowerCase() === 'm' && !mod && doc) {
@@ -1490,9 +1515,11 @@ export function App() {
     printOpen,
     newPlanOpen,
     settingsOpen,
+    shortcutsOpen,
     cancelPlacement,
     toggleMeasure,
     toggleDimension,
+    toggleGrid,
     keepMeasurement,
     selectAll,
     view,
@@ -1593,6 +1620,187 @@ export function App() {
           }}
           onError={notify}
         />
+      )}
+
+      {shortcutsOpen && (
+        <div className="sheet-backdrop" onClick={() => setShortcutsOpen(false)} role="presentation">
+          <div
+            className="sheet shortcuts-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shortcuts-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sheet-title" id="shortcuts-title">
+              Keyboard shortcuts
+            </div>
+            <div className="shortcuts-body">
+              <section>
+                <h3>File</h3>
+                <dl>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('N')}</kbd>
+                    </dt>
+                    <dd>New plan</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('O')}</kbd>
+                    </dt>
+                    <dd>Open plan</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('O', true)}</kbd>
+                    </dt>
+                    <dd>Open folder</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('S')}</kbd>
+                    </dt>
+                    <dd>Save</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('P')}</kbd>
+                    </dt>
+                    <dd>Print to PDF</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('E')}</kbd>
+                    </dt>
+                    <dd>Export SVG</dd>
+                  </div>
+                </dl>
+              </section>
+              <section>
+                <h3>Edit</h3>
+                <dl>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('Z')}</kbd>
+                    </dt>
+                    <dd>Undo</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('Z', true)}</kbd>
+                    </dt>
+                    <dd>Redo</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('D')}</kbd>
+                    </dt>
+                    <dd>Duplicate</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('A')}</kbd>
+                    </dt>
+                    <dd>Select all</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>Delete</kbd>
+                    </dt>
+                    <dd>Delete selection</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>[</kbd> <kbd>]</kbd>
+                    </dt>
+                    <dd>Rotate 90°</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>Arrow keys</kbd>
+                    </dt>
+                    <dd>Nudge selection</dd>
+                  </div>
+                </dl>
+              </section>
+              <section>
+                <h3>Drawing</h3>
+                <dl>
+                  <div>
+                    <dt>
+                      <kbd>S</kbd>
+                    </dt>
+                    <dd>Toggle snap</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>G</kbd>
+                    </dt>
+                    <dd>Toggle grid</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>M</kbd>
+                    </dt>
+                    <dd>Measure</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>D</kbd>
+                    </dt>
+                    <dd>Dimension</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>T</kbd>
+                    </dt>
+                    <dd>Place label</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>0</kbd>
+                    </dt>
+                    <dd>Zoom to fit</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>Esc</kbd>
+                    </dt>
+                    <dd>Cancel tool / clear</dd>
+                  </div>
+                </dl>
+              </section>
+              <section>
+                <h3>Layout</h3>
+                <dl>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('B')}</kbd>
+                    </dt>
+                    <dd>Toggle browser</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('B', true)}</kbd>
+                    </dt>
+                    <dd>Toggle inspector</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>?</kbd>
+                    </dt>
+                    <dd>This cheat sheet</dd>
+                  </div>
+                </dl>
+              </section>
+            </div>
+            <div className="sheet-actions">
+              <button type="button" onClick={() => setShortcutsOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       <header className="toolbar">
         <div className="brand">
@@ -1731,6 +1939,16 @@ export function App() {
                 aria-pressed={!!snapStep}
               >
                 <IconMagnet />
+              </button>
+              <button
+                className={`icon-btn${showGrid ? ' is-on' : ''}`}
+                onClick={() => void toggleGrid()}
+                disabled={!doc}
+                title={showGrid ? 'Hide grid (G)' : 'Show grid (G)'}
+                aria-label={showGrid ? 'Hide grid' : 'Show grid'}
+                aria-pressed={showGrid}
+              >
+                <IconGrid />
               </button>
             </div>
 
@@ -3101,31 +3319,63 @@ export function App() {
 
                     {selection.canRelabel && (
                       <div className="field">
-                        <label htmlFor="label-text">Text</label>
-                        <textarea
-                          id="label-text"
-                          rows={3}
-                          value={labelDraft}
-                          onChange={(e) => setLabelDraft(e.target.value)}
-                          onBlur={async () => {
-                            if (!selection || labelDraft === (selection.text ?? '')) return;
-                            applied(
-                              (await api.relabel(selection.nodeId, labelDraft)) as {
-                                ok: boolean;
-                                reason?: string;
-                                doc?: Doc;
-                              },
-                            );
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                              e.preventDefault();
-                              (e.target as HTMLTextAreaElement).blur();
-                            }
-                          }}
-                          disabled={!doc.editable}
-                        />
-                        <span className="field-help">Press {api.platform === 'darwin' ? '⌘' : 'Ctrl'}+Enter to apply.</span>
+                        <label htmlFor="label-text">
+                          {selection.cls === 'RVLabel' ? 'Text' : 'Name'}
+                        </label>
+                        {selection.cls === 'RVLabel' ? (
+                          <textarea
+                            id="label-text"
+                            rows={3}
+                            value={labelDraft}
+                            onChange={(e) => setLabelDraft(e.target.value)}
+                            onBlur={async () => {
+                              if (!selection || labelDraft === (selection.text ?? '')) return;
+                              applied(
+                                (await api.relabel(selection.nodeId, labelDraft)) as {
+                                  ok: boolean;
+                                  reason?: string;
+                                  doc?: Doc;
+                                },
+                              );
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                e.preventDefault();
+                                (e.target as HTMLTextAreaElement).blur();
+                              }
+                            }}
+                            disabled={!doc.editable}
+                          />
+                        ) : (
+                          <input
+                            id="label-text"
+                            type="text"
+                            value={labelDraft}
+                            onChange={(e) => setLabelDraft(e.target.value)}
+                            onBlur={async () => {
+                              if (!selection || labelDraft.trim() === (selection.name ?? '').trim()) return;
+                              applied(
+                                (await api.relabel(selection.nodeId, labelDraft)) as {
+                                  ok: boolean;
+                                  reason?: string;
+                                  doc?: Doc;
+                                },
+                              );
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                (e.target as HTMLInputElement).blur();
+                              }
+                            }}
+                            disabled={!doc.editable}
+                          />
+                        )}
+                        <span className="field-help">
+                          {selection.cls === 'RVLabel'
+                            ? `Press ${api.platform === 'darwin' ? '⌘' : 'Ctrl'}+Enter to apply.`
+                            : 'Shown in the inventory and on the drawing.'}
+                        </span>
                       </div>
                     )}
 

@@ -149,6 +149,9 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const reshapeD = useLength(10 * 120, units);
   const [curveWall, setCurveWall] = useState(0);
   const curveRadius = useLength(20 * 120, units);
+  const wallLengthField = useLength(40 * 120, units);
+  const [curveOtherWay, setCurveOtherWay] = useState(false);
+  const [curveMajor, setCurveMajor] = useState(false);
 
   // Seed reshape origin from the room once per open plan, so "Add area"
   // starts beside the current outline rather than at the origin.
@@ -166,7 +169,9 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
 
   useEffect(() => {
     const detail = room?.wallDetails?.[curveWall];
-    if (detail?.curved && detail.radius > 0) {
+    if (!detail) return;
+    wallLengthField.setText(detail.lengthText);
+    if (detail.curved && detail.radius > 0) {
       curveRadius.setText(detail.radiusText);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -414,14 +419,50 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
                 ))}
               </select>
             </div>
-            <LengthField id="curve-radius" label="Radius" field={curveRadius} disabled={!editable} />
+            <LengthField id="wall-length" label="Length" field={wallLengthField} disabled={!editable} />
           </div>
           <div className="actions-row">
             <button
               type="button"
               onClick={() =>
-                void run('Wall curved', () => api.roomCurve(curveWall, curveRadius.value!))
+                void run('Wall length set', () => api.roomWallLength(curveWall, wallLengthField.value!))
               }
+              disabled={!editable || !wallLengthField.positive || !(room.wallDetails?.length)}
+              title="Set this wall's length, keeping its start corner fixed"
+            >
+              Set length
+            </button>
+          </div>
+
+          <div className="field-row" style={{ marginTop: 12 }}>
+            <LengthField id="curve-radius" label="Radius" field={curveRadius} disabled={!editable} />
+          </div>
+          <label className="setting-check">
+            <input
+              type="checkbox"
+              checked={curveOtherWay}
+              disabled={!editable}
+              onChange={(e) => setCurveOtherWay(e.target.checked)}
+            />
+            <span>Bow the other way</span>
+          </label>
+          <label className="setting-check">
+            <input
+              type="checkbox"
+              checked={curveMajor}
+              disabled={!editable}
+              onChange={(e) => setCurveMajor(e.target.checked)}
+            />
+            <span>Long way round (major arc)</span>
+          </label>
+          <div className="actions-row">
+            <button
+              type="button"
+              onClick={() => {
+                const radius = curveRadius.value!;
+                const signed = curveOtherWay ? -Math.abs(radius) : Math.abs(radius);
+                void run('Wall curved', () => api.roomCurve(curveWall, signed, curveMajor));
+              }}
               disabled={!editable || !curveRadius.positive || !(room.wallDetails?.length)}
               title="Bow the selected wall to this radius"
             >
@@ -437,8 +478,8 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
             </button>
           </div>
           <p className="hint">
-            Add or cut rectangles to make L-shapes and corridors. Curve a wall by picking it and entering a radius —
-            use a radius at least half the wall length for a gentle bay.
+            Add or cut rectangles to make L-shapes and corridors. Set a wall length before curving it.
+            Radius must be at least half the wall length for a gentle bay.
           </p>
         </div>
       )}

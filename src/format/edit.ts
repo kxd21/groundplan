@@ -716,3 +716,39 @@ export function relabelNode(doc: RVDocument, node: RVNode, text: string): EditRe
   node.labels[idx] = text;
   return { ok: true };
 }
+
+/**
+ * Renames a placed shape (catalogue name) or a text label.
+ *
+ * Placed furniture stores its inventory name as a length-prefixed string at
+ * `nameAt`. Labels use `textAt`. One IPC covers both so the Properties panel
+ * can offer a single "Name" / "Text" field.
+ */
+export function renameNode(doc: RVDocument, node: RVNode, name: string): EditResult {
+  const trimmed = name.trim();
+  if (!trimmed) return { ok: false, reason: 'enter a name' };
+
+  if (node.cls === 'RVLabel') return relabelNode(doc, node, trimmed);
+
+  if (node.fields.nameAt == null) {
+    return { ok: false, reason: 'this object has no editable name' };
+  }
+
+  const encoded = Buffer.from(trimmed.slice(0, 254), 'latin1');
+  const header = editableHeader(doc, node);
+  const at = rel(node, node.fields.nameAt);
+  const oldLen = header[at];
+  if (at < 0 || at + 1 + oldLen > header.length) {
+    return { ok: false, reason: 'the name field is outside the decoded region' };
+  }
+
+  node.headerOverride = Buffer.concat([
+    header.subarray(0, at),
+    Buffer.from([encoded.length]),
+    encoded,
+    header.subarray(at + 1 + oldLen),
+  ]);
+  node.fields.nameLen = encoded.length;
+  node.labels = [trimmed];
+  return { ok: true };
+}

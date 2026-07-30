@@ -39,7 +39,7 @@ import {
   wallLength,
   type RoomModel,
 } from '../format/room.js';
-import { combineRooms, curveWall, rectRoom, roomProblems, setWallRadius } from '../format/room-edit.js';
+import { combineRooms, curveWall, rectRoom, roomProblems, setWallLength, setWallRadius } from '../format/room-edit.js';
 import { applyRoom } from '../format/room-render.js';
 import {
   createSeatingPlan,
@@ -404,7 +404,13 @@ export function reshapeRoom(
 }
 
 /** Bows one wall to a radius. Pass radius 0 to straighten. */
-export function curveRoomWall(session: Session, wallIndex: number, radius: number, units: UnitSystem): ModelEdit {
+export function curveRoomWall(
+  session: Session,
+  wallIndex: number,
+  radius: number,
+  units: UnitSystem,
+  major = false,
+): ModelEdit {
   const doc = session.loaded.document;
   const room = currentRoom(doc);
   if (!room) return { ok: false, reason: 'there is no room to change yet' };
@@ -412,7 +418,7 @@ export function curveRoomWall(session: Session, wallIndex: number, radius: numbe
   const curved =
     !radius || !Number.isFinite(radius)
       ? curveWall(room, wallIndex, 0)
-      : setWallRadius(room, wallIndex, radius);
+      : setWallRadius(room, wallIndex, radius, major);
   if (!curved.ok || !curved.room) return { ok: false, reason: curved.reason };
 
   const drawn = applyRoom(doc, curved.room, state.rendered ?? room);
@@ -420,6 +426,23 @@ export function curveRoomWall(session: Session, wallIndex: number, radius: numbe
 
   state.rendered = curved.room;
   setRoom(doc, curved.room, units);
+  return { ok: true, created: drawn.createdIds };
+}
+
+/** Sets one wall's length, keeping its start corner fixed. */
+export function lengthenRoomWall(session: Session, wallIndex: number, length: number, units: UnitSystem): ModelEdit {
+  const doc = session.loaded.document;
+  const room = currentRoom(doc);
+  if (!room) return { ok: false, reason: 'there is no room to change yet' };
+
+  const next = setWallLength(room, wallIndex, length);
+  if (!next.ok || !next.room) return { ok: false, reason: next.reason };
+
+  const drawn = applyRoom(doc, next.room, state.rendered ?? room);
+  if (!drawn.ok) return { ok: false, reason: drawn.reason };
+
+  state.rendered = next.room;
+  setRoom(doc, next.room, units);
   return { ok: true, created: drawn.createdIds };
 }
 
