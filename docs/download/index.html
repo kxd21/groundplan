@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Download Groundplan</title>
+    <meta
+      name="description"
+      content="Install Groundplan on Mac or Windows. Open and edit Room Viewer floor plans without a Windows VM."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #10141a;
+        --ink-soft: #1a222c;
+        --paper: #e8ebe4;
+        --paper-dim: #c5cbc0;
+        --line: rgba(232, 235, 228, 0.14);
+        --accent: #3d9a7a;
+        --accent-bright: #5ec49f;
+        --warn: #d4a05a;
+        --text: #e8ebe4;
+        --muted: #9aa396;
+        --danger: #c97868;
+        --font-display: 'Instrument Serif', Georgia, serif;
+        --font-body: 'DM Sans', system-ui, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--ink);
+        color: var(--text);
+        font-family: var(--font-body);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      body {
+        background:
+          radial-gradient(1200px 700px at 70% -10%, rgba(61, 154, 122, 0.18), transparent 55%),
+          radial-gradient(900px 500px at -10% 40%, rgba(212, 160, 90, 0.08), transparent 50%),
+          linear-gradient(180deg, #0c1015 0%, #10141a 40%, #0e1218 100%);
+      }
+
+      /* Soft drafting grid — atmosphere, not chrome */
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.35;
+        background-image:
+          linear-gradient(var(--line) 1px, transparent 1px),
+          linear-gradient(90deg, var(--line) 1px, transparent 1px);
+        background-size: 48px 48px;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.85), transparent 70%);
+      }
+
+      a {
+        color: var(--accent-bright);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .wrap {
+        position: relative;
+        z-index: 1;
+        width: min(1080px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      /* ---- Hero: one composition ---- */
+      .hero {
+        min-height: 100vh;
+        min-height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 48px 0 64px;
+      }
+
+      .brand {
+        font-family: var(--font-display);
+        font-size: clamp(3.5rem, 10vw, 6.5rem);
+        line-height: 0.92;
+        letter-spacing: -0.02em;
+        margin: 0 0 28px;
+        color: var(--paper);
+      }
+
+      .lede {
+        max-width: 34rem;
+        font-size: clamp(1.05rem, 2.2vw, 1.25rem);
+        color: var(--muted);
+        margin: 0 0 36px;
+        font-weight: 400;
+      }
+
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px 18px;
+        align-items: center;
+        margin-bottom: 18px;
+      }
+
+      .btn {
+        appearance: none;
+        border: 0;
+        cursor: pointer;
+        font-family: var(--font-body);
+        font-weight: 600;
+        font-size: 1rem;
+        padding: 14px 22px;
+        border-radius: 2px;
+        transition: transform 160ms ease, background 160ms ease, color 160ms ease;
+      }
+      .btn:active {
+        transform: translateY(1px);
+      }
+      .btn-primary {
+        background: var(--paper);
+        color: var(--ink);
+      }
+      .btn-primary:hover {
+        background: #f4f6f0;
+        text-decoration: none;
+      }
+      .btn-primary[aria-disabled='true'] {
+        opacity: 0.45;
+        pointer-events: none;
+      }
+      .btn-ghost {
+        background: transparent;
+        color: var(--paper-dim);
+        border: 1px solid rgba(232, 235, 228, 0.28);
+      }
+      .btn-ghost:hover {
+        border-color: rgba(232, 235, 228, 0.5);
+        color: var(--paper);
+        text-decoration: none;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 0.92rem;
+        max-width: 36rem;
+      }
+      .meta strong {
+        color: var(--paper-dim);
+        font-weight: 500;
+      }
+
+      .status {
+        margin-top: 22px;
+        min-height: 1.4em;
+        font-size: 0.92rem;
+        color: var(--muted);
+      }
+      .status.error {
+        color: var(--danger);
+      }
+
+      /* ---- Below fold ---- */
+      .section {
+        padding: 56px 0 24px;
+        border-top: 1px solid var(--line);
+      }
+      .section h2 {
+        font-family: var(--font-display);
+        font-size: clamp(1.8rem, 3.5vw, 2.4rem);
+        font-weight: 400;
+        margin: 0 0 18px;
+        color: var(--paper);
+      }
+      .section p,
+      .section li {
+        color: var(--muted);
+        max-width: 40rem;
+      }
+      .section ol,
+      .section ul {
+        padding-left: 1.2rem;
+        margin: 0 0 18px;
+      }
+      .section li + li {
+        margin-top: 8px;
+      }
+
+      .platforms {
+        display: grid;
+        gap: 18px;
+        margin: 28px 0 8px;
+      }
+      @media (min-width: 720px) {
+        .platforms {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      .platform {
+        padding: 4px 0 12px;
+        border-top: 1px solid var(--line);
+      }
+      .platform h3 {
+        margin: 14px 0 8px;
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--paper);
+        letter-spacing: 0.01em;
+      }
+      .platform .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 16px;
+        margin-top: 10px;
+      }
+      .platform a {
+        font-size: 0.95rem;
+      }
+
+      .callout {
+        margin: 20px 0;
+        padding: 14px 0;
+        border-left: 2px solid var(--warn);
+        padding-left: 14px;
+        color: var(--paper-dim);
+        max-width: 40rem;
+        font-size: 0.95rem;
+      }
+      .callout strong {
+        color: var(--warn);
+        font-weight: 600;
+      }
+
+      footer {
+        padding: 48px 0 64px;
+        color: var(--muted);
+        font-size: 0.88rem;
+        border-top: 1px solid var(--line);
+        margin-top: 40px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="hero" aria-label="Download Groundplan">
+        <h1 class="brand">Groundplan</h1>
+        <p class="lede">
+          Open and edit Room Viewer floor plans on Mac and Windows — no Windows VM, no Room Viewer
+          install.
+        </p>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" id="primary-download" href="#install" aria-disabled="true">
+            Detecting your computer…
+          </a>
+          <a class="btn btn-ghost" id="all-releases" href="https://github.com/kxd21/groundplan/releases/latest">
+            All downloads
+          </a>
+        </div>
+        <p class="meta" id="primary-meta">
+          Looking up the latest signed build for this machine.
+        </p>
+        <p class="status" id="status" role="status"></p>
+      </section>
+
+      <section class="section" id="install">
+        <h2>Install</h2>
+
+        <div class="platforms">
+          <div class="platform" id="mac-panel">
+            <h3>macOS</h3>
+            <ol>
+              <li>Open the <code>.dmg</code> and drag <strong>Groundplan</strong> into Applications.</li>
+              <li>Eject the disk image, then open Groundplan from Applications.</li>
+            </ol>
+            <div class="callout">
+              <strong>First open on Mac.</strong> If Gatekeeper blocks it, right-click the app →
+              <em>Open</em> → <em>Open</em> again. You only do this once. Builds are ad-hoc signed;
+              Apple notarization is not applied yet.
+            </div>
+            <div class="links" id="mac-links"></div>
+          </div>
+
+          <div class="platform" id="win-panel">
+            <h3>Windows</h3>
+            <ol>
+              <li>Run the Setup <code>.exe</code>.</li>
+              <li>Choose <em>Just me</em> unless every account on the PC should have it.</li>
+              <li>Launch from the Start menu.</li>
+            </ol>
+            <div class="callout">
+              <strong>SmartScreen.</strong> Click <em>More info</em>, then <em>Run anyway</em>. Prefer
+              the portable build if you have no admin rights — put it anywhere you can write and run
+              it.
+            </div>
+            <div class="links" id="win-links"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="first-plan">
+        <h2>Open a plan</h2>
+        <p>
+          <strong>File → Open</strong> and pick a <code>.rv4</code> (or <code>.rs4</code>,
+          <code>.ds4</code>, shape libraries). Existing Room Viewer files open as they are — Groundplan
+          edits the original format.
+        </p>
+        <p>
+          Full steps, update-over-USB, and troubleshooting:
+          <a href="../installation.md">installation guide</a>.
+        </p>
+      </section>
+
+      <footer>
+        Groundplan · signed updates after install ·
+        <a href="https://github.com/kxd21/groundplan">source</a>
+      </footer>
+    </main>
+
+    <script>
+      (function () {
+        const REPO = 'kxd21/groundplan';
+        const RELEASES = 'https://github.com/' + REPO + '/releases/latest';
+        const API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
+
+        const primary = document.getElementById('primary-download');
+        const meta = document.getElementById('primary-meta');
+        const status = document.getElementById('status');
+        const macLinks = document.getElementById('mac-links');
+        const winLinks = document.getElementById('win-links');
+        document.getElementById('all-releases').href = RELEASES;
+
+        function detect() {
+          const ua = navigator.userAgent || '';
+          const platform = navigator.platform || '';
+          const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua);
+          const isWin = /Win/i.test(platform) || /Windows/i.test(ua);
+          // 'arm' | 'x64' | 'unknown'. Deliberately not read from the UA string on
+          // Mac: every Mac browser, Apple silicon included, reports "Intel Mac OS
+          // X", so trusting it hands M-series users the Intel build.
+          const arch = /\b(arm64|aarch64)\b/i.test(ua) ? 'arm' : 'unknown';
+          return { isMac, isWin, arch, platform, ua };
+        }
+
+        /** Apple silicon reports "Apple M…"; Intel Macs report "Intel Iris…". */
+        function archFromWebGl() {
+          try {
+            const gl = document.createElement('canvas').getContext('webgl');
+            if (!gl) return 'unknown';
+            const ext = gl.getExtension('WEBGL_debug_renderer_info');
+            if (!ext) return 'unknown';
+            const renderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '');
+            if (/apple\s*m\d/i.test(renderer)) return 'arm';
+            if (/intel|radeon|amd/i.test(renderer)) return 'x64';
+          } catch (_) {
+            /* ignore */
+          }
+          return 'unknown';
+        }
+
+        async function refineArch(info) {
+          // Chromium and Edge answer this directly and authoritatively.
+          try {
+            if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+              const high = await navigator.userAgentData.getHighEntropyValues(['architecture']);
+              if (high.architecture === 'arm') info.arch = 'arm';
+              else if (high.architecture === 'x86') info.arch = 'x64';
+            }
+          } catch (_) {
+            /* ignore */
+          }
+
+          // Safari has no userAgentData, and it is the common Mac browser.
+          if (info.isMac && info.arch === 'unknown') info.arch = archFromWebGl();
+
+          // Still unknown on a Mac: default to Apple silicon. Every Mac sold since
+          // 2020 is arm64, so this is right far more often than it is wrong, and
+          // the Intel DMG is one click away in the panel below.
+          if (info.isMac && info.arch === 'unknown') {
+            info.arch = 'arm';
+            info.archGuessed = true;
+          }
+          return info;
+        }
+
+        function pickAsset(assets, predicates) {
+          for (const test of predicates) {
+            const hit = assets.find((a) => test(a.name.toLowerCase()));
+            if (hit) return hit;
+          }
+          return null;
+        }
+
+        function link(el, asset, label) {
+          if (!asset) return;
+          const a = document.createElement('a');
+          a.href = asset.browser_download_url;
+          a.textContent = label || asset.name;
+          a.rel = 'noopener';
+          el.appendChild(a);
+        }
+
+        function setPrimary(asset, label, detail) {
+          if (!asset) {
+            primary.textContent = 'View all downloads';
+            primary.href = RELEASES;
+            primary.removeAttribute('aria-disabled');
+            meta.innerHTML = detail || 'Choose the installer for your computer from the release page.';
+            return;
+          }
+          primary.textContent = label;
+          primary.href = asset.browser_download_url;
+          primary.removeAttribute('aria-disabled');
+          meta.innerHTML = detail;
+        }
+
+        async function load() {
+          const info = await refineArch(detect());
+          let release;
+          try {
+            const res = await fetch(API, {
+              headers: { Accept: 'application/vnd.github+json' },
+            });
+            if (!res.ok) throw new Error('release lookup failed (' + res.status + ')');
+            release = await res.json();
+          } catch (err) {
+            status.className = 'status error';
+            status.textContent =
+              'Could not reach GitHub for the latest build. Use All downloads, or try again shortly.';
+            setPrimary(null, null, 'Latest release page on GitHub.');
+            return;
+          }
+
+          const assets = Array.isArray(release.assets) ? release.assets : [];
+          const version = (release.tag_name || '').replace(/^v/, '') || release.name || '';
+
+          const macArm = pickAsset(assets, [
+            (n) => n.includes('mac-arm64') && n.endsWith('.dmg'),
+            (n) => n.includes('arm64') && n.endsWith('.dmg'),
+          ]);
+          const macIntel = pickAsset(assets, [
+            (n) => n.includes('mac-x64') && n.endsWith('.dmg'),
+            (n) => /mac(?!.*arm)/.test(n) && n.endsWith('.dmg') && !n.includes('arm64'),
+          ]);
+          const winSetup = pickAsset(assets, [
+            (n) => n.includes('setup') && n.endsWith('.exe'),
+            (n) => n.endsWith('.exe') && !n.includes('portable'),
+          ]);
+          const winPortable = pickAsset(assets, [(n) => n.includes('portable') && n.endsWith('.exe')]);
+
+          link(macLinks, macArm, 'Apple silicon · DMG');
+          link(macLinks, macIntel, 'Intel · DMG');
+          link(winLinks, winSetup, 'Windows Setup');
+          link(winLinks, winPortable, 'Windows Portable (no admin)');
+
+          const verLabel = version ? 'Groundplan ' + version : 'Groundplan';
+
+          if (info.isMac) {
+            const preferArm = info.arch === 'arm';
+            const asset = preferArm ? macArm || macIntel : macIntel || macArm;
+            const archNote = preferArm
+              ? info.archGuessed
+                ? 'Apple silicon build — we could not read this Mac’s chip, and that is the common one. On an Intel Mac, use the Intel DMG below.'
+                : 'Apple silicon build. If this Mac is Intel, use the Intel DMG below.'
+              : 'Intel Mac build. If this Mac is Apple silicon, use the arm64 DMG below.';
+            setPrimary(
+              asset,
+              'Download for Mac',
+              '<strong>' +
+                verLabel +
+                '</strong> · ' +
+                (asset ? asset.name : 'DMG') +
+                '. ' +
+                archNote,
+            );
+          } else if (info.isWin) {
+            setPrimary(
+              winSetup || winPortable,
+              'Download for Windows',
+              '<strong>' +
+                verLabel +
+                '</strong> · ' +
+                ((winSetup || winPortable) && (winSetup || winPortable).name) +
+                '. Need no admin? Use the portable build below.',
+            );
+          } else {
+            setPrimary(
+              null,
+              null,
+              '<strong>' +
+                verLabel +
+                '</strong> is available for Mac and Windows. Pick the installer for your computer below or on the release page.',
+            );
+          }
+
+          if (!assets.length) {
+            status.textContent = 'A release exists, but no installers are attached yet.';
+          }
+        }
+
+        load();
+      })();
+    </script>
+  </body>
+</html>

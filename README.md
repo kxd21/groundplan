@@ -12,7 +12,27 @@ formats were reverse-engineered so existing plans open, edit and save unchanged.
 *A "ground plan" is the standard term in theatre and live events for a scaled
 overhead drawing of a venue — which is exactly what these files hold.*
 
-![A ballroom plan open in Groundplan](docs/screenshot.png)
+## Download
+
+**First-time install:** open the
+[download page](https://kxd21.github.io/groundplan/download/) — it picks the
+installer for your Mac or Windows PC — or grab a file from
+[Releases](https://github.com/kxd21/groundplan/releases/latest).
+
+| Your machine | File |
+| --- | --- |
+| Mac, Apple silicon | `Groundplan-<version>-mac-arm64.dmg` |
+| Mac, Intel | `Groundplan-<version>-mac-x64.dmg` |
+| Windows 10 or 11 | `Groundplan-Setup-<version>-win-x64.exe` |
+| Windows, no admin | `Groundplan-Portable-<version>-win-x64.exe` |
+
+Gatekeeper / SmartScreen will warn on first open (builds are not Apple-notarised
+or Authenticode-signed yet). Right-click → Open on Mac, or More info → Run
+anyway on Windows — once. Step-by-step:
+[docs/installation.md](docs/installation.md).
+
+Already installed? **Help → Check for Updates…**, or
+**Help → Install Update from USB…** when the venue network is useless.
 
 ## What it reads
 

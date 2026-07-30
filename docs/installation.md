@@ -3,16 +3,20 @@
 Groundplan opens Room Viewer floor plans (`.rv4` and friends) on Windows and
 macOS. Room Viewer itself is not needed and does not have to be installed.
 
+**Prefer the [download page](https://kxd21.github.io/groundplan/download/)** — it
+detects your computer and offers one primary installer. Or pick a file from
+[GitHub Releases](https://github.com/kxd21/groundplan/releases/latest).
+
 ---
 
 ## Which download
 
 | Your machine | File |
 | --- | --- |
-| Mac, Apple silicon (M1 and later) | `Groundplan-<version>-arm64.dmg` |
-| Mac, Intel | `Groundplan-<version>.dmg` |
-| Windows 10 or 11 | `Groundplan-Setup-<version>.exe` |
-| Windows, no admin rights | `Groundplan-<version>-portable.exe` |
+| Mac, Apple silicon (M1 and later) | `Groundplan-<version>-mac-arm64.dmg` |
+| Mac, Intel | `Groundplan-<version>-mac-x64.dmg` |
+| Windows 10 or 11 | `Groundplan-Setup-<version>-win-x64.exe` |
+| Windows, no admin rights | `Groundplan-Portable-<version>-win-x64.exe` |
 | Linux | `Groundplan-<version>.AppImage` |
 
 To check which Mac you have: **Apple menu → About This Mac**. "Apple M1", "M2",

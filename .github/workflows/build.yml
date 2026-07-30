@@ -1,7 +1,8 @@
 name: Build
 
 # Build on each target OS so packaging and launch behavior are exercised in the
-# same environment customers use.
+# same environment customers use. Version tags also publish a GitHub Release
+# with the installers attached — that is the public download surface.
 on:
   push:
     branches: [main]
@@ -65,3 +66,48 @@ jobs:
             release/*.zip
             release/*.exe
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-release
+          merge-multiple: true
+      - name: Collect installers
+        id: assets
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+          find dist-release -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.zip' \) -print0 |
+            while IFS= read -r -d '' f; do
+              cp -v "$f" publish/
+            done
+          ls -la publish
+          count=$(find publish -type f | wc -l | tr -d ' ')
+          if [ "$count" -lt 1 ]; then
+            echo "No installers found to publish" >&2
+            exit 1
+          fi
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          NOTES_FILE=$(mktemp)
+          sed "s/__VERSION__/${VERSION}/g" docs/release-notes.md > "$NOTES_FILE"
+
+          gh release create "$TAG" \
+            --title "Groundplan ${VERSION}" \
+            --notes-file "$NOTES_FILE" \
+            publish/*
