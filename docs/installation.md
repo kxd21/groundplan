@@ -17,7 +17,9 @@ detects your computer and offers one primary installer. Or pick a file from
 | Mac, Intel | `Groundplan-<version>-mac-x64.dmg` |
 | Windows 10 or 11 | `Groundplan-Setup-<version>-win-x64.exe` |
 | Windows, no admin rights | `Groundplan-Portable-<version>-win-x64.exe` |
-| Linux | `Groundplan-<version>.AppImage` |
+
+Linux AppImage packaging exists in the builder config but is **not** published
+by the release pipeline yet — use Mac or Windows builds for production installs.
 
 To check which Mac you have: **Apple menu → About This Mac**. "Apple M1", "M2",
 "M3" or "M4" means arm64. Downloading the wrong one is not harmful — it just
@@ -61,6 +63,9 @@ equipment inventory are still saved to your user profile.
 ---
 
 ## Linux
+
+AppImage packaging is configured but not yet published with each GitHub Release.
+If you build locally (`electron-builder --linux`), run:
 
 ```bash
 chmod +x Groundplan-<version>.AppImage

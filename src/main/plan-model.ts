@@ -29,15 +29,17 @@ import { buildLegend, defaultLayers, titleBlockFor } from '../format/layers.js';
 import { buildReport } from '../format/report.js';
 import {
   allCapacities,
+  arcOf,
   deriveRoom,
   describeRoom,
   rectangularRoom,
   roomArea,
   roomBounds,
   roomPerimeter,
+  wallLength,
   type RoomModel,
 } from '../format/room.js';
-import { combineRooms, rectRoom, roomProblems, setWallRadius } from '../format/room-edit.js';
+import { combineRooms, curveWall, rectRoom, roomProblems, setWallRadius } from '../format/room-edit.js';
 import { applyRoom } from '../format/room-render.js';
 import {
   createSeatingPlan,
@@ -158,12 +160,23 @@ function setRoom(doc: RVDocument, room: RoomModel, units: UnitSystem): void {
 // What the renderer is given
 // ---------------------------------------------------------------------------
 
+export interface RoomWallSummary {
+  index: number;
+  lengthText: string;
+  curved: boolean;
+  /** Arc radius in logical units when curved; otherwise 0. */
+  radius: number;
+  radiusText: string;
+}
+
 export interface RoomSummary {
   name: string;
   /** How the outline was arrived at, so the UI can be honest about it. */
   source: 'companion' | 'walls' | 'region' | 'extent' | 'none';
   closed: boolean;
   walls: number;
+  /** Per-wall facts for curve / reshape controls. */
+  wallDetails: RoomWallSummary[];
   holes: number;
   curved: number;
   /** Raw logical units, for anything that needs to compute. */
@@ -236,6 +249,16 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
     source,
     closed: roomProblems(room).length === 0,
     walls: room.walls.length,
+    wallDetails: room.walls.map((segment, index) => {
+      const arc = arcOf(segment);
+      return {
+        index,
+        lengthText: formatLength(wallLength(segment), units),
+        curved: Boolean(segment.bulge),
+        radius: arc?.radius ?? 0,
+        radiusText: arc ? formatLength(arc.radius, units) : '',
+      };
+    }),
     holes: room.holes.length,
     curved: room.walls.filter((w) => w.bulge).length,
     area: roomArea(room),
@@ -380,13 +403,16 @@ export function reshapeRoom(
   return { ok: true, created: drawn.createdIds };
 }
 
-/** Bows one wall to a radius. */
+/** Bows one wall to a radius. Pass radius 0 to straighten. */
 export function curveRoomWall(session: Session, wallIndex: number, radius: number, units: UnitSystem): ModelEdit {
   const doc = session.loaded.document;
   const room = currentRoom(doc);
   if (!room) return { ok: false, reason: 'there is no room to change yet' };
 
-  const curved = setWallRadius(room, wallIndex, radius);
+  const curved =
+    !radius || !Number.isFinite(radius)
+      ? curveWall(room, wallIndex, 0)
+      : setWallRadius(room, wallIndex, radius);
   if (!curved.ok || !curved.room) return { ok: false, reason: curved.reason };
 
   const drawn = applyRoom(doc, curved.room, state.rendered ?? room);

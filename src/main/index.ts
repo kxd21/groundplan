@@ -273,6 +273,9 @@ export interface SelectionInfo {
   canRelabel: boolean;
   widthUnits: number;
   heightUnits: number;
+  /** Centre of the object's bounds, in logical units. */
+  x: number;
+  y: number;
 }
 
 /** The gear lists currently loaded, with their totals. */
@@ -3307,6 +3310,7 @@ app.whenReady().then(async () => {
     const node = session?.index.byId.get(nodeId);
     if (!node || !session) return null;
     const name = node.labels.find((s) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(s));
+    const measured = measureNode(node);
     return {
       nodeId,
       cls: node.cls,
@@ -3315,8 +3319,10 @@ app.whenReady().then(async () => {
       color: session.scene.primitives.find((primitive) => primitive.selectId === nodeId)?.color ?? node.color,
       canDelete: !session.index.shared.has(node),
       canRelabel: node.cls === 'RVLabel' && node.fields.textAt != null,
-      widthUnits: measureNode(node).width,
-      heightUnits: measureNode(node).height,
+      widthUnits: measured.width,
+      heightUnits: measured.height,
+      x: (node.bounds.left + node.bounds.right) / 2,
+      y: (node.bounds.top + node.bounds.bottom) / 2,
     };
   });
 

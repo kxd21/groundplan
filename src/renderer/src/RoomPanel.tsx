@@ -141,6 +141,44 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const width = useLength(40 * 120, units);
   const depth = useLength(30 * 120, units);
 
+  // ---- Reshape / curve ----------------------------------------------------
+  const [reshapeOp, setReshapeOp] = useState<'union' | 'difference'>('union');
+  const reshapeX = useLength(0, units);
+  const reshapeY = useLength(0, units);
+  const reshapeW = useLength(10 * 120, units);
+  const reshapeD = useLength(10 * 120, units);
+  const [curveWall, setCurveWall] = useState(0);
+  const curveRadius = useLength(20 * 120, units);
+
+  // Seed reshape origin from the room once per open plan, so "Add area"
+  // starts beside the current outline rather than at the origin.
+  const [reshapeSeeded, setReshapeSeeded] = useState(false);
+  useEffect(() => {
+    setReshapeSeeded(false);
+  }, [doc.path]);
+  useEffect(() => {
+    if (!room || reshapeSeeded) return;
+    reshapeX.setText(formatLength(room.x + room.width, units));
+    reshapeY.setText(formatLength(room.y, units));
+    setReshapeSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, units, reshapeSeeded]);
+
+  useEffect(() => {
+    const detail = room?.wallDetails?.[curveWall];
+    if (detail?.curved && detail.radius > 0) {
+      curveRadius.setText(detail.radiusText);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curveWall, room?.wallDetails]);
+
+  // After reshape, wall count can shrink — keep the picker on a real wall.
+  useEffect(() => {
+    const count = room?.wallDetails?.length ?? 0;
+    if (count === 0) return;
+    if (curveWall >= count) setCurveWall(0);
+  }, [room?.wallDetails, curveWall]);
+
   // ---- Seating ------------------------------------------------------------
   const [style, setStyle] = useState('theatre');
   const [chair, setChair] = useState('');
@@ -293,6 +331,117 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           as polylines a hundredth of an inch off the true arc.
         </p>
       </div>
+
+      {room && (
+        <div className="section">
+          <div className="section-title">
+            <span>Shape</span>
+          </div>
+
+          <div className="seg tabs seat-kinds" role="tablist" aria-label="Reshape operation">
+            <button
+              type="button"
+              className={reshapeOp === 'union' ? 'active' : ''}
+              onClick={() => setReshapeOp('union')}
+              disabled={!editable}
+            >
+              Add area
+            </button>
+            <button
+              type="button"
+              className={reshapeOp === 'difference' ? 'active' : ''}
+              onClick={() => setReshapeOp('difference')}
+              disabled={!editable}
+            >
+              Cut out
+            </button>
+          </div>
+
+          <div className="field-row">
+            <LengthField id="reshape-x" label="X" field={reshapeX} disabled={!editable} />
+            <LengthField id="reshape-y" label="Y" field={reshapeY} disabled={!editable} />
+          </div>
+          <div className="field-row">
+            <LengthField id="reshape-w" label="Width" field={reshapeW} disabled={!editable} />
+            <LengthField id="reshape-d" label="Depth" field={reshapeD} disabled={!editable} />
+          </div>
+          <div className="actions-row">
+            <button
+              type="button"
+              onClick={() =>
+                void run(reshapeOp === 'union' ? 'Area added' : 'Cut-out applied', () =>
+                  api.roomReshape(
+                    reshapeOp,
+                    reshapeX.value!,
+                    reshapeY.value!,
+                    reshapeW.value!,
+                    reshapeD.value!,
+                  ),
+                )
+              }
+              disabled={
+                !editable ||
+                !reshapeX.valid ||
+                !reshapeY.valid ||
+                !reshapeW.positive ||
+                !reshapeD.positive
+              }
+              title={
+                reshapeOp === 'union'
+                  ? 'Union a rectangle into the room outline'
+                  : 'Subtract a rectangle (corridor, column pocket, L-cut)'
+              }
+            >
+              <IconPlus size={14} />
+              {reshapeOp === 'union' ? 'Add to room' : 'Cut from room'}
+            </button>
+          </div>
+
+          <div className="field-row" style={{ marginTop: 12 }}>
+            <div className="field">
+              <label htmlFor="curve-wall">Wall</label>
+              <select
+                id="curve-wall"
+                value={curveWall}
+                onChange={(e) => setCurveWall(Number(e.target.value))}
+                disabled={!editable || !(room.wallDetails?.length)}
+              >
+                {(room.wallDetails ?? []).map((wall) => (
+                  <option key={wall.index} value={wall.index}>
+                    Wall {wall.index + 1} · {wall.lengthText}
+                    {wall.curved ? ` · R ${wall.radiusText}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <LengthField id="curve-radius" label="Radius" field={curveRadius} disabled={!editable} />
+          </div>
+          <div className="actions-row">
+            <button
+              type="button"
+              onClick={() =>
+                void run('Wall curved', () => api.roomCurve(curveWall, curveRadius.value!))
+              }
+              disabled={!editable || !curveRadius.positive || !(room.wallDetails?.length)}
+              title="Bow the selected wall to this radius"
+            >
+              Curve wall
+            </button>
+            <button
+              type="button"
+              onClick={() => void run('Wall straightened', () => api.roomCurve(curveWall, 0))}
+              disabled={!editable || !(room.wallDetails?.length)}
+              title="Remove the curve from this wall"
+            >
+              Straighten
+            </button>
+          </div>
+          <p className="hint">
+            Add or cut rectangles to make L-shapes and corridors. Curve a wall by picking it and entering a radius —
+            use a radius at least half the wall length for a gentle bay.
+          </p>
+        </div>
+      )}
 
       {/* ---------------------------------------------------------------- */}
       {room && (

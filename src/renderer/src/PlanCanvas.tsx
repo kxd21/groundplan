@@ -19,6 +19,8 @@ interface Props {
   scene: Scene | null;
   visibleLayers: Set<Layer>;
   paper: boolean;
+  /** When false, the drawing grid is hidden (rulers stay). */
+  showGrid?: boolean;
   fitToken: number;
   /** Selected object ids. Empty means nothing is selected. */
   selection: number[];
@@ -174,6 +176,7 @@ export function PlanCanvas({
   scene,
   visibleLayers,
   paper,
+  showGrid = true,
   fitToken,
   selection,
   onSelect,
@@ -437,7 +440,7 @@ export function PlanCanvas({
       maxY: (size.height - offsetY + 36) / scale,
     };
 
-    drawGrid(ctx, size, view, paper);
+    drawGrid(ctx, size, view, paper, showGrid);
 
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -546,6 +549,7 @@ export function PlanCanvas({
     size,
     visibleLayers,
     paper,
+    showGrid,
     selection,
     selectionSet,
     hover,
@@ -1079,7 +1083,9 @@ function drawGrid(
   size: { width: number; height: number },
   view: View,
   paper: boolean,
+  visible = true,
 ): void {
+  if (!visible) return;
   const minor = gridStepFeet(view.scale, 9);
   const spacing = minor * UNITS_PER_FOOT * view.scale;
   if (spacing < 5) return;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
+import { formatLength, parseLength } from '../../format/units.js';
 import { PlanCanvas } from './PlanCanvas.js';
 import { GearView, GearSummary } from './GearView.js';
 import { InventoryView, type InventoryState } from './InventoryView.js';
@@ -96,6 +97,8 @@ interface Selection {
   canRelabel: boolean;
   widthUnits: number;
   heightUnits: number;
+  x: number;
+  y: number;
 }
 
 interface FileEntry {
@@ -204,6 +207,10 @@ export function App() {
   const [status, setStatus] = useState<string | null>(null);
   const [labelDraft, setLabelDraft] = useState('');
   const [sizeDraft, setSizeDraft] = useState({ width: '', height: '' });
+  const [positionDraft, setPositionDraft] = useState({ x: '', y: '' });
+  const [showGrid, setShowGrid] = useState(true);
+  const [bulkDeleteWarning, setBulkDeleteWarning] = useState(25);
+  const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [rotationDraft, setRotationDraft] = useState('15');
   const [colorDraft, setColorDraft] = useState('#20252b');
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
@@ -372,6 +379,7 @@ export function App() {
     async (path: string) => {
       const generation = ++loadGeneration.current;
       setBusy(true);
+      setBusyMessage('Opening…');
       setError(null);
       try {
         const result = await api.openPath(path);
@@ -386,7 +394,10 @@ export function App() {
         if (generation !== loadGeneration.current) return;
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        if (generation === loadGeneration.current) setBusy(false);
+        if (generation === loadGeneration.current) {
+          setBusy(false);
+          setBusyMessage(null);
+        }
       }
     },
     [refreshRecent, adopt],
@@ -394,6 +405,7 @@ export function App() {
 
   const openFile = useCallback(async () => {
     setBusy(true);
+    setBusyMessage('Opening…');
     setError(null);
     try {
       const result = await api.openFileDialog();
@@ -407,11 +419,13 @@ export function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setBusyMessage(null);
     }
   }, [refreshRecent, adopt]);
 
   const openFolder = useCallback(async () => {
     setBusy(true);
+    setBusyMessage('Opening folder…');
     setError(null);
     try {
       const dir = await api.openFolderDialog();
@@ -425,6 +439,7 @@ export function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setBusyMessage(null);
     }
   }, []);
 
@@ -449,7 +464,12 @@ export function App() {
         const s = value as {
           print: { scale: string; paper: string; landscape: boolean; subtitle: string };
           dxf: { includeSchedule: boolean; visibleLayersOnly: boolean };
-          drawing: { snapStep: number; units: 'imperial' | 'metric' };
+          drawing: {
+            snapStep: number;
+            units: 'imperial' | 'metric';
+            showGrid: boolean;
+            bulkDeleteWarning: number;
+          };
         };
         setPrintScale(s.print.scale);
         setPrintPaper(s.print.paper);
@@ -459,6 +479,10 @@ export function App() {
         setDxfVisibleOnly(s.dxf.visibleLayersOnly);
         setSnapStep(s.drawing.snapStep);
         setUnitSystem(s.drawing.units === 'metric' ? 'metric' : 'imperial');
+        setShowGrid(s.drawing.showGrid !== false);
+        setBulkDeleteWarning(
+          Number.isFinite(s.drawing.bulkDeleteWarning) ? s.drawing.bulkDeleteWarning : 25,
+        );
       })
       .catch(() => undefined);
     return () => {
@@ -520,6 +544,7 @@ export function App() {
       event.preventDefault();
       if (!planFolderEditor || !planFolderDraft.trim()) return;
       setBusy(true);
+      setBusyMessage('Working…');
       try {
         const reply =
           planFolderEditor.kind === 'rename' && planFolderEditor.folderId
@@ -538,6 +563,7 @@ export function App() {
         notify(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy(false);
+      setBusyMessage(null);
       }
     },
     [
@@ -564,6 +590,7 @@ export function App() {
     });
     if (!accepted) return;
     setBusy(true);
+    setBusyMessage('Working…');
     try {
       const reply = await api.planFolderRemove(target.id);
       if (!reply.ok) {
@@ -578,12 +605,14 @@ export function App() {
       notify(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    setBusyMessage(null);
     }
   }, [acceptPlanFolderState, notify, planFolders, selectedPlanFolderId, showStatus]);
 
   const addPlansToSelectedFolder = useCallback(async () => {
     if (!selectedPlanFolderId) return;
     setBusy(true);
+    setBusyMessage('Working…');
     try {
       const reply = await api.planFolderAddFiles(selectedPlanFolderId);
       if (!reply.ok) {
@@ -598,12 +627,14 @@ export function App() {
       notify(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    setBusyMessage(null);
     }
   }, [acceptPlanFolderState, notify, selectedPlanFolderId, showStatus]);
 
   const addCurrentPlanToSelectedFolder = useCallback(async () => {
     if (!selectedPlanFolderId) return;
     setBusy(true);
+    setBusyMessage('Working…');
     try {
       const reply = await api.planFolderAddCurrent(selectedPlanFolderId);
       if (!reply.ok) {
@@ -616,6 +647,7 @@ export function App() {
       notify(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    setBusyMessage(null);
     }
   }, [acceptPlanFolderState, notify, selectedPlanFolderId, showStatus]);
 
@@ -679,6 +711,7 @@ export function App() {
   const openRecovery = useCallback(
     async (entry: RecoveryEntry) => {
       setBusy(true);
+      setBusyMessage('Recovering…');
       setError(null);
       try {
         const recovered = await api.recoveryOpen(entry.id);
@@ -697,6 +730,7 @@ export function App() {
         notify(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy(false);
+        setBusyMessage(null);
       }
     },
     [adopt, notify, refreshRecoveries, showStatus, showWorkspace],
@@ -800,6 +834,7 @@ export function App() {
 
   const importGear = useCallback(async () => {
     setBusy(true);
+    setBusyMessage('Importing gear…');
     try {
       const state = await api.gearImport();
       if (state && Array.isArray(state.lists)) {
@@ -812,6 +847,7 @@ export function App() {
       notify(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setBusyMessage(null);
     }
   }, [notify, showStatus, showWorkspace]);
 
@@ -1040,13 +1076,23 @@ export function App() {
 
   const deleteSelection = useCallback(async () => {
     if (!selectedIds.length) return;
+    if (bulkDeleteWarning > 0 && selectedIds.length >= bulkDeleteWarning) {
+      const confirmed = await api.confirm({
+        title: 'Delete selection?',
+        message: `Delete ${selectedIds.length} selected items?`,
+        detail: 'This can be undone with Undo, but large deletions are hard to put back by hand.',
+        confirmLabel: 'Delete',
+        danger: true,
+      });
+      if (confirmed !== true) return;
+    }
     const reply = (await api.batch('delete', selectedIds)) as { ok: boolean; reason?: string; doc?: Doc };
     applied(reply);
     if (reply.ok) {
       setSelectedIds([]);
       setSelection(null);
     }
-  }, [selectedIds, applied]);
+  }, [selectedIds, applied, bulkDeleteWarning]);
 
   const duplicateSelection = useCallback(async () => {
     if (!selectedIds.length) return;
@@ -1185,10 +1231,18 @@ export function App() {
         setSizeDraft(
           info
             ? {
-                width: (info.widthUnits / FOOT).toFixed(2).replace(/\.?0+$/, ''),
-                height: (info.heightUnits / FOOT).toFixed(2).replace(/\.?0+$/, ''),
+                width: formatLength(info.widthUnits, unitSystem),
+                height: formatLength(info.heightUnits, unitSystem),
               }
             : { width: '', height: '' },
+        );
+        setPositionDraft(
+          info
+            ? {
+                x: formatLength(info.x, unitSystem),
+                y: formatLength(info.y, unitSystem),
+              }
+            : { x: '', y: '' },
         );
         if (info?.color != null) setColorDraft(colorRefToHex(info.color));
       })
@@ -1196,7 +1250,7 @@ export function App() {
     return () => {
       live = false;
     };
-  }, [selectedId, doc]);
+  }, [selectedId, doc, unitSystem]);
 
   useEffect(() => {
     if (selectedIds.length > 0) setInspectorTab('properties');
@@ -1204,15 +1258,29 @@ export function App() {
 
   const commitSelectionSize = useCallback(async () => {
     if (!selection || !doc?.editable) return;
-    const width = Number(sizeDraft.width) * FOOT;
-    const height = Number(sizeDraft.height) * FOOT;
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-      notify('Width and height must both be positive numbers.');
+    const width = parseLength(sizeDraft.width, unitSystem);
+    const height = parseLength(sizeDraft.height, unitSystem);
+    if (width == null || height == null || width <= 0 || height <= 0) {
+      notify(unitSystem === 'metric' ? 'Enter a positive width and height (for example 1.2m).' : 'Enter a positive width and height (for example 4\' or 4\' 6").');
       return;
     }
     if (Math.abs(width - selection.widthUnits) < 1 && Math.abs(height - selection.heightUnits) < 1) return;
     applied((await api.resize(selection.nodeId, width, height)) as { ok: boolean; reason?: string; doc?: Doc });
-  }, [selection, doc?.editable, sizeDraft, notify, applied]);
+  }, [selection, doc?.editable, sizeDraft, unitSystem, notify, applied]);
+
+  const commitSelectionPosition = useCallback(async () => {
+    if (!selection || !doc?.editable) return;
+    const x = parseLength(positionDraft.x, unitSystem);
+    const y = parseLength(positionDraft.y, unitSystem);
+    if (x == null || y == null) {
+      notify(unitSystem === 'metric' ? 'Enter X and Y as lengths (for example 3.6m).' : 'Enter X and Y as lengths (for example 12\' 6").');
+      return;
+    }
+    const dx = x - selection.x;
+    const dy = y - selection.y;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+    applied((await api.batch('move', [selection.nodeId], dx, dy)) as { ok: boolean; reason?: string; doc?: Doc });
+  }, [selection, doc?.editable, positionDraft, unitSystem, notify, applied]);
 
   /** Routes a path to the plan reader or the gear importer by extension. */
   const openAnyPath = useCallback(
@@ -1483,6 +1551,8 @@ export function App() {
   const canTransformSelection = selectedIds.length > 1 || (!!selection && !singleIsAnnotation);
   const canResizeSelection =
     !!selection && !singleIsAnnotation && selection.widthUnits > 0 && selection.heightUnits > 0;
+  /** Absolute X/Y is single-selection only — multi-select keeps stale drafts otherwise. */
+  const canPositionSelection = !!selection && selectedIds.length === 1 && !singleIsAnnotation;
   const canCreateLabel = !!doc?.editable && !!doc.annotationCapabilities?.label;
   const canCreateDimension = !!doc?.editable && !!doc.annotationCapabilities?.dimension;
   const annotationCapabilityHint =
@@ -1830,6 +1900,15 @@ export function App() {
                 aria-label="Export plan as SVG"
               >
                 <IconExport />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void exportDxf()}
+                disabled={!doc}
+                title="Export DXF for CAD"
+                aria-label="Export plan as DXF"
+              >
+                <IconFile />
               </button>
             </div>
           </>
@@ -2474,6 +2553,7 @@ export function App() {
               scene={doc.scene}
               visibleLayers={visible}
               paper={paper}
+              showGrid={showGrid}
               fitToken={fitToken}
               selection={selectedIds}
               onSelect={setSelectedIds}
@@ -2678,7 +2758,7 @@ export function App() {
               <button onClick={cancelPlacement}>Cancel</button>
             </div>
           )}
-          {busy && <div className="toast" role="status">Reading…</div>}
+          {busy && <div className="toast" role="status">{busyMessage ?? 'Working…'}</div>}
           {status && <div className="toast toast-ok" role="status">{status}</div>}
           {inventoryUndoNotice && (
             <div className="toast toast-ok toast-action" role="status">
@@ -3007,7 +3087,14 @@ export function App() {
                       <div>
                         <dt>Size</dt>
                         <dd className="num">
-                          {formatFeet(selection.widthUnits)} × {formatFeet(selection.heightUnits)}
+                          {formatLength(selection.widthUnits, unitSystem)} ×{' '}
+                          {formatLength(selection.heightUnits, unitSystem)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Centre</dt>
+                        <dd className="num">
+                          {formatLength(selection.x, unitSystem)}, {formatLength(selection.y, unitSystem)}
                         </dd>
                       </div>
                     </dl>
@@ -3061,40 +3148,92 @@ export function App() {
                       </div>
                     )}
 
-                    {canResizeSelection && <div className="field">
-                      <label htmlFor="size-w">Size (feet)</label>
-                      <div className="size-row">
-                        <input
-                          id="size-w"
-                          className="num"
-                          value={sizeDraft.width}
-                          onChange={(event) => setSizeDraft((current) => ({ ...current, width: event.target.value }))}
-                          disabled={!doc.editable}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') void commitSelectionSize();
-                          }}
-                          aria-label="Selection width in feet"
-                        />
-                        <span className="inv-x">×</span>
-                        <input
-                          className="num"
-                          value={sizeDraft.height}
-                          onChange={(event) => setSizeDraft((current) => ({ ...current, height: event.target.value }))}
-                          disabled={!doc.editable}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') void commitSelectionSize();
-                          }}
-                          aria-label="Selection height in feet"
-                        />
-                        <button
-                          onClick={() => void commitSelectionSize()}
-                          disabled={!doc.editable}
-                          title="Apply width and height together"
-                        >
-                          Apply
-                        </button>
+                    {canResizeSelection && (
+                      <div className="field">
+                        <label htmlFor="size-w">
+                          Size ({unitSystem === 'metric' ? 'metric' : 'ft / in'})
+                        </label>
+                        <div className="size-row">
+                          <input
+                            id="size-w"
+                            className="num"
+                            value={sizeDraft.width}
+                            onChange={(event) => setSizeDraft((current) => ({ ...current, width: event.target.value }))}
+                            disabled={!doc.editable}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void commitSelectionSize();
+                            }}
+                            aria-label="Selection width"
+                            placeholder={unitSystem === 'metric' ? '1.2m' : "4'"}
+                          />
+                          <span className="inv-x">×</span>
+                          <input
+                            className="num"
+                            value={sizeDraft.height}
+                            onChange={(event) => setSizeDraft((current) => ({ ...current, height: event.target.value }))}
+                            disabled={!doc.editable}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void commitSelectionSize();
+                            }}
+                            aria-label="Selection height"
+                            placeholder={unitSystem === 'metric' ? '0.8m' : "3'"}
+                          />
+                          <button
+                            onClick={() => void commitSelectionSize()}
+                            disabled={!doc.editable}
+                            title="Apply width and height together"
+                          >
+                            Apply
+                          </button>
+                        </div>
                       </div>
-                    </div>}
+                    )}
+
+                    {canPositionSelection && (
+                      <div className="field">
+                        <label htmlFor="pos-x">Position (centre)</label>
+                        <div className="size-row">
+                          <input
+                            id="pos-x"
+                            className="num"
+                            value={positionDraft.x}
+                            onChange={(event) =>
+                              setPositionDraft((current) => ({ ...current, x: event.target.value }))
+                            }
+                            disabled={!doc.editable}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void commitSelectionPosition();
+                            }}
+                            aria-label="Selection centre X"
+                            placeholder="X"
+                          />
+                          <span className="inv-x">,</span>
+                          <input
+                            className="num"
+                            value={positionDraft.y}
+                            onChange={(event) =>
+                              setPositionDraft((current) => ({ ...current, y: event.target.value }))
+                            }
+                            disabled={!doc.editable}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void commitSelectionPosition();
+                            }}
+                            aria-label="Selection centre Y"
+                            placeholder="Y"
+                          />
+                          <button
+                            onClick={() => void commitSelectionPosition()}
+                            disabled={!doc.editable}
+                            title="Move the selection centre to these coordinates"
+                          >
+                            Move
+                          </button>
+                        </div>
+                        <span className="field-help">
+                          Type exact plan coordinates. Drag and arrow keys still work.
+                        </span>
+                      </div>
+                    )}
 
                     <div className="actions-row">
                       <button onClick={duplicateSelection} disabled={!doc.editable} title="Duplicate (Cmd/Ctrl+D)">
@@ -3220,6 +3359,18 @@ export function App() {
                 <div className="section-title">
                   <span>Add seating</span>
                 </div>
+                <p className="hint" style={{ marginBottom: 10 }}>
+                  Quick blocks placed where you click. For a full room layout with aisles, splay, and a live seat
+                  count, use the <strong>Room</strong> tab.
+                </p>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  style={{ width: '100%', justifyContent: 'center', marginBottom: 12 }}
+                  onClick={() => setInspectorTab('room')}
+                >
+                  Open Room seating
+                </button>
                 <div className="seg tabs seat-kinds">
                   {(['round', 'theatre', 'schoolroom'] as const).map((k) => (
                     <button key={k} className={seatKind === k ? 'active' : ''} onClick={() => setSeatKind(k)}>
