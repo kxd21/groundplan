@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import type { Doc } from './App.js';
+import { selectableIds } from './selection.js';
 import { IconPlus, IconRuler, IconWarning } from './icons.js';
 
 const api = window.groundplan;
@@ -123,7 +124,10 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           return false;
         }
         if (reply.doc) onDoc(reply.doc as Doc);
-        if (reply.created?.length) onSelect(reply.created);
+        if (reply.created?.length) {
+          const scene = (reply.doc as Doc | undefined)?.scene;
+          onSelect(scene ? selectableIds(reply.created, scene) : reply.created);
+        }
         onStatus(reply.note ? `${what}. ${reply.note}` : what);
         await refresh();
         return true;
