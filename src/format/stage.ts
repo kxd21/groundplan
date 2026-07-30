@@ -1,0 +1,385 @@
+/**
+ * Stage decks, and the list that gets loaded onto the truck.
+ *
+ * A stage on a floor plan is normally one rectangle with a note beside it, which
+ * is fine for showing where it goes and useless for building it. What the crew
+ * needs is the deck count by size, the leg count by height, how much skirt to
+ * bring, and where the stairs land — and none of that is derivable from a
+ * rectangle, because the rectangle does not know the decks are 4 by 8.
+ *
+ * So a stage here is a set of levels, each tiled with real decks. The tiling is
+ * what makes the build list true: a 24 x 16 stage is twelve 4x8 decks, and a
+ * 22 x 16 stage is twelve 4x8 decks plus four 4x4s and a note that the last
+ * column is short.
+ */
+
+import { rectangularRoom, roomFromPolygon, type RoomModel } from './room.js';
+import { UNITS_PER_FOOT, UNITS_PER_INCH, type Point } from './rv.js';
+
+const FT = UNITS_PER_FOOT;
+const IN = UNITS_PER_INCH;
+
+/** Deck sizes the trade stocks, longest edge first. */
+export const DECK_SIZES: Array<{ label: string; width: number; depth: number }> = [
+  { label: "4' x 8'", width: 8 * FT, depth: 4 * FT },
+  { label: "4' x 6'", width: 6 * FT, depth: 4 * FT },
+  { label: "4' x 4'", width: 4 * FT, depth: 4 * FT },
+  { label: "2' x 8'", width: 8 * FT, depth: 2 * FT },
+  { label: "2' x 4'", width: 4 * FT, depth: 2 * FT },
+];
+
+/** Leg heights that come in a set. */
+export const LEG_HEIGHTS = [8 * IN, 16 * IN, 24 * IN, 32 * IN, 40 * IN, 48 * IN];
+
+export interface Deck {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  /** Size label, for the build list. */
+  size: string;
+  /** Deck surface height above the floor. */
+  height: number;
+  level: number;
+}
+
+export interface StageLevel {
+  /** Surface height above the floor. */
+  height: number;
+  /** Footprint of this level. */
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  label?: string;
+}
+
+export type StairEdge = 'front' | 'back' | 'left' | 'right';
+
+export interface Stair {
+  id: string;
+  level: number;
+  edge: StairEdge;
+  /** Distance along that edge to the near side of the stairs. */
+  offset: number;
+  width: number;
+  /** Rise per tread; the count follows from the level height. */
+  riserHeight: number;
+  handrail: boolean;
+}
+
+export interface StageBuild {
+  id: string;
+  name: string;
+  levels: StageLevel[];
+  stairs: Stair[];
+  /** Skirt the visible edges. */
+  skirted: boolean;
+}
+
+export interface StageSolution {
+  decks: Deck[];
+  /** Levels that could not be tiled exactly, with what is short. */
+  notes: string[];
+  /** Total deck surface. */
+  area: number;
+}
+
+let counter = 0;
+const nextId = (prefix: string) => `${prefix}-${(counter++).toString(36)}`;
+
+/**
+ * Tiles one level with stock decks.
+ *
+ * Laid out in rows from the front-left, largest deck first, falling back to
+ * smaller stock as the edge is reached. A remainder that no stock size fills is
+ * reported rather than fudged — a stage that is 3in over is a real problem on
+ * site and hiding it in a rounded rectangle helps nobody.
+ */
+function tileLevel(level: StageLevel, index: number, notes: string[]): Deck[] {
+  const decks: Deck[] = [];
+  const primary = DECK_SIZES[0];
+
+  let shortDepth = 0;
+  let shortWidth = 0;
+
+  for (let y = 0; y < level.depth - 1e-6; ) {
+    const remainingDepth = level.depth - y;
+    const depthChoice = DECK_SIZES.filter((d) => d.depth <= remainingDepth + 1e-6).sort((a, b) => b.depth - a.depth)[0];
+    if (!depthChoice) {
+      shortDepth = remainingDepth;
+      break;
+    }
+
+    for (let x = 0; x < level.width - 1e-6; ) {
+      const remainingWidth = level.width - x;
+      const choice = DECK_SIZES.filter(
+        (d) => d.depth === depthChoice.depth && d.width <= remainingWidth + 1e-6,
+      ).sort((a, b) => b.width - a.width)[0];
+
+      if (!choice) {
+        shortWidth = Math.max(shortWidth, remainingWidth);
+        break;
+      }
+
+      decks.push({
+        id: nextId('deck'),
+        x: level.x + x,
+        y: level.y + y,
+        width: choice.width,
+        depth: choice.depth,
+        size: choice.label,
+        height: level.height,
+        level: index,
+      });
+      x += choice.width;
+    }
+
+    y += depthChoice.depth;
+  }
+
+  const name = level.label ?? `Level ${index + 1}`;
+  if (shortWidth > 0.5) {
+    notes.push(`${name} is ${(shortWidth / FT).toFixed(2)} ft short of a full deck across the front.`);
+  }
+  if (shortDepth > 0.5) {
+    notes.push(`${name} is ${(shortDepth / FT).toFixed(2)} ft short of a full deck front to back.`);
+  }
+  void primary;
+
+  return decks;
+}
+
+/** Works out the decks for a whole build. */
+export function solveStage(build: StageBuild): StageSolution {
+  const notes: string[] = [];
+  const decks: Deck[] = [];
+
+  build.levels.forEach((level, index) => {
+    if (level.width <= 0 || level.depth <= 0) {
+      notes.push(`${level.label ?? `Level ${index + 1}`} has no size.`);
+      return;
+    }
+    decks.push(...tileLevel(level, index, notes));
+  });
+
+  return {
+    decks,
+    notes,
+    area: decks.reduce((sum, d) => sum + d.width * d.depth, 0),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The build list
+// ---------------------------------------------------------------------------
+
+export interface BuildListLine {
+  item: string;
+  quantity: number;
+  detail?: string;
+}
+
+/** Treads needed to climb a level, and the rise each one takes. */
+export function stairSteps(height: number, riserHeight: number): { count: number; actualRise: number } {
+  if (height <= 0 || riserHeight <= 0) return { count: 0, actualRise: 0 };
+  const count = Math.max(1, Math.round(height / riserHeight));
+  return { count, actualRise: height / count };
+}
+
+/**
+ * What to load, in the order a crew chief reads it.
+ *
+ * Legs are counted at four per deck, which is how modular staging is actually
+ * built — decks share legs at their corners in theory and nobody packs to that
+ * assumption in practice.
+ */
+export function stageBuildList(build: StageBuild, solution: StageSolution): BuildListLine[] {
+  const lines: BuildListLine[] = [];
+
+  const bySize = new Map<string, number>();
+  for (const deck of solution.decks) bySize.set(deck.size, (bySize.get(deck.size) ?? 0) + 1);
+  for (const [size, quantity] of [...bySize].sort((a, b) => b[1] - a[1])) {
+    lines.push({ item: `Deck ${size}`, quantity });
+  }
+
+  const byHeight = new Map<number, number>();
+  for (const deck of solution.decks) byHeight.set(deck.height, (byHeight.get(deck.height) ?? 0) + 4);
+  for (const [height, quantity] of [...byHeight].sort((a, b) => a[0] - b[0])) {
+    const stock = LEG_HEIGHTS.find((h) => Math.abs(h - height) < 0.5);
+    lines.push({
+      item: `Legs ${(height / IN).toFixed(0)}in`,
+      quantity,
+      detail: stock ? undefined : 'not a stock leg height — needs adjustable legs or packing',
+    });
+  }
+
+  if (build.skirted) {
+    for (const level of build.levels) {
+      const perimeter = 2 * (level.width + level.depth);
+      lines.push({
+        item: `Skirt for ${level.label ?? 'stage'}`,
+        quantity: Math.ceil(perimeter / FT),
+        detail: 'linear feet',
+      });
+    }
+  }
+
+  for (const stair of build.stairs) {
+    const level = build.levels[stair.level];
+    if (!level) continue;
+    const steps = stairSteps(level.height, stair.riserHeight);
+    lines.push({
+      item: `Stair unit ${(stair.width / FT).toFixed(0)}ft`,
+      quantity: 1,
+      detail: `${steps.count} treads at ${(steps.actualRise / IN).toFixed(1)}in rise`,
+    });
+    if (stair.handrail) lines.push({ item: 'Handrail', quantity: 2 });
+  }
+
+  return lines;
+}
+
+/**
+ * Flags anything that would fail an inspection or an eyeball on site.
+ *
+ * These are the checks worth making automatically, not a substitute for the
+ * local code: riser heights and guardrail thresholds vary by jurisdiction, and
+ * the numbers used here are the common ones rather than any particular
+ * authority's.
+ */
+export function stageWarnings(build: StageBuild): string[] {
+  const warnings: string[] = [];
+
+  for (const [index, level] of build.levels.entries()) {
+    const name = level.label ?? `Level ${index + 1}`;
+    if (level.height > 30 * IN && !build.stairs.some((s) => s.level === index)) {
+      warnings.push(`${name} is ${(level.height / IN).toFixed(0)}in high and has no stairs.`);
+    }
+    if (level.height >= 48 * IN) {
+      warnings.push(`${name} is 4 ft or more above the floor — check whether guardrail is required.`);
+    }
+  }
+
+  for (const stair of build.stairs) {
+    const level = build.levels[stair.level];
+    if (!level) {
+      warnings.push('A stair is attached to a level that does not exist.');
+      continue;
+    }
+    const steps = stairSteps(level.height, stair.riserHeight);
+    // Portable staging is set with 8in risers as standard — a 24in stage is
+    // three steps — so the threshold here is above that, not at the 7.75in a
+    // building code uses for permanent stairs.
+    if (steps.actualRise > 8.25 * IN) {
+      warnings.push(`Stairs to ${level.label ?? `level ${stair.level + 1}`} rise ${(steps.actualRise / IN).toFixed(1)}in a step, which is steep.`);
+    }
+    if (stair.width < 36 * IN) {
+      warnings.push('A stair narrower than 36in will be tight for two-way traffic.');
+    }
+    if (level.height > 30 * IN && !stair.handrail) {
+      warnings.push('Stairs over 30in usually need a handrail.');
+    }
+  }
+
+  return warnings;
+}
+
+// ---------------------------------------------------------------------------
+// Placing the stage in the room
+// ---------------------------------------------------------------------------
+
+/** The stage as a room-shaped object, for reserving floor from the seating. */
+export function stageFootprint(build: StageBuild): RoomModel | null {
+  if (!build.levels.length) return null;
+  const minX = Math.min(...build.levels.map((l) => l.x));
+  const minY = Math.min(...build.levels.map((l) => l.y));
+  const maxX = Math.max(...build.levels.map((l) => l.x + l.width));
+  const maxY = Math.max(...build.levels.map((l) => l.y + l.depth));
+  return rectangularRoom(maxX - minX, maxY - minY, build.name, { x: minX, y: minY });
+}
+
+/** The area a seating plan should keep clear: the stage plus its stair landings. */
+export function stageReservedAreas(build: StageBuild): Array<{ x: number; y: number; width: number; height: number; label: string }> {
+  const out: Array<{ x: number; y: number; width: number; height: number; label: string }> = [];
+
+  for (const level of build.levels) {
+    out.push({ x: level.x, y: level.y, width: level.width, height: level.depth, label: level.label ?? build.name });
+  }
+
+  for (const stair of build.stairs) {
+    const level = build.levels[stair.level];
+    if (!level) continue;
+    // A stair needs its own run plus a landing to step off into.
+    const run = Math.max(3 * FT, stairSteps(level.height, stair.riserHeight).count * 11 * IN) + 3 * FT;
+    switch (stair.edge) {
+      case 'front':
+        out.push({ x: level.x + stair.offset, y: level.y + level.depth, width: stair.width, height: run, label: 'Stairs' });
+        break;
+      case 'back':
+        out.push({ x: level.x + stair.offset, y: level.y - run, width: stair.width, height: run, label: 'Stairs' });
+        break;
+      case 'left':
+        out.push({ x: level.x - run, y: level.y + stair.offset, width: run, height: stair.width, label: 'Stairs' });
+        break;
+      case 'right':
+        out.push({ x: level.x + level.width, y: level.y + stair.offset, width: run, height: stair.width, label: 'Stairs' });
+        break;
+    }
+  }
+
+  return out;
+}
+
+/** The outline of every deck, for drawing the stage into the plan. */
+export function deckOutlines(solution: StageSolution): Point[][] {
+  return solution.decks.map((deck) => [
+    { x: deck.x, y: deck.y },
+    { x: deck.x + deck.width, y: deck.y },
+    { x: deck.x + deck.width, y: deck.y + deck.depth },
+    { x: deck.x, y: deck.y + deck.depth },
+    { x: deck.x, y: deck.y },
+  ]);
+}
+
+/** A plain single-level stage, which is most of them. */
+export function simpleStage(
+  x: number,
+  y: number,
+  width: number,
+  depth: number,
+  height = 24 * IN,
+  name = 'Stage',
+): StageBuild {
+  return {
+    id: nextId('stage'),
+    name,
+    levels: [{ x, y, width, depth, height, label: name }],
+    stairs: [
+      {
+        id: nextId('stair'),
+        level: 0,
+        edge: 'front',
+        offset: width / 2 - 2 * FT,
+        width: 4 * FT,
+        riserHeight: 8 * IN,
+        handrail: height > 30 * IN,
+      },
+    ],
+    skirted: true,
+  };
+}
+
+/** Room-shaped outline of a level, for containment tests. */
+export function levelOutline(level: StageLevel): RoomModel {
+  return roomFromPolygon(
+    [
+      { x: level.x, y: level.y },
+      { x: level.x + level.width, y: level.y },
+      { x: level.x + level.width, y: level.y + level.depth },
+      { x: level.x, y: level.y + level.depth },
+    ],
+    level.label ?? 'level',
+  );
+}

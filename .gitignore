@@ -1,0 +1,17 @@
+node_modules/
+out/
+release/
+release-smoke/
+release-workhorse/
+*.log
+.DS_Store
+
+# The catalog signing key. Never commit.
+catalog-signing-key.pem
+dist/
+
+# Packaged application output. `dist-app` holds the signed archives a release
+# is built from and `release-navigation` a full set of installers; together
+# they are over two gigabytes of things that are rebuilt from source.
+dist-app/
+release-navigation/

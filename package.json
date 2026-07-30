@@ -1,0 +1,55 @@
+{
+  "name": "groundplan",
+  "version": "1.0.3",
+  "description": "Cross-platform editor for legacy Room Viewer event floor plans — runs on Windows and macOS",
+  "main": "out/main/index.js",
+  "author": "Prince Thompson",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "npm run typecheck && npm test && npm run build",
+    "audit:release": "tsx tools/audit-release.ts",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:all": "npm run build && electron-builder --mac --win",
+    "package:dir": "npm run build && electron-builder --dir --config.directories.output=release-smoke",
+    "smoke:packaged": "tsx tools/package-smoke.ts",
+    "scan": "tsx tools/scan-corpus.ts",
+    "inspect": "tsx tools/inspect.ts",
+    "roundtrip": "tsx tools/roundtrip.ts",
+    "test": "tsx tools/catalog-test.ts && tsx tools/hermetic-test.ts && tsx tools/gear-inventory-safety-test.ts && tsx tools/synthesize-test.ts && tsx tools/room-test.ts && tsx tools/definition-test.ts && tsx tools/room-authoring-test.ts && tsx tools/curve-test.ts && tsx tools/dimension-test.ts && tsx tools/seating-plan-test.ts && tsx tools/stage-av-test.ts && tsx tools/report-test.ts && tsx tools/plan-model-test.ts && tsx tools/edit-test.ts --fixture",
+    "test:corpus": "tsx tools/edit-test.ts",
+    "test:synthesis": "tsx tools/synthesize-test.ts",
+    "test:room": "tsx tools/room-test.ts",
+    "gear": "tsx tools/gear-import-test.ts",
+    "insight": "tsx tools/corpus-insight.ts"
+  },
+  "dependencies": {
+    "cfb": "^1.2.2",
+    "mdb-reader": "^3.0.0",
+    "pdfjs-dist": "^6.2.108"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.2.1",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "electron": "^43.2.0",
+    "electron-builder": "26.15.7",
+    "electron-vite": "^5.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6"
+  }
+}

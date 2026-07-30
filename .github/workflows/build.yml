@@ -1,0 +1,67 @@
+name: Build
+
+# Build on each target OS so packaging and launch behavior are exercised in the
+# same environment customers use.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck, hermetic tests, and build
+        run: npm run check
+      - name: Release dependency audit
+        run: npm run audit:release
+
+  package:
+    needs: check
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+            artifact: groundplan-macos
+          - os: windows-latest
+            script: dist:win
+            artifact: groundplan-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Cross-platform domain tests
+        run: npm test
+      - run: npm run ${{ matrix.script }}
+        env:
+          # Skip signing/notarisation; unsigned builds are fine for internal use.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Inspect and launch packaged application
+        run: npm run smoke:packaged -- release --launch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+          if-no-files-found: error

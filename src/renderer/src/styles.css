@@ -1,0 +1,3083 @@
+/*
+ * Groundplan interface.
+ *
+ * The plan is the subject; the chrome is a frame around it. That means a
+ * near-neutral dark shell so drawing colours read true, hairline separation
+ * instead of nested boxes, and exactly one accent used only for selection and
+ * focus. Measurements everywhere use tabular figures so columns of numbers do
+ * not shift as they change.
+ */
+
+:root {
+  /* Surfaces — neutral, no blue cast, so plan colours are not tinted. */
+  --bg: #0a0b0d;
+  --surface: #101216;
+  --surface-2: #171a1f;
+  --surface-3: #1e2228;
+
+  /* Hairlines rather than borders; two weights is enough structure. */
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.13);
+
+  /* Text. The tertiary tone is the floor — nothing lighter than this. */
+  --ink: #eceef1;
+  --ink-2: #a2a9b3;
+  --ink-3: #757d88;
+
+  --accent: #4d94ff;
+  --accent-soft: rgba(77, 148, 255, 0.16);
+  --accent-line: rgba(77, 148, 255, 0.42);
+
+  --warn: #f0b45f;
+  --warn-bg: rgba(240, 180, 95, 0.09);
+  --danger: #ff6b6b;
+  --danger-bg: rgba(255, 107, 107, 0.1);
+  --ok: #57c98a;
+  --ok-bg: rgba(87, 201, 138, 0.1);
+
+  --radius: 7px;
+  --radius-lg: 10px;
+
+  /* One easing everywhere, short enough to feel instant. */
+  --ease: cubic-bezier(0.2, 0, 0.13, 1);
+  --fast: 120ms var(--ease);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font:
+    13px/1.45 -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI Variable Text',
+    'Segoe UI',
+    system-ui,
+    sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Measurements and counts never reflow as digits change. */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+button {
+  font: inherit;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition:
+    background var(--fast),
+    color var(--fast),
+    border-color var(--fast);
+  white-space: nowrap;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+button:active:not(:disabled) {
+  background: var(--surface-2);
+}
+
+button:disabled {
+  opacity: 0.34;
+  cursor: default;
+}
+
+/* Icon-only controls stay square so the toolbar keeps an even rhythm. */
+.icon-btn {
+  padding: 6px;
+  width: 30px;
+  height: 30px;
+  justify-content: center;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #05070a;
+  font-weight: 550;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #67a5ff;
+  color: #05070a;
+}
+
+.btn-outline {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* ----------------------------------------------------------------- layout */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 48px;
+  padding: 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+  flex: none;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Clears the macOS traffic lights, which sit inside the window under
+   `hiddenInset`. Other platforms draw their own frame above this. */
+.app[data-platform='darwin'] .toolbar {
+  padding-left: 84px;
+}
+
+.toolbar button,
+.toolbar input,
+.toolbar .seg {
+  -webkit-app-region: no-drag;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  padding-right: 2px;
+}
+
+.brand svg {
+  color: var(--accent);
+}
+
+/* A segmented group reads as one control instead of scattered buttons. */
+.seg {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.tool-button {
+  height: 30px;
+  padding: 5px 8px;
+  border-radius: 7px;
+}
+
+.tool-button.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.autosave-label {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.doc-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ink-2);
+}
+
+.doc-title strong {
+  color: var(--ink);
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 34ch;
+}
+
+/* Unsaved work is a dot, not a word — quieter and always in the same place. */
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-3);
+}
+
+.badge svg {
+  width: 11px;
+  height: 11px;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 244px 1fr 288px;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.body.is-rail-hidden {
+  grid-template-columns: minmax(0, 1fr) 288px;
+}
+
+.body.is-inspector-hidden {
+  grid-template-columns: 244px minmax(0, 1fr);
+}
+
+.body.is-rail-hidden.is-inspector-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.body.is-rail-hidden > .rail,
+.body.is-inspector-hidden > .inspector {
+  display: none;
+}
+
+.rail {
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+}
+
+/*
+ * Block, not flex: as a flex column the sections inherit `flex-shrink: 1` and
+ * get squeezed below their content height, clipping the first heading.
+ */
+.inspector {
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.inspector-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+}
+
+.inspector-tabs button {
+  min-width: 0;
+  justify-content: center;
+  padding-inline: 5px;
+  font-size: 11.5px;
+}
+
+.inspector-tabs button.active {
+  color: var(--ink);
+  background: var(--surface-3);
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+/* Sections separate by space and a hairline, never by nesting a box. */
+.section {
+  border-top: 1px solid var(--line);
+  padding: 14px 14px 16px;
+}
+
+.section:first-child {
+  border-top: none;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--ink-3);
+  margin-bottom: 10px;
+}
+
+.section-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- file lists */
+
+.search {
+  position: relative;
+  padding: 12px 12px 8px;
+  flex: none;
+}
+
+.rail-source-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.rail-source-tabs button {
+  min-width: 0;
+  justify-content: center;
+  padding: 5px 3px;
+  font-size: 10.5px;
+}
+
+.rail-source-tabs button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.folder-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 0;
+  flex: none;
+}
+
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-context .link-btn {
+  flex: none;
+  font-size: 9.5px;
+}
+
+.rail-empty-action {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 16px 10px;
+  text-align: center;
+}
+
+.plan-folders-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.plan-folder-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 10px 0 12px;
+  flex: none;
+}
+
+.plan-folder-breadcrumbs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px;
+}
+
+.plan-folder-breadcrumbs button {
+  overflow: hidden;
+  max-width: 122px;
+  padding: 3px 4px;
+  color: var(--accent);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.plan-folder-breadcrumbs button.current {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.plan-folder-crumb {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  color: var(--ink-3);
+}
+
+.plan-folder-heading > .icon-btn {
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+  flex: none;
+}
+
+.plan-folder-note {
+  margin: 5px 12px 9px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.plan-folder-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 8px 9px;
+  padding: 7px;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid color-mix(in srgb, var(--warn) 24%, transparent);
+  border-radius: var(--radius);
+  font-size: 10.5px;
+}
+
+.plan-folder-warning svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.plan-folder-editor {
+  display: grid;
+  gap: 6px;
+  margin: 0 8px 9px;
+  padding: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+}
+
+.plan-folder-editor label {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-folder-editor input {
+  min-width: 0;
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+.plan-folder-editor input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+.plan-folder-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.plan-folder-editor-actions button {
+  padding: 4px 8px;
+  font-size: 10.5px;
+}
+
+.plan-folder-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  padding: 0 8px 5px;
+}
+
+.plan-folder-actions button {
+  min-width: 0;
+  justify-content: center;
+  padding: 5px 4px;
+  font-size: 10.5px;
+}
+
+.plan-folder-manage {
+  display: flex;
+  justify-content: flex-end;
+  gap: 3px;
+  padding: 0 10px 7px;
+  border-bottom: 1px solid var(--line);
+}
+
+.plan-folder-manage button {
+  gap: 4px;
+  padding: 2px 4px;
+  font-size: 10px;
+}
+
+.plan-folder-manage .is-danger {
+  color: var(--danger);
+}
+
+.plan-folder-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.plan-folder-content .section-title {
+  margin: 0;
+  padding: 12px 14px 6px;
+}
+
+.plan-folder-content .file-list {
+  overflow: visible;
+  padding-bottom: 4px;
+}
+
+.plan-folder-list .plan-folder-entry {
+  align-items: center;
+  padding-block: 7px;
+}
+
+.plan-folder-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+
+.plan-folder-meta {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-folder-chevron {
+  color: var(--ink-3);
+  font-size: 16px;
+}
+
+.plan-folder-plans-title {
+  margin-top: 5px !important;
+  border-top: 1px solid var(--line);
+}
+
+.plan-folder-plan {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 2px;
+  align-items: center;
+}
+
+.file-list .plan-folder-plan > button:first-child {
+  width: auto;
+  min-width: 0;
+  align-items: flex-start;
+  padding: 8px;
+  white-space: normal;
+}
+
+.file-list .plan-folder-remove-plan {
+  width: 28px;
+  height: 28px;
+  justify-content: center;
+  padding: 5px;
+  opacity: 0;
+}
+
+.plan-folder-plan:hover .plan-folder-remove-plan,
+.plan-folder-remove-plan:focus-visible {
+  opacity: 1;
+}
+
+.plan-folder-remove-plan:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-bg) !important;
+}
+
+.plan-folder-plan.is-missing > button:first-child {
+  opacity: 0.68;
+}
+
+.search svg {
+  position: absolute;
+  left: 21px;
+  top: 50%;
+  transform: translateY(-25%);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+
+.search input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  padding: 6px 9px 6px 30px;
+  transition: border-color var(--fast);
+}
+
+.search input::placeholder {
+  color: var(--ink-3);
+}
+
+.search input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 14px;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.file-list button {
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  gap: 8px;
+}
+
+.file-list button svg {
+  color: var(--ink-3);
+  flex: none;
+}
+
+.file-list button:hover {
+  background: var(--surface-2);
+}
+
+.file-list button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.file-list button.active svg {
+  color: var(--accent);
+}
+
+.recent-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 82px;
+}
+
+.recovery-panel {
+  flex: none;
+  max-height: min(230px, 42vh);
+  overflow: hidden;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+}
+
+.recovery-panel .section-title {
+  margin: 0;
+  padding: 11px 12px 7px;
+  color: currentColor;
+}
+
+.recovery-list {
+  display: grid;
+  gap: 5px;
+  overflow-y: auto;
+  max-height: 188px;
+  margin: 0;
+  padding: 0 8px 9px;
+  list-style: none;
+}
+
+.recovery-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 7px;
+  align-items: start;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--warn) 24%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.recovery-item > svg {
+  margin-top: 2px;
+}
+
+.recovery-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.recovery-copy strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-copy > span {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-actions {
+  grid-column: 2;
+  display: flex;
+  gap: 3px;
+}
+
+.recovery-actions button {
+  padding: 3px 7px;
+  font-size: 10.5px;
+}
+
+.recent-panel .section-title {
+  flex: none;
+  margin: 0;
+  padding: 14px 14px 8px;
+}
+
+.recent-list {
+  flex: 1 1 auto;
+  padding-bottom: 10px;
+}
+
+.file-list .recent-file {
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  white-space: normal;
+}
+
+.recent-file > svg {
+  margin-top: 2px;
+}
+
+.recent-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+}
+
+.recent-name {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.recent-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.recent-meta > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-meta > span:last-child {
+  flex: none;
+}
+
+.recent-ext {
+  flex: none;
+  margin-top: 1px;
+  color: var(--ink-3);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.fname {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.empty {
+  padding: 4px 10px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ----------------------------------------------------------------- canvas */
+
+.stage {
+  position: relative;
+  min-width: 0;
+  background: var(--bg);
+}
+
+.canvas-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+.stage.has-recovery .canvas-wrap {
+  top: 43px;
+}
+
+.stage.has-dimension-warning .canvas-wrap {
+  top: 43px;
+}
+
+.stage.has-recovery.has-dimension-warning .canvas-wrap {
+  top: 86px;
+}
+
+.recovered-plan-banner,
+.dimension-warning-banner {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 4;
+  min-height: 43px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn-bg) 94%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+}
+
+.dimension-warning-banner {
+  background: color-mix(in srgb, var(--danger-bg) 90%, var(--surface));
+  color: var(--danger);
+}
+
+.stage.has-recovery .dimension-warning-banner {
+  top: 43px;
+}
+
+.recovered-plan-banner > span,
+.dimension-warning-banner > span {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-2);
+}
+
+.recovered-plan-banner strong,
+.dimension-warning-banner strong {
+  color: var(--warn);
+}
+
+.dimension-warning-banner strong {
+  color: var(--danger);
+}
+
+.recovered-plan-banner button {
+  flex: none;
+  padding-block: 4px;
+}
+
+.stage.has-recovery .arming,
+.stage.has-dimension-warning .arming {
+  top: 55px;
+}
+
+.stage.has-recovery.has-dimension-warning .arming {
+  top: 98px;
+}
+
+.canvas-wrap canvas {
+  display: block;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.canvas-wrap[data-mode='select'] canvas {
+  cursor: default;
+}
+
+.canvas-wrap[data-mode='pan'] canvas {
+  cursor: grabbing;
+}
+
+/* Floating controls sit over the sheet, aligned to the same 12px inset. */
+.zoom-cluster {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  backdrop-filter: blur(12px);
+}
+
+.zoom-cluster .is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #07101d;
+}
+
+.zoom-level {
+  min-width: 52px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  padding: 0 4px;
+}
+
+/* ------------------------------------------------------------ empty state */
+
+.placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 40px;
+}
+
+.placeholder-mark {
+  color: var(--ink-3);
+  margin-bottom: 6px;
+  opacity: 0.5;
+}
+
+.placeholder h1 {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.placeholder p {
+  max-width: 44ch;
+  color: var(--ink-3);
+  margin: 0;
+  line-height: 1.55;
+}
+
+.placeholder kbd {
+  font: inherit;
+  font-size: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 5px;
+  color: var(--ink-2);
+}
+
+.placeholder-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ------------------------------------------------------------- properties */
+
+.facts {
+  margin: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.facts > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.facts dt {
+  color: var(--ink-3);
+  flex: none;
+}
+
+.facts dd {
+  margin: 0;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.notice {
+  display: flex;
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  color: var(--warn);
+  line-height: 1.45;
+  font-size: 12px;
+}
+
+.notice svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.notice p {
+  margin: 0 0 5px;
+}
+
+.notice p:last-child {
+  margin-bottom: 0;
+}
+
+.annotation-capability-notice {
+  margin-top: 10px;
+  font-size: 11px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.field label {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 600;
+}
+
+.field input,
+.field textarea {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  padding: 6px 9px;
+  transition: border-color var(--fast);
+}
+
+.field-help {
+  color: var(--ink-3);
+  font-size: 10.5px;
+}
+
+.field input:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+.field input:disabled,
+.field textarea:disabled {
+  opacity: 0.5;
+}
+
+.field textarea {
+  min-height: 62px;
+  resize: vertical;
+  line-height: 1.4;
+}
+
+.actions-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.actions-row button {
+  flex: 1;
+  justify-content: center;
+  border-color: var(--line-strong);
+}
+
+.tool-group {
+  display: grid;
+  gap: 7px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.section-title + .tool-group {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: 0;
+}
+
+.tool-label {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.rotation-row,
+.colour-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rotation-row > input,
+.colour-row > input:not([type='color']) {
+  min-width: 0;
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+.rotation-row > input {
+  text-align: right;
+}
+
+.rotation-row > span {
+  color: var(--ink-3);
+}
+
+.rotation-row > button,
+.colour-row > button {
+  border-color: var(--line-strong);
+}
+
+.arrange-grid {
+  display: grid;
+  gap: 5px;
+}
+
+.arrange-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.arrange-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.arrange-grid button {
+  min-width: 0;
+  justify-content: center;
+  padding-inline: 5px;
+  border-color: var(--line-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.colour-row input[type='color'] {
+  width: 34px;
+  height: 30px;
+  padding: 2px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.colour-presets {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.colour-presets button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: var(--line-strong);
+  background: var(--swatch-colour);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.colour-presets button:hover:not(:disabled) {
+  background: var(--swatch-colour);
+  border-color: var(--ink-2);
+}
+
+.colour-presets button.active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hint {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 10px 0 0;
+}
+
+.hint kbd {
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.section > .hint:first-child {
+  margin-top: 0;
+}
+
+.layers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.layers label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px;
+  margin: 0 -6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--ink-2);
+  transition: background var(--fast);
+}
+
+.layers label:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.layers input {
+  accent-color: var(--accent);
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.swatch {
+  width: 3px;
+  height: 13px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--ink-3);
+}
+
+.inventory {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.inventory li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.iname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--ink-2);
+}
+
+.icat {
+  display: block;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--ink-3);
+}
+
+.icount {
+  color: var(--ink);
+  flex: none;
+}
+
+/* ---------------------------------------------------------- byte inspector */
+
+.link-btn {
+  padding: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--accent);
+  background: none;
+}
+
+.link-btn:hover:not(:disabled) {
+  background: none;
+  color: #7fb2ff;
+}
+
+.byte-fields {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.byte-fields li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bf-name {
+  color: var(--ink-3);
+}
+
+.bf-value {
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hex {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.65;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 6px;
+  overflow-x: auto;
+}
+
+.hex-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.hex-offset {
+  color: var(--ink-3);
+  flex: none;
+}
+
+.hex-cells {
+  display: flex;
+  gap: 1px;
+}
+
+.hex-cell,
+.hex-input {
+  font: inherit;
+  width: 17px;
+  padding: 0;
+  text-align: center;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink-2);
+  display: inline-block;
+  transition: background var(--fast);
+}
+
+.hex-cell.known {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.hex-cell:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.hex-input {
+  background: var(--accent);
+  color: #05070a;
+  outline: none;
+}
+
+.hex-ascii {
+  color: var(--ink-3);
+  flex: none;
+  padding-left: 2px;
+}
+
+.hex-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.hex-pager button {
+  border-color: var(--line-strong);
+  padding: 3px 9px;
+  font-size: 11.5px;
+}
+
+/* ------------------------------------------------------------ gear lists */
+
+.seg.tabs button {
+  padding: 4px 12px;
+  border-radius: 7px;
+}
+
+.seg.tabs button.active {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.seg.tabs .num {
+  color: var(--ink-3);
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+.gear {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.recovery-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+  font-size: 11.5px;
+  line-height: 1.45;
+  flex: none;
+}
+
+.recovery-notice svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.recovery-notice.is-rail {
+  margin: 0 8px 2px;
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+  border-radius: var(--radius);
+}
+
+.harvest-progress {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, 260px) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 7px 12px;
+  color: var(--ink-2);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-line);
+  flex: none;
+}
+
+.placeholder > .harvest-progress {
+  position: absolute;
+  inset: 0 0 auto;
+  width: 100%;
+  text-align: left;
+}
+
+.harvest-progress-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.harvest-progress-copy strong,
+.harvest-progress-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.harvest-progress-copy strong {
+  color: var(--ink);
+  font-size: 11.5px;
+}
+
+.harvest-progress-copy span {
+  color: var(--ink-3);
+  font-size: 10.5px;
+}
+
+.harvest-progress progress {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--accent);
+}
+
+.harvest-progress button {
+  padding-block: 4px;
+}
+
+.gear-undo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.gear-undo > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gear-undo button {
+  flex: none;
+  padding-block: 3px;
+}
+
+.gear-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.gear-tabs button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.gear-tabs button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.gear-tabs .num {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.gear-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+  padding-bottom: 40px;
+}
+
+.gear-dept header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 16px 8px;
+  position: sticky;
+  top: 0;
+  background: linear-gradient(var(--bg) 70%, transparent);
+  z-index: 1;
+}
+
+.gear-dept h2 {
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  margin: 0;
+}
+
+.gear-dept header .num {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  flex: 1;
+}
+
+/* Rows are separated by a hairline, not boxed — the list is one surface. */
+.gear-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px 4px 10px;
+  border-top: 1px solid var(--line);
+  min-height: 30px;
+}
+
+.gear-row:hover {
+  background: var(--surface);
+}
+
+.gear-row.is-checked .gear-desc {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+.gear-row.is-note {
+  color: var(--warn);
+  font-style: italic;
+}
+
+.gear-check {
+  accent-color: var(--accent);
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.gear-qty,
+.gear-qty-input {
+  width: 44px;
+  flex: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 4px;
+  color: var(--ink);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.gear-qty:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.gear-qty-input {
+  background: var(--bg);
+  border-color: var(--accent-line);
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+
+.gear-twisty {
+  width: 16px;
+  padding: 0;
+  color: var(--ink-3);
+  flex: none;
+  font-size: 10px;
+}
+
+.gear-desc,
+.gear-desc-input {
+  flex: 1;
+  text-align: left;
+  padding: 2px 6px;
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.gear-desc:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.gear-desc-input {
+  background: var(--bg);
+  border-color: var(--accent-line);
+  font: inherit;
+  outline: none;
+}
+
+.gear-badge {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  padding: 0 6px;
+  flex: none;
+}
+
+/* Row actions stay out of the way until the row is pointed at. */
+.gear-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  flex: none;
+  transition: opacity var(--fast);
+}
+
+.gear-row:hover .gear-actions,
+.gear-actions:focus-within {
+  opacity: 1;
+}
+
+.gear-actions .icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.meter {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.meter span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms var(--ease);
+}
+
+.link-state {
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  padding: 1px 7px;
+  color: var(--ink-3);
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+}
+
+.link-state.is-linked {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 44%, transparent);
+  background: var(--ok-bg);
+}
+
+/* ------------------------------------------------------------- status bar */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 26px;
+  padding: 0 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  flex: none;
+}
+
+.statusbar .num {
+  color: var(--ink-2);
+}
+
+.status-context {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-sep {
+  width: 1px;
+  height: 11px;
+  background: var(--line-strong);
+}
+
+/* --------------------------------------------------------------- messages */
+
+.toast {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-3) 92%, transparent);
+  border: 1px solid var(--line-strong);
+  backdrop-filter: blur(12px);
+  animation: rise 160ms var(--ease);
+  max-width: 70%;
+}
+
+.toast-ok {
+  background: var(--ok-bg);
+  border-color: rgba(87, 201, 138, 0.34);
+  color: var(--ok);
+}
+
+.toast-error {
+  background: var(--danger-bg);
+  border-color: rgba(255, 107, 107, 0.34);
+  color: var(--danger);
+}
+
+.toast-action {
+  width: min(680px, calc(100% - 32px));
+  max-width: none;
+}
+
+.toast-action > span {
+  flex: 1;
+  color: var(--ink);
+}
+
+.toast-action button {
+  flex: none;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* A placement in progress, shown over the sheet until the click lands. */
+.arming {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 8px 7px 14px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-3) 92%, transparent);
+  border: 1px solid var(--accent-line);
+  backdrop-filter: blur(12px);
+  z-index: 2;
+}
+
+.tool-state-badge {
+  flex: none;
+  border: 1px solid currentColor;
+  border-radius: 20px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tool-state-badge.is-temporary {
+  color: var(--warn);
+}
+
+.tool-state-badge.is-persistent {
+  color: var(--accent);
+}
+
+.arming strong {
+  color: var(--ink);
+  font-weight: 550;
+}
+
+.canvas-wrap[data-mode='place'] canvas {
+  cursor: crosshair;
+}
+
+/* The inventory doubles as a palette: each row places another of that item. */
+.inv-add {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 3px 6px;
+  margin: 0 -6px;
+  border-radius: var(--radius);
+  text-align: left;
+}
+
+.inv-add:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.inv-plus {
+  color: var(--ink-3);
+  opacity: 0;
+  flex: none;
+  align-self: center;
+  transition: opacity var(--fast);
+}
+
+.inv-add:hover:not(:disabled) .inv-plus {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------ equipment library */
+
+.inv-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.inv-bar button {
+  border: 1px solid var(--line-strong);
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.inv-row {
+  gap: 12px;
+  padding-left: 14px;
+}
+
+.inv-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.inv-size {
+  flex: none;
+  min-width: 96px;
+  justify-content: flex-end;
+  color: var(--ink-3);
+  padding: 2px 7px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 5px;
+  font-size: 11.5px;
+}
+
+.inv-size:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--accent-line);
+  background: none;
+}
+
+/* A size the user set is the authoritative one, so it reads as committed. */
+.inv-size.is-set {
+  color: var(--accent);
+  border-style: solid;
+  border-color: var(--accent-line);
+}
+
+.inv-size-edit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.inv-size-edit .gear-qty-input {
+  width: 42px;
+}
+
+.inv-x {
+  color: var(--ink-3);
+}
+
+.inv-seen {
+  flex: none;
+  min-width: 32px;
+  text-align: right;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+/* Paired numeric inputs: width × height, rows × per row. */
+.size-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.size-row input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  padding: 6px 9px;
+}
+
+.size-row input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+.field select {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  padding: 6px 9px;
+}
+
+.field select:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+.seat-kinds {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.seat-kinds button {
+  flex: 1;
+  justify-content: center;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+/* An active tool reads as pressed, not just hovered. */
+.icon-btn.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.canvas-wrap[data-mode='measure'] canvas {
+  cursor: crosshair;
+}
+
+.inv-search {
+  padding: 0 0 8px;
+}
+
+.inv-search svg {
+  left: 9px;
+}
+
+/* Marks an item that places as a real drawn symbol rather than a box. */
+.inv-symbol {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+  border-radius: 20px;
+  padding: 0 5px;
+  margin-left: 7px;
+}
+
+/* ------------------------------------------------------- reconciliation */
+
+.recon-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.recon-identity strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recon-identity > span:last-child {
+  grid-column: 1 / -1;
+}
+
+.recon-tally {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.recon-tally li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-3);
+}
+
+.recon-tally li.bad .num {
+  color: var(--danger);
+}
+
+.recon-tally li.warn .num {
+  color: var(--warn);
+}
+
+.recon-tally li.ok .num {
+  color: var(--ok);
+}
+
+.recon-rows {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.recon-rows li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line-strong);
+}
+
+/* The expensive failure — on the plan but not on the truck — reads loudest. */
+.recon-rows li.missing-on-list {
+  border-left-color: var(--danger);
+}
+
+.recon-rows li.count {
+  border-left-color: var(--warn);
+}
+
+.recon-rows li.missing-on-plan {
+  border-left-color: var(--ink-3);
+}
+
+/* The print sheet: a small popover over the plan, not a modal. */
+.print-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 236px;
+  padding: 12px 14px 14px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid var(--line-strong);
+  backdrop-filter: blur(14px);
+  z-index: 3;
+  animation: rise 140ms var(--ease);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  cursor: pointer;
+  color: var(--ink-2);
+}
+
+.check-row input {
+  accent-color: var(--accent);
+  width: 13px;
+  height: 13px;
+}
+
+/* Dropping a library item onto the drawing. */
+.canvas-wrap[data-dropping]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1.5px dashed var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.file-list.palette button {
+  cursor: grab;
+}
+
+.file-list.palette {
+  flex: 1 1 0;
+}
+
+.file-list.palette button:active {
+  cursor: grabbing;
+}
+
+.file-list .list-more {
+  padding: 8px 2px 0;
+}
+
+.file-list .list-more button {
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+}
+
+.inventory-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+}
+
+.inventory-more button {
+  min-width: 240px;
+  justify-content: space-between;
+}
+
+/* Category groups in the inventory rail. */
+.rail-group {
+  display: block;
+  margin-top: 10px;
+}
+
+.rail-group:first-child {
+  margin-top: 2px;
+}
+
+.rail-group-title {
+  display: block;
+  padding: 4px 14px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.rail-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.seg-wide {
+  display: flex;
+  margin: 6px 12px 2px;
+}
+
+.seg-wide button {
+  flex: 1;
+  justify-content: center;
+}
+
+/* An automatically matched shape is a guess — say so rather than imply it is
+   the item's own drawing. */
+.inv-symbol.is-auto {
+  opacity: 0.75;
+  font-style: normal;
+}
+
+/* Held space turns the canvas into a pan surface. */
+.canvas-wrap[data-mode='pan'] canvas {
+  cursor: grab;
+}
+
+.canvas-wrap[data-mode='pan'] canvas:active {
+  cursor: grabbing;
+}
+
+/* The item name doubles as a rename target. */
+.inv-name[role='button'] {
+  cursor: text;
+  border-radius: 4px;
+}
+
+.inv-name[role='button']:hover {
+  background: var(--surface-2);
+  box-shadow: 0 0 0 4px var(--surface-2);
+}
+
+/* Inventory palette on the plan page. */
+.palette-filter {
+  padding: 0 12px 8px;
+}
+
+.palette-filter select {
+  width: 100%;
+  font-size: 11px;
+  padding: 5px 8px;
+}
+
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+}
+
+.palette-place {
+  flex: 1;
+  min-width: 0;
+  cursor: grab;
+}
+
+.palette-place:active {
+  cursor: grabbing;
+}
+
+/* Row controls stay out of the way until the row is under the pointer, so the
+   list reads as gear rather than a wall of buttons. Taken out of flow as well
+   as hidden — reserving their width truncated every name in a narrow rail. */
+.palette-actions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  gap: 1px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  box-shadow: -8px 0 8px -4px var(--surface-2);
+}
+
+.palette-row:hover .palette-actions,
+.palette-row:focus-within .palette-actions {
+  display: flex;
+}
+
+.palette-editor {
+  display: grid;
+  gap: 5px;
+  padding: 7px 12px;
+  background: var(--surface-2);
+}
+
+.palette-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.palette-size .gear-qty-input {
+  /* Share the row: two inputs at width:100% each overflow it and push the
+     height field and the confirm button out of sight. */
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.title-action {
+  margin-left: auto;
+}
+
+/* Plan-view preview of an inventory item. */
+.thumb {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  overflow: visible;
+}
+
+.thumb polyline,
+.thumb polygon,
+.thumb rect {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Hairlines at this size turn to mush, so the stroke is set in screen pixels. */
+.thumb polyline,
+.thumb polygon,
+.thumb rect {
+  stroke-width: 1;
+}
+
+.thumb.is-unknown {
+  opacity: 0.4;
+}
+
+@media (max-width: 1220px) {
+  .toolbar {
+    gap: 8px;
+    padding-right: 8px;
+  }
+
+  .app[data-platform='darwin'] .toolbar {
+    padding-left: 76px;
+  }
+
+  .brand span {
+    display: none;
+  }
+
+  .doc-title strong {
+    max-width: 20ch;
+  }
+}
+
+@media (max-width: 1040px) {
+  .doc-title {
+    display: none;
+  }
+
+  .toolbar .spacer {
+    min-width: 0;
+  }
+
+  .plan-tool-controls .tool-button span {
+    display: none;
+  }
+
+  .plan-tool-controls .tool-button {
+    width: 30px;
+    padding: 6px;
+    justify-content: center;
+  }
+
+  .body {
+    grid-template-columns: 220px minmax(0, 1fr) 260px;
+  }
+
+  .body.is-rail-hidden {
+    grid-template-columns: minmax(0, 1fr) 260px;
+  }
+
+  .body.is-inspector-hidden {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .body.is-rail-hidden.is-inspector-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .body,
+  .body.is-inspector-hidden {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .body.is-rail-hidden,
+  .body.is-rail-hidden.is-inspector-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inspector {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 5;
+    width: min(288px, calc(100vw - 64px));
+    box-shadow: -16px 0 36px rgba(0, 0, 0, 0.34);
+  }
+}
+
+@media (max-width: 680px) {
+  .body,
+  .body.is-rail-hidden,
+  .body.is-inspector-hidden,
+  .body.is-rail-hidden.is-inspector-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rail {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 4;
+    width: min(244px, calc(100vw - 64px));
+    box-shadow: 16px 0 36px rgba(0, 0, 0, 0.34);
+  }
+
+  .stage {
+    grid-column: 1;
+  }
+
+  .statusbar {
+    gap: 8px;
+  }
+
+  .arming {
+    max-width: calc(100% - 24px);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .harvest-progress {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .harvest-progress progress {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+/* Tracing a picture into an outline. */
+.trace-sheet { width: 470px; }
+
+.trace-drop {
+  margin: 0 16px 12px;
+  border: 1.5px dashed var(--line);
+  border-radius: 10px;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.trace-drop.has-image { border-style: solid; padding: 8px; }
+.trace-empty { padding: 26px 20px; display: grid; gap: 8px; justify-items: center; }
+.trace-empty p { margin: 0; }
+
+.trace-controls { padding: 0 16px 10px; display: grid; gap: 7px; }
+.trace-controls label { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.trace-controls label > span:first-child { width: 74px; color: var(--ink-2); }
+.trace-controls input[type='range'] { flex: 1; }
+.trace-controls .num { width: 30px; text-align: right; color: var(--ink-3); font-style: normal; }
+.trace-invert { color: var(--ink-2); }
+.trace-invert input { margin: 0; }
+
+.trace-fields { padding: 0 16px 4px; display: grid; gap: 10px; }
+.trace-size-row { display: flex; align-items: center; gap: 6px; }
+.trace-size-row input { flex: 1; min-width: 0; }
+.trace-status { padding: 0 16px 4px; }
+
+/* Modal sheet, used by the tracer. Centred over the whole window rather than
+   laid out inside whichever panel opened it. */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.sheet {
+  background: var(--surface-1, #16181d);
+  border: 1px solid var(--line, #2a2e37);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 4px 0 14px;
+}
+
+.sheet-title {
+  padding: 14px 16px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 0;
+}
+
+.trace-drop canvas {
+  display: block;
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+/* Settings. */
+.settings-sheet { width: 560px; padding-bottom: 0; }
+.settings-body { display: grid; grid-template-columns: 132px 1fr; min-height: 330px; }
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 14px 8px;
+  border-right: 1px solid var(--line, #2a2e37);
+}
+
+.settings-nav button {
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--ink-2, #9aa3b2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-nav button:hover { background: var(--surface-2, #1d2027); }
+.settings-nav button.active { background: var(--surface-2, #1d2027); color: var(--ink-1, #e8ecf2); font-weight: 600; }
+
+.settings-panel { padding: 16px 18px; display: grid; gap: 11px; align-content: start; }
+.settings-blurb { margin: 0 0 4px; font-size: 11px; color: var(--ink-3, #6b7280); }
+
+.setting { display: grid; gap: 5px; }
+.setting > label { font-size: 11px; color: var(--ink-2, #9aa3b2); }
+.setting select, .setting input { width: 100%; }
+
+.setting-inline { display: flex; align-items: center; gap: 8px; }
+.setting-inline .num { width: 68px; flex: none; }
+
+.setting-check { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.setting-check input { margin: 0; flex: none; }
+
+.settings-divider { height: 1px; background: var(--line, #2a2e37); margin: 4px 0; }
+.settings-actions { display: flex; gap: 8px; margin-top: 2px; }
+
+.settings-footer {
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--line, #2a2e37);
+  padding: 10px 16px;
+  margin-top: 0;
+}
+
+/* Saving is silent by design; this only confirms it happened. */
+.settings-saved { font-size: 11px; color: var(--ink-3, #6b7280); opacity: 0; transition: opacity 140ms ease; }
+.settings-saved.is-on { opacity: 1; }
+
+/* ---------------------------------------------------------------------------
+   Interaction states
+   ---------------------------------------------------------------------------
+   Hover was a flat surface colour, which only reads against the one surface it
+   was picked for: #1e2228 on a #171a1f toolbar is a seven-level difference and
+   effectively invisible, and on a transparent icon button it showed nothing at
+   all.
+
+   Translucent overlays instead. A white wash brightens whatever is underneath,
+   so the same rule works on the toolbar, in a list, inside a dialog and over
+   the canvas — and it keeps working if the palette is ever retuned.
+
+   Every interactive control gets the full set: hover, press, keyboard focus and
+   disabled. A control that only responds to the mouse is unusable to anyone on
+   a keyboard, and a press with no feedback feels broken on a slow machine.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --hover: rgba(255, 255, 255, 0.075);
+  --hover-strong: rgba(255, 255, 255, 0.12);
+  --press: rgba(0, 0, 0, 0.22);
+  --ring: rgba(77, 148, 255, 0.55);
+}
+
+button,
+[role='button'],
+.file-list button,
+.settings-nav button,
+.link-btn {
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
+}
+
+/* The base hover, strong enough to see at a glance without shouting. */
+button:hover:not(:disabled),
+.file-list button:hover,
+.settings-nav button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* Icon-only controls carry no label, so they lean on the hover harder. */
+.icon-btn:hover:not(:disabled) {
+  background: var(--hover-strong);
+  color: var(--ink);
+}
+
+button:active:not(:disabled),
+.icon-btn:active:not(:disabled) {
+  background: var(--press);
+  /* A hair of travel: enough to feel pressed, not enough to shift the layout. */
+  transform: translateY(0.5px);
+}
+
+/* Keyboard focus is a ring rather than a fill, so it is never confused with
+   hover or with a toggled-on state. */
+button:focus-visible,
+.file-list button:focus-visible,
+.settings-nav button:focus-visible,
+.link-btn:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Disabled reads as disabled, and stops responding entirely. */
+button:disabled,
+.icon-btn:disabled {
+  opacity: 0.32;
+  cursor: default;
+  transform: none;
+}
+
+button:disabled:hover,
+.icon-btn:disabled:hover {
+  background: transparent;
+}
+
+/* A toggled control is a state, not a hover, so it uses the accent. */
+.icon-btn.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-line);
+}
+
+.icon-btn.is-on:hover:not(:disabled) {
+  background: rgba(77, 148, 255, 0.26);
+}
+
+/* Rows behave like buttons: the whole row is the target, not just its text. */
+.file-list button,
+.gear-row,
+.palette-row,
+.inv-row {
+  cursor: pointer;
+}
+
+.gear-row:hover,
+.palette-row:hover,
+.inv-row:hover {
+  background: var(--hover);
+}
+
+/* A selected row stays distinct from a hovered one. */
+.file-list button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.file-list button.active:hover {
+  background: rgba(77, 148, 255, 0.24);
+}
+
+/* Inputs get the same treatment, so a form does not feel dead next to the
+   buttons beside it. */
+input:hover:not(:disabled),
+select:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+input:focus,
+select:focus {
+  border-color: var(--accent-line);
+}
+
+/* Anything that opens a menu or dialog says so by being reachable. */
+a,
+.link-btn {
+  cursor: pointer;
+}
+
+/* Respect the system setting; motion is decoration here, never information. */
+@media (prefers-reduced-motion: reduce) {
+  button,
+  [role='button'],
+  .file-list button,
+  .settings-nav button,
+  .link-btn {
+    transition: none;
+  }
+
+  button:active:not(:disabled),
+  .icon-btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Room panel
+   --------------------------------------------------------------------------- */
+
+/* Two measurements that belong together — width and depth — read better side
+   by side than stacked, and the inspector is narrow enough that stacking them
+   pushes the buttons below the fold. */
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.field-row .field {
+  min-width: 0;
+}
+
+/* The live count beside a section heading. */
+.section-count {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.prop-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.prop-grid dt {
+  color: var(--ink-3);
+}
+
+.prop-grid dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.capacity-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+.capacity-table th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--ink-3);
+  padding: 0 0 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.capacity-table td {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line-soft, var(--line));
+  vertical-align: top;
+}
+
+.capacity-table th:last-child,
+.capacity-table td:last-child,
+.capacity-table th:nth-child(2),
+.capacity-table td:nth-child(2) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.capacity-table tr:last-child td {
+  border-bottom: none;
+}
+
+.muted {
+  color: var(--ink-3);
+}
+
+/* A measurement that has been typed but does not parse yet. Marked rather than
+   corrected, because a box that rewrites what is being typed is unusable. */
+.field input[aria-invalid='true'] {
+  border-color: var(--warn, #c9752b);
+}
+
+/* ---------------------------------------------------------------------------
+   New plan
+   --------------------------------------------------------------------------- */
+
+.new-plan-sheet {
+  width: 460px;
+  padding: 0;
+}
+
+.new-plan-head {
+  padding: 20px 22px 0;
+}
+
+.new-plan-head h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.new-plan-head p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.new-plan-body {
+  padding: 6px 22px 16px;
+}
+
+.new-plan-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+}
+
+.new-plan-foot .primary {
+  background: var(--accent, #2f6fed);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* One tap for the rooms a venue books over and over; the fields below stay
+   available for everything else. */
+.preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.preset-grid .preset {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink-2);
+}
+
+.preset-grid .preset:hover {
+  border-color: var(--ink-3);
+}
+
+.preset-grid .preset.active {
+  border-color: var(--accent, #2f6fed);
+  color: var(--ink-1);
+}
+
+.btn-solid {
+  background: var(--accent, #2f6fed);
+  border-color: transparent;
+  color: #fff;
+}

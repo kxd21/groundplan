@@ -1,0 +1,306 @@
+/**
+ * The companion document: everything the `.rv4` has nowhere to put.
+ *
+ * Room Viewer's format is a fixed set of classes with a fixed set of fields.
+ * There is no extension point, no user-data blob, no custom-ID slot — which is
+ * why a room can be *drawn* but not *described*, why 227 generated chairs stop
+ * being a seating plan the moment the loop ends, and why a screen cannot know
+ * which projector feeds it. None of that is missing because it was hard; it is
+ * missing because the binary has no field for it.
+ *
+ * So it goes beside the plan instead:
+ *
+ *   Card Party East.rv4              unchanged, byte-identical, opens in Room Viewer
+ *   Card Party East.groundplan.json  the room model, seating configurations,
+ *                                    stage builds, AV pairings, layers
+ *
+ * Two rules keep this honest rather than clever:
+ *
+ *   1. **The `.rv4` stays canonical for geometry.** Anything the companion
+ *      describes is also *drawn* into the plan as ordinary objects, so a legacy
+ *      Room Viewer sees a normal file. The companion holds the intent that
+ *      produced the drawing, never the drawing itself.
+ *   2. **The companion knows when it is lying.** It records a digest of the
+ *      archive it describes. Edit the plan somewhere else and the digest stops
+ *      matching, at which point the parameters are stale and the app says so
+ *      rather than quietly regenerating a room from numbers that no longer
+ *      describe it.
+ *
+ * A plan with no companion behaves exactly as it did before this existed.
+ */
+
+import { createHash } from 'node:crypto';
+
+import type { RVDocument } from './rv.js';
+import type { AspectRatio, InstanceOverride, ItemSpec, Obstruction } from './definition.js';
+import type { RoomModel, WallSegment } from './room.js';
+import type { UnitSystem } from './units.js';
+
+export const COMPANION_FORMAT = 'groundplan-companion';
+export const COMPANION_VERSION = 1;
+
+/** Identifies the archive a companion was written against. */
+export interface PlanFingerprint {
+  /** SHA-256 of the archive body — the container is repacked on every save. */
+  digest: string;
+  bytes: number;
+  /** ISO 8601, when the companion was last written. */
+  savedAt: string;
+}
+
+export interface CompanionDocument {
+  format: typeof COMPANION_FORMAT;
+  version: typeof COMPANION_VERSION;
+  plan: PlanFingerprint;
+  units: UnitSystem;
+  rooms: RoomModel[];
+  /** Definitions for the items this plan places: height, obstruction, seats. */
+  library: ItemSpec[];
+  /** Per-placement departures from a definition. */
+  overrides: InstanceOverride[];
+}
+
+/** The sidecar path for a plan. */
+export function companionPathFor(planPath: string): string {
+  return `${planPath}.groundplan.json`;
+}
+
+/**
+ * Fingerprints an archive body.
+ *
+ * Takes the bytes rather than the document on purpose. `doc.source` is the
+ * archive as it was *read*, and it does not change as the document is edited —
+ * so fingerprinting the document at save time would record the hash of the
+ * version that was opened, and the companion would read as stale the moment it
+ * was reopened. The caller passes what it is about to write.
+ *
+ * The body, not the file: the compound-file container is rebuilt from scratch
+ * on every save, so two saves of an identical document can differ at the file
+ * level while the archive inside them is the same.
+ */
+export function fingerprint(body: Buffer): PlanFingerprint {
+  return {
+    digest: createHash('sha256').update(body).digest('hex'),
+    bytes: body.length,
+    savedAt: new Date().toISOString(),
+  };
+}
+
+export function createCompanion(
+  doc: RVDocument,
+  units: UnitSystem = 'imperial',
+  rooms: RoomModel[] = [],
+  library: ItemSpec[] = [],
+  overrides: InstanceOverride[] = [],
+): CompanionDocument {
+  return {
+    format: COMPANION_FORMAT,
+    version: COMPANION_VERSION,
+    plan: fingerprint(doc.source),
+    units,
+    rooms,
+    library,
+    overrides,
+  };
+}
+
+export type Freshness = 'fresh' | 'stale' | 'missing';
+
+export interface CompanionStatus {
+  freshness: Freshness;
+  /** Plain-language explanation, suitable for showing to the user. */
+  reason?: string;
+}
+
+/**
+ * Decides whether a companion still describes the plan beside it.
+ *
+ * This is the weak point of a sidecar design and it is checked on every open
+ * rather than trusted. A stale companion is not deleted and not applied: the
+ * parameters are kept so nothing is lost, and the caller is expected to offer
+ * re-deriving the model from what the plan now contains.
+ */
+export function companionStatus(companion: CompanionDocument | null, doc: RVDocument): CompanionStatus {
+  if (!companion) return { freshness: 'missing' };
+
+  const current = createHash('sha256').update(doc.source).digest('hex');
+  if (current === companion.plan.digest) return { freshness: 'fresh' };
+
+  return {
+    freshness: 'stale',
+    reason:
+      'This plan has been changed since its Groundplan data was written — probably saved in Room Viewer. ' +
+      'The room, seating and stage settings describe the earlier version.',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Parsing untrusted JSON
+// ---------------------------------------------------------------------------
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+const isFinitePoint = (value: unknown): value is { x: number; y: number } =>
+  isRecord(value) &&
+  typeof value.x === 'number' &&
+  typeof value.y === 'number' &&
+  Number.isFinite(value.x) &&
+  Number.isFinite(value.y);
+
+function parseWall(value: unknown): WallSegment | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || !value.id) return null;
+  if (!isFinitePoint(value.start) || !isFinitePoint(value.end)) return null;
+
+  const segment: WallSegment = {
+    id: value.id,
+    start: { x: value.start.x, y: value.start.y },
+    end: { x: value.end.x, y: value.end.y },
+  };
+  if (typeof value.bulge === 'number' && Number.isFinite(value.bulge) && value.bulge !== 0) {
+    segment.bulge = value.bulge;
+  }
+  if (typeof value.thickness === 'number' && Number.isFinite(value.thickness) && value.thickness > 0) {
+    segment.thickness = value.thickness;
+  }
+  if (value.virtual === true) segment.virtual = true;
+  if (typeof value.label === 'string' && value.label) segment.label = value.label;
+  return segment;
+}
+
+function parseWallLoop(value: unknown): WallSegment[] | null {
+  if (!Array.isArray(value)) return null;
+  const walls = value.map(parseWall).filter((w): w is WallSegment => w != null);
+  return walls.length ? walls : null;
+}
+
+function parseRoom(value: unknown): RoomModel | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || !value.id) return null;
+
+  const walls = parseWallLoop(value.walls);
+  if (!walls) return null;
+
+  const room: RoomModel = {
+    id: value.id,
+    name: typeof value.name === 'string' && value.name ? value.name : 'Room',
+    walls,
+    holes: Array.isArray(value.holes)
+      ? value.holes.map(parseWallLoop).filter((loop): loop is WallSegment[] => loop != null)
+      : [],
+  };
+  if (typeof value.ceilingHeight === 'number' && Number.isFinite(value.ceilingHeight) && value.ceilingHeight > 0) {
+    room.ceilingHeight = value.ceilingHeight;
+  }
+  if (typeof value.reservedArea === 'number' && Number.isFinite(value.reservedArea) && value.reservedArea > 0) {
+    room.reservedArea = value.reservedArea;
+  }
+  return room;
+}
+
+const OBSTRUCTIONS = new Set<Obstruction>(['none', 'partial', 'full']);
+
+function parseAspectRatio(value: unknown): AspectRatio | undefined {
+  if (!isRecord(value)) return undefined;
+  const { w, h } = value;
+  if (typeof w !== 'number' || typeof h !== 'number') return undefined;
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return undefined;
+  return { w, h };
+}
+
+/** Reads a positive length, rejecting the negatives and NaNs a hand edit produces. */
+function positive(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function nonNegative(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function parseSpec(value: unknown): ItemSpec | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || !value.id) return null;
+  if (typeof value.name !== 'string' || !value.name) return null;
+
+  const spec: ItemSpec = { id: value.id, name: value.name };
+  if (typeof value.category === 'string' && value.category) spec.category = value.category;
+  spec.width = positive(value.width);
+  spec.depth = positive(value.depth);
+  spec.elevation = nonNegative(value.elevation);
+  spec.height = nonNegative(value.height);
+  if (typeof value.obstruction === 'string' && OBSTRUCTIONS.has(value.obstruction as Obstruction)) {
+    spec.obstruction = value.obstruction as Obstruction;
+  }
+  spec.aspect = parseAspectRatio(value.aspect);
+  spec.seats = nonNegative(value.seats);
+  spec.weightLb = nonNegative(value.weightLb);
+  spec.powerW = nonNegative(value.powerW);
+  if (typeof value.notes === 'string' && value.notes) spec.notes = value.notes;
+  // A stored definition is a definition, whatever the file says: inference is
+  // what happens when there is no stored one, so the flag never survives a save.
+  return spec;
+}
+
+function parseOverride(value: unknown): InstanceOverride | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.key !== 'string' || !value.key) return null;
+
+  const override: InstanceOverride = { key: value.key };
+  override.elevation = nonNegative(value.elevation);
+  override.height = nonNegative(value.height);
+  if (typeof value.obstruction === 'string' && OBSTRUCTIONS.has(value.obstruction as Obstruction)) {
+    override.obstruction = value.obstruction as Obstruction;
+  }
+  override.aspect = parseAspectRatio(value.aspect);
+  override.seats = nonNegative(value.seats);
+  if (typeof value.label === 'string' && value.label) override.label = value.label;
+  if (typeof value.layer === 'string' && value.layer) override.layer = value.layer;
+
+  // A key with nothing attached to it is noise from a deleted edit.
+  const meaningful = Object.keys(override).some((k) => k !== 'key' && override[k as keyof InstanceOverride] != null);
+  return meaningful ? override : null;
+}
+
+function parseFingerprint(value: unknown): PlanFingerprint | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.digest !== 'string' || !/^[0-9a-f]{64}$/.test(value.digest)) return null;
+  if (typeof value.bytes !== 'number' || !Number.isFinite(value.bytes)) return null;
+  return {
+    digest: value.digest,
+    bytes: value.bytes,
+    savedAt: typeof value.savedAt === 'string' ? value.savedAt : new Date(0).toISOString(),
+  };
+}
+
+/**
+ * Reads a companion file.
+ *
+ * Returns `null` for anything that is not a companion document this version
+ * understands. A damaged or future-versioned file is never partly applied:
+ * silently dropping half a room model is worse than starting from the plan.
+ */
+export function parseCompanion(value: unknown): CompanionDocument | null {
+  if (!isRecord(value)) return null;
+  if (value.format !== COMPANION_FORMAT) return null;
+  if (value.version !== COMPANION_VERSION) return null;
+
+  const plan = parseFingerprint(value.plan);
+  if (!plan) return null;
+
+  return {
+    format: COMPANION_FORMAT,
+    version: COMPANION_VERSION,
+    plan,
+    units: value.units === 'metric' ? 'metric' : 'imperial',
+    rooms: Array.isArray(value.rooms)
+      ? value.rooms.map(parseRoom).filter((room): room is RoomModel => room != null)
+      : [],
+    library: Array.isArray(value.library)
+      ? value.library.map(parseSpec).filter((spec): spec is ItemSpec => spec != null)
+      : [],
+    overrides: Array.isArray(value.overrides)
+      ? value.overrides.map(parseOverride).filter((o): o is InstanceOverride => o != null)
+      : [],
+  };
+}

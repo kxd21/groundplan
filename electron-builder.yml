@@ -1,0 +1,79 @@
+appId: com.groundplan.app
+productName: Groundplan
+copyright: Copyright © 2026
+
+directories:
+  output: release
+  buildResources: build
+
+asar: true
+
+files:
+  - out/**/*
+  - package.json
+
+# The legacy Windows editor owned these extensions. Groundplan can open all of
+# them directly, so the desktop packages advertise the same complete set.
+fileAssociations:
+  - ext: rv4
+    name: Room Viewer Plan
+    role: Editor
+  - ext: rs4
+    name: Room Viewer Room
+    role: Editor
+  - ext: se4
+    name: Room Viewer Shape
+    role: Editor
+  - ext: ds4
+    name: Room Viewer Deep Save
+    role: Editor
+  - ext: rsd
+    name: Room Viewer Schematic
+    role: Editor
+  - ext: add
+    name: Room Viewer Add-on Library
+    role: Viewer
+  - ext: stk
+    name: Room Viewer Stock Library
+    role: Viewer
+  - ext: lib
+    name: Room Viewer Shape Library
+    role: Viewer
+
+afterPack: build/afterPack.cjs
+
+mac:
+  icon: build/icon.icns
+  category: public.app-category.graphics-design
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  # No Developer ID: the app is ad-hoc signed in afterPack instead, which is
+  # what Apple Silicon needs in order to launch it at all.
+  identity: null
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  artifactName: ${productName}-Setup-${version}-win-${arch}.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+
+portable:
+  artifactName: ${productName}-Portable-${version}-win-${arch}.${ext}
+
+linux:
+  target:
+    - AppImage
+  category: Graphics
