@@ -119,7 +119,14 @@ function inspect(app: PackagedApp): void {
   if (!existsSync(app.archive)) throw new Error(`missing packaged ASAR: ${app.archive}`);
   if (statSync(app.archive).size < 1024) throw new Error(`packaged ASAR is unexpectedly small: ${app.archive}`);
 
-  const entries = new Set(listPackage(app.archive, { isPack: false }).map((entry) => entry.replace(/^[/\\]/, '')));
+  // ASAR paths are compared with forward slashes whatever built them.
+  // `listPackage` hands back the platform separator, so on Windows every entry
+  // arrived as `out\main\index.js` and never matched the `out/main/index.js`
+  // this looks for — reporting a missing main process for a package that was
+  // perfectly good. Stripping only the leading separator was not enough.
+  const entries = new Set(
+    listPackage(app.archive, { isPack: false }).map((entry) => entry.replace(/\\/g, '/').replace(/^\//, '')),
+  );
   const required = ['package.json', 'out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html'];
   for (const entry of required) {
     if (!entries.has(entry)) throw new Error(`${app.archive} is missing ${entry}`);
