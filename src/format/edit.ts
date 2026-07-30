@@ -183,8 +183,19 @@ export function deleteNode(doc: RVDocument, index: DocumentIndex, node: RVNode):
   return { ok: true };
 }
 
-/** Deep-copies a subtree, giving every object a fresh id. */
-function cloneSubtree(node: RVNode, nextId: () => number, created: number[]): RVNode {
+/**
+ * Deep-copies a subtree, giving every object a fresh id.
+ *
+ * `remap` maps each original node to its clone so self-referential `ref`
+ * slots (a room pointing at itself from its child list) retarget into the
+ * copy rather than leaking a pointer back into the source object.
+ */
+function cloneSubtree(
+  node: RVNode,
+  nextId: () => number,
+  created: number[],
+  remap: Map<RVNode, RVNode> = new Map(),
+): RVNode {
   const copy: RVNode = {
     ...node,
     id: nextId(),
@@ -197,14 +208,18 @@ function cloneSubtree(node: RVNode, nextId: () => number, created: number[]): RV
     children: [],
   };
   created.push(copy.id);
+  remap.set(node, copy);
 
   for (const slot of node.slots) {
     if (slot.kind === 'object' && slot.node) {
-      const child = cloneSubtree(slot.node, nextId, created);
+      const child = cloneSubtree(slot.node, nextId, created, remap);
       copy.slots.push({ kind: 'object', node: child });
       copy.children.push(child);
+    } else if (slot.kind === 'ref' && slot.refTarget && remap.has(slot.refTarget)) {
+      // Parent-pointer / cyclic ref whose target was cloned with this subtree.
+      copy.slots.push({ ...slot, refTarget: remap.get(slot.refTarget) });
     } else {
-      // Reference and null slots are reproduced as-is.
+      // Shared external refs and null slots are reproduced as-is.
       copy.slots.push({ ...slot });
       if (slot.node) copy.children.push(slot.node);
     }

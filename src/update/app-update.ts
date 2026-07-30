@@ -189,7 +189,14 @@ export async function stageAppUpdate(
 }
 
 function archiveSuffix(): string {
-  return process.platform === 'darwin' ? '.zip' : '.exe';
+  if (process.platform === 'darwin') return '.zip';
+  if (process.platform === 'win32') return '.exe';
+  throw new Error(`no update package suffix for ${process.platform}`);
+}
+
+/** Bash-safe single-quoted literal — no `$()`, backticks, or variable expansion. */
+function bashSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -231,13 +238,14 @@ export async function installAppUpdate(
   const workDir = join(staged.archivePath, '..', `staging-${staged.version}`);
   const scriptPath = join(staged.archivePath, '..', `install-${staged.version}.sh`);
 
-  // Quoted throughout: application paths routinely contain spaces, and an
-  // unquoted path here would delete the wrong thing.
+  // Single-quoted throughout: JSON.stringify is not shell-safe inside bash
+  // double quotes (`$(…)` and backticks still expand). Paths routinely contain
+  // spaces; they must never be left unquoted.
   const script = `#!/bin/bash
 set -e
-APP=${JSON.stringify(appPath)}
-ARCHIVE=${JSON.stringify(staged.archivePath)}
-WORK=${JSON.stringify(workDir)}
+APP=${bashSingleQuote(appPath)}
+ARCHIVE=${bashSingleQuote(staged.archivePath)}
+WORK=${bashSingleQuote(workDir)}
 PID=${process.pid}
 
 # Wait for the running application to exit before touching its bundle.

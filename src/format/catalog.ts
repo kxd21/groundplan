@@ -10,7 +10,7 @@
  * The database is opened read-only; nothing here writes to the installation.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import MDBReader from 'mdb-reader';
 
@@ -26,21 +26,49 @@ export interface Catalog {
   categories: string[];
 }
 
+/** Resolves a path that may differ only in case from what is on disk. */
+function resolveExisting(path: string): string | null {
+  if (existsSync(path)) return path;
+  try {
+    const parent = dirname(path);
+    const want = path.slice(parent.length + 1).toLowerCase();
+    if (!want) return null;
+    const match = readdirSync(parent).find((name) => name.toLowerCase() === want);
+    return match ? join(parent, match) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Walks `segments` from `root`, matching each segment case-insensitively. */
+function resolveCaseInsensitive(root: string, segments: string[]): string | null {
+  let current = root;
+  for (const segment of segments) {
+    const next = resolveExisting(join(current, segment));
+    if (!next) return null;
+    current = next;
+  }
+  return current;
+}
+
 /**
  * Looks for `rvtss.mdb` near an opened plan.
  *
  * A Room Viewer installation puts plans in `Data/` and the database in
  * `Common/`, so both the plan's folder and its siblings are worth checking.
+ * Legacy installs often use DOS-era casing (`RVTSS.MDB`, `COMMON`); that is
+ * invisible on Windows/default macOS but fails on Linux and case-sensitive
+ * APFS unless we probe case-insensitively.
  */
 export function findCatalogPath(planPath: string): string | null {
   const dir = dirname(planPath);
-  const candidates = [
-    join(dir, 'rvtss.mdb'),
-    join(dir, 'Common', 'rvtss.mdb'),
-    resolve(dir, '..', 'Common', 'rvtss.mdb'),
-    resolve(dir, '..', '..', 'Common', 'rvtss.mdb'),
+  const candidates: Array<string | null> = [
+    resolveExisting(join(dir, 'rvtss.mdb')),
+    resolveCaseInsensitive(dir, ['Common', 'rvtss.mdb']),
+    resolveCaseInsensitive(resolve(dir, '..'), ['Common', 'rvtss.mdb']),
+    resolveCaseInsensitive(resolve(dir, '..', '..'), ['Common', 'rvtss.mdb']),
   ];
-  return candidates.find((p) => existsSync(p)) ?? null;
+  return candidates.find((p): p is string => !!p) ?? null;
 }
 
 export function loadCatalog(path: string): Catalog {

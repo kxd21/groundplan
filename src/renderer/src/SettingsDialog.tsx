@@ -70,6 +70,17 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
     };
   }, [onError]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
   // Every change is written straight away, and the confirmation is quiet.
   const patch = async (change: Partial<Settings>) => {
     if (!settings) return;
@@ -374,7 +385,8 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
                   <button onClick={() => void api.checkAppUpdate()}>Check for updates now</button>
                 </div>
                 <p className="hint">
-                  Updates are signed and verified before anything is installed, and the copy you have is
+                  Checking for updates looks for a new Groundplan build and a signed equipment
+                  catalog. Both are verified before anything is installed, and the copy you have is
                   kept until the new one is in place.
                 </p>
               </>

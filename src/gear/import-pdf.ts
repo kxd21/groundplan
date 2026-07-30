@@ -205,8 +205,10 @@ export async function importGearPdf(data: Uint8Array, sourcePath?: string): Prom
         description,
         children: [],
         // A bold line with no quantity is an instruction to the warehouse
-        // rather than a physical item.
-        note: quantitySpan ? undefined : true,
+        // rather than a physical item. A non-bold line missing a quantity is
+        // kept as a zero-count item (parse glitch) so reconcile still sees it.
+        note:
+          !quantitySpan && descriptionSpans.some((span) => span.bold) ? true : undefined,
       };
 
       if (nested && lastTopLevel) lastTopLevel.children.push(item);

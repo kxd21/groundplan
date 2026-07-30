@@ -46,6 +46,17 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     void api.roomPresets().then(setPresets);
   }, []);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || busy) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [busy, onCancel]);
+
   const widthUnits = parseLength(width, units);
   const depthUnits = parseLength(depth, units);
   const sized = empty || ((widthUnits ?? 0) > 0 && (depthUnits ?? 0) > 0);

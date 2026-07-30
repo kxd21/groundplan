@@ -367,12 +367,15 @@ export function App() {
     setFitToken((t) => t + 1);
   }, []);
 
+  const loadGeneration = useRef(0);
   const load = useCallback(
     async (path: string) => {
+      const generation = ++loadGeneration.current;
       setBusy(true);
       setError(null);
       try {
         const result = await api.openPath(path);
+        if (generation !== loadGeneration.current) return;
         if (result && 'scene' in result) {
           adopt(result as Doc);
           refreshRecent();
@@ -380,9 +383,10 @@ export function App() {
           setError(String((result as { reason?: string }).reason ?? 'Could not open that plan.'));
         }
       } catch (err) {
+        if (generation !== loadGeneration.current) return;
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setBusy(false);
+        if (generation === loadGeneration.current) setBusy(false);
       }
     },
     [refreshRecent, adopt],
@@ -1266,8 +1270,25 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (newPlanOpen) {
+          e.preventDefault();
+          setNewPlanOpen(false);
+          return;
+        }
+        if (settingsOpen) {
+          e.preventDefault();
+          setSettingsOpen(false);
+          return;
+        }
+      }
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
       const mod = e.metaKey || e.ctrlKey;
 
       if (mod && e.key.toLowerCase() === 'b') {
@@ -1399,6 +1420,8 @@ export function App() {
     drawTool,
     drawFrom,
     printOpen,
+    newPlanOpen,
+    settingsOpen,
     cancelPlacement,
     toggleMeasure,
     toggleDimension,
@@ -2534,7 +2557,8 @@ export function App() {
                 </button>
               </div>
               <p style={{ marginTop: 4 }}>
-                <kbd>⌘N</kbd> for a new plan, <kbd>⌘O</kbd> to open one, <kbd>⌘⇧O</kbd> for a folder
+                <kbd>{shortcut('N')}</kbd> for a new plan, <kbd>{shortcut('O')}</kbd> to open one,{' '}
+                <kbd>{shortcut('O', true)}</kbd> for a folder
               </p>
             </div>
           )}

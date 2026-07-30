@@ -457,7 +457,13 @@ export function InventoryView({
               )}
 
               {editing === item.id ? (
-                <span className="inv-size-edit">
+                <span
+                  className="inv-size-edit"
+                  onBlur={(e) => {
+                    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                    commitSize(item);
+                  }}
+                >
                   <input
                     autoFocus
                     className="gear-qty-input num"
@@ -475,7 +481,6 @@ export function InventoryView({
                     value={hDraft}
                     placeholder="h"
                     onChange={(e) => setHDraft(e.target.value)}
-                    onBlur={() => commitSize(item)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                       if (e.key === 'Escape') setEditing(null);

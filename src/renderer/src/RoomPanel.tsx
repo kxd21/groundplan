@@ -100,8 +100,14 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   // The model is derived from the document, so it is re-read whenever the
   // document changes rather than kept in step by hand.
   useEffect(() => {
-    void refresh();
-  }, [refresh, doc.revision, doc.path]);
+    let cancelled = false;
+    void api.planModel().then((next) => {
+      if (!cancelled) setModel(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.revision, doc.path]);
 
   /** Runs an edit, folds the new document back in, and reports the outcome. */
   const run = useCallback(

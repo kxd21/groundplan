@@ -33,7 +33,9 @@ async function replaceFile(temporary: string, target: string): Promise<void> {
     return;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (!['EEXIST', 'EPERM', 'EACCES'].includes(code ?? '') || !(await exists(target))) {
+    // EBUSY is the usual Windows lock from antivirus, Search indexing, or
+    // OneDrive/Dropbox — the whole reason this fallback exists.
+    if (!['EEXIST', 'EPERM', 'EACCES', 'EBUSY'].includes(code ?? '') || !(await exists(target))) {
       throw error;
     }
   }

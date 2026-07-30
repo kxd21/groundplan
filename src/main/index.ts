@@ -8,7 +8,7 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, type MenuItemConstructorOptions } from 'electron';
-import { join, dirname, basename, extname, resolve } from 'node:path';
+import { join, dirname, basename, extname } from 'node:path';
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -24,6 +24,16 @@ import {
   installAppUpdate,
   stageAppUpdate,
 } from '../update/app-update.js';
+import {
+  applyUpdate,
+  checkForUpdate,
+  loadPreferences,
+  savePreferences,
+  shouldCheck,
+  shouldInstallSilently,
+  type CatalogPreferences,
+} from '../catalog/service.js';
+import { catalogPaths } from '../catalog/install.js';
 import {
   findReleaseFolder,
   planUsbUpdate,
@@ -54,7 +64,9 @@ import {
 } from '../format/annotate.js';
 import { listSymbols, importSymbol } from '../format/symbol.js';
 import { placeGear, parseDimensions } from '../format/place.js';
+import { verifyWritable } from '../format/write.js';
 import { Session } from './session.js';
+import { canonicalPath, pathIdentity, samePath } from './paths.js';
 import { printPlanToPdf, SCALES, type PrintRequest } from './print.js';
 import { scheduleToCsv, scheduleSummaryCsv, entryKey, type Schedule } from '../format/schedule.js';
 import { importGearPdf } from '../gear/import-pdf.js';
@@ -186,33 +198,34 @@ const sha256 = (data: Uint8Array | string): string =>
  * granted only after an OS open/save dialog, a recent-list response, a folder
  * listing, or an OS file-association event.
  */
-const grantedPaths = new Set<string>();
-const grantedDirectories = new Set<string>();
-const canonicalPath = (path: string): string => resolve(path);
+const grantedPaths = new Map<string, string>();
+const grantedDirectories = new Map<string, string>();
 const grantPath = (path: string): string => {
   const granted = canonicalPath(path);
-  grantedPaths.add(granted);
+  grantedPaths.set(pathIdentity(granted), granted);
   return granted;
 };
 const grantDirectory = (path: string): string => {
   const granted = canonicalPath(path);
-  grantedDirectories.add(granted);
+  grantedDirectories.set(pathIdentity(granted), granted);
   return granted;
 };
 const requireGrantedPath = (path: unknown, extensions?: readonly string[]): string => {
   if (typeof path !== 'string' || !path.trim()) throw new Error('a valid file path is required');
   const candidate = canonicalPath(path);
-  if (!grantedPaths.has(candidate)) throw new Error('that file was not selected in Groundplan');
-  if (extensions && !extensions.includes(extname(candidate).toLowerCase())) {
+  const granted = grantedPaths.get(pathIdentity(candidate));
+  if (!granted) throw new Error('that file was not selected in Groundplan');
+  if (extensions && !extensions.includes(extname(granted).toLowerCase())) {
     throw new Error('that file type is not supported for this action');
   }
-  return candidate;
+  return granted;
 };
 const requireGrantedDirectory = (path: unknown): string => {
   if (typeof path !== 'string' || !path.trim()) throw new Error('a valid folder is required');
   const candidate = canonicalPath(path);
-  if (!grantedDirectories.has(candidate)) throw new Error('that folder was not selected in Groundplan');
-  return candidate;
+  const granted = grantedDirectories.get(pathIdentity(candidate));
+  if (!granted) throw new Error('that folder was not selected in Groundplan');
+  return granted;
 };
 
 async function enforceFileSize(path: string, maximum: number): Promise<void> {
@@ -481,7 +494,8 @@ function flushPendingOpenPath(): void {
 
 function rememberRecent(path: string): void {
   path = grantPath(path);
-  const i = recentFiles.indexOf(path);
+  const identity = pathIdentity(path);
+  const i = recentFiles.findIndex((entry) => pathIdentity(entry) === identity);
   if (i !== -1) recentFiles.splice(i, 1);
   recentFiles.unshift(path);
   recentOpenedAt.set(path, Date.now());
@@ -958,6 +972,17 @@ function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: s
       s.index,
       dimensionAssociations,
     );
+
+    // Refuse edits that would write a document the parser cannot reproduce —
+    // the synthesis contract. Blank plans already gate on this; live edits must
+    // too, or a bad seating/label/room write reaches disk on Save.
+    const verdict = verifyWritable(s.loaded.document);
+    if (!verdict.ok) {
+      s.rollback();
+      dimensionAssociations = associationsBefore;
+      return { ok: false, reason: verdict.reason };
+    }
+
     s.refresh();
     commitDimensionHistory(associationsBefore);
     if (associatedUpdates > 0) persistDimensionAssociations(s.path);
@@ -998,7 +1023,7 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
     if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
     target = grantPath(result.filePath);
   }
-  const overwritingSource = canonicalPath(target) === canonicalPath(source);
+  const overwritingSource = samePath(target, source);
 
   if (overwritingSource) {
     try {
@@ -1024,12 +1049,23 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
   }
 
   const backup = `${source}.bak`;
+  const verdict = verifyWritable(s.loaded.document);
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      reason:
+        verdict.reason ??
+        'this plan no longer reproduces exactly and cannot be saved without risking the file',
+    };
+  }
   const body = s.body();
   const bytes = s.file();
   const associationsAtSave = cloneDimensionAssociations();
   try {
     await atomicWriteFile(target, bytes, {
-      backupPath: overwritingSource && !existsSync(backup) ? backup : undefined,
+      // Refresh .bak on every overwrite so it stays a last-good copy, matching
+      // companion / dimension / schedule sidecar writers.
+      backupPath: overwritingSource ? backup : undefined,
     });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -1159,8 +1195,7 @@ async function saveGearDocumentCore(saveAs: boolean): Promise<SaveGearResult> {
     target = grantPath(result.filePath);
   }
 
-  const overwritingSource =
-    !!source && canonicalPath(target) === canonicalPath(source);
+  const overwritingSource = !!source && samePath(target, source);
   if (overwritingSource && state.savedDigest) {
     try {
       if (sha256(await readFile(source)) !== state.savedDigest) {
@@ -1393,6 +1428,144 @@ async function runAppUpdate(interactive: boolean): Promise<void> {
       type: 'error',
       message: 'The update could not be installed',
       detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${plan.currentVersion} is unchanged.`,
+      buttons: ['OK'],
+    });
+  }
+}
+
+async function catalogPreferences(): Promise<{
+  paths: ReturnType<typeof catalogPaths>;
+  preferences: CatalogPreferences;
+}> {
+  const root = join(app.getPath('userData'), 'catalog');
+  const paths = catalogPaths(root);
+  const stored = await loadPreferences(root);
+  settings ??= await loadSettings(app.getPath('userData'));
+  return {
+    paths,
+    preferences: {
+      ...stored,
+      policy: settings.catalog.policy,
+      smallUpdateLimit: Math.max(1, settings.catalog.smallUpdateLimitMb) * 1024 * 1024,
+      checkIntervalHours: Math.max(1, settings.catalog.checkIntervalHours),
+    },
+  };
+}
+
+/**
+ * Looks for a signed equipment-catalog update and installs it per Settings.
+ *
+ * Quiet on launch (unless the policy says to ask / auto-install). Interactive
+ * checks always report the outcome so the Settings button is not a no-op.
+ */
+async function runCatalogUpdate(interactive: boolean): Promise<void> {
+  const { paths, preferences } = await catalogPreferences();
+  if (!interactive && !shouldCheck(preferences)) return;
+
+  let check: Awaited<ReturnType<typeof checkForUpdate>>;
+  try {
+    check = await checkForUpdate(paths, app.getVersion(), preferences);
+  } catch (error) {
+    if (interactive) {
+      await dialog.showMessageBox({
+        type: 'error',
+        message: 'The equipment catalog could not be checked',
+        detail: String(error),
+        buttons: ['OK'],
+      });
+    }
+    return;
+  }
+
+  await savePreferences(paths.root, {
+    ...preferences,
+    lastCheck: check.status.lastCheck ?? new Date().toISOString(),
+    lastCheckSucceeded: !check.status.offline,
+  });
+
+  if (check.status.offline) {
+    if (interactive) {
+      await dialog.showMessageBox({
+        type: 'info',
+        message: 'The equipment catalog could not be checked',
+        detail: 'Groundplan is offline, or the catalog host is unreachable. The catalog you already have is unchanged.',
+        buttons: ['OK'],
+      });
+    }
+    return;
+  }
+
+  if (check.status.blocked) {
+    if (interactive) {
+      await dialog.showMessageBox({
+        type: 'info',
+        message: 'Catalog update unavailable',
+        detail: check.status.blocked,
+        buttons: ['OK'],
+      });
+    }
+    return;
+  }
+
+  if (!check.status.available || !check.plan || check.plan.kind === 'none') {
+    if (interactive) {
+      await dialog.showMessageBox({
+        type: 'info',
+        message: 'Equipment catalog is up to date',
+        detail: `Version ${check.status.installedVersion} · ${check.status.productCount} products.`,
+        buttons: ['OK'],
+      });
+    }
+    return;
+  }
+
+  const available = check.status.available;
+  const silent = shouldInstallSilently(check.plan, preferences);
+  if (!silent) {
+    // Manual policy stays quiet unless the user asked; notify / large updates ask.
+    if (!interactive && preferences.policy === 'manual') return;
+    const size = `${(available.bytes / 1024 / 1024).toFixed(1)} MB`;
+    const answer = await dialog.showMessageBox({
+      type: available.urgent ? 'warning' : 'info',
+      message: `Equipment catalog ${available.version} is available`,
+      detail:
+        `${available.notes ? `${available.notes}\n\n` : ''}` +
+        `You have ${check.status.installedVersion}. Download size: ${size} (${available.kind}).`,
+      buttons: ['Download and install', 'Later', 'Skip this version'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (answer.response === 1) return;
+    if (answer.response === 2) {
+      await savePreferences(paths.root, {
+        ...preferences,
+        snoozedVersion: available.version,
+        lastCheck: preferences.lastCheck,
+        lastCheckSucceeded: true,
+      });
+      return;
+    }
+  }
+
+  const applied = await applyUpdate(paths, check.plan, (progress) => {
+    mainWindow?.webContents.send('app:update-progress', progress);
+  });
+
+  if (!applied.ok) {
+    await dialog.showMessageBox({
+      type: 'error',
+      message: 'The equipment catalog could not be updated',
+      detail: `${applied.reason ?? 'The update did not finish.'}\n\nThe catalog you already have is unchanged.`,
+      buttons: ['OK'],
+    });
+    return;
+  }
+
+  if (interactive || !silent) {
+    await dialog.showMessageBox({
+      type: 'info',
+      message: `Equipment catalog ${applied.version} installed`,
+      detail: `Added ${applied.added}, updated ${applied.updated}, deprecated ${applied.deprecated}.`,
       buttons: ['OK'],
     });
   }
@@ -1987,8 +2160,8 @@ app.whenReady().then(async () => {
     if (process.platform === 'darwin') {
       mainWindow.setDocumentEdited(!!state.dirty);
       const represented =
-        typeof state?.path === 'string' && grantedPaths.has(canonicalPath(state.path))
-          ? canonicalPath(state.path)
+        typeof state?.path === 'string' && grantedPaths.has(pathIdentity(state.path))
+          ? grantedPaths.get(pathIdentity(state.path)) ?? ''
           : '';
       mainWindow.setRepresentedFilename(represented);
     }
@@ -2972,11 +3145,26 @@ app.whenReady().then(async () => {
         const reasons: string[] = [];
         const created: number[] = [];
 
-        // Delete from the deepest first so removing one does not invalidate
-        // the position of the next.
         const targets = ids
           .map((id) => s.index.byId.get(id))
           .filter((n): n is NonNullable<typeof n> => !!n);
+
+        // Delete deepest-first so removing a parent does not leave a dangling
+        // child id that deleteNode would then fail to locate.
+        if (kind === 'delete') {
+          const depthOf = (node: (typeof targets)[number]): number => {
+            let depth = 0;
+            let current: typeof node | undefined = node;
+            while (current) {
+              const parent = s.index.parentOf.get(current);
+              if (!parent) break;
+              depth++;
+              current = parent;
+            }
+            return depth;
+          };
+          targets.sort((a, b) => depthOf(b) - depthOf(a));
+        }
 
         for (const node of targets) {
           let result: { ok: boolean; reason?: string; created?: number[] };
@@ -3346,6 +3534,7 @@ app.whenReady().then(async () => {
 
   handle('app:check-update', async () => {
     await runAppUpdate(true);
+    await runCatalogUpdate(true);
     return { ok: true };
   });
 
@@ -3392,6 +3581,7 @@ app.whenReady().then(async () => {
     void (async () => {
       settings ??= await loadSettings(app.getPath('userData'));
       if (settings.app.checkOnLaunch) await runAppUpdate(false);
+      await runCatalogUpdate(false);
     })();
   }, 8000);
   createWindow();

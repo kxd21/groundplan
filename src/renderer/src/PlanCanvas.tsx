@@ -310,10 +310,12 @@ export function PlanCanvas({
 
   const fit = useCallback(() => {
     const target = scene?.roomExtent ?? scene?.extent;
-    if (!target || size.width < 10) return;
+    if (!target || size.width < 10 || size.height < 10) return;
+    const padX = Math.max(size.width - RULER - 72, 1);
+    const padY = Math.max(size.height - RULER - 72, 1);
     const w = Math.max(target.maxX - target.minX, 1);
     const h = Math.max(target.maxY - target.minY, 1);
-    const scale = Math.min((size.width - RULER - 72) / w, (size.height - RULER - 72) / h);
+    const scale = Math.min(4, Math.max(0.0015, Math.min(padX / w, padY / h)));
     const cx = (target.minX + target.maxX) / 2;
     const cy = (target.minY + target.maxY) / 2;
     setView({

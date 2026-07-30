@@ -12,6 +12,7 @@ import { readFile, rename } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
 import { atomicWriteJson } from './storage.js';
+import { pathIdentity } from './paths.js';
 
 export const PLAN_FOLDER_FORMAT = 'groundplan-plan-folders';
 export const PLAN_FOLDER_VERSION = 1;
@@ -134,7 +135,7 @@ function parsePlanFolders(value: unknown): PlanFolderLibrary {
     if (typeof membership.folderId !== 'string' || !folderIds.has(membership.folderId)) continue;
     if (typeof membership.path !== 'string' || !membership.path.trim()) continue;
     const path = resolve(membership.path);
-    const key = `${membership.folderId}\0${path}`;
+    const key = `${membership.folderId}\0${pathIdentity(path)}`;
     if (membershipKeys.has(key)) continue;
     membershipKeys.add(key);
     memberships.push({
@@ -306,9 +307,9 @@ export function addPlansToFolder(
   const existing = new Set(
     library.memberships
       .filter((membership) => membership.folderId === folderId)
-      .map((membership) => membership.path),
+      .map((membership) => pathIdentity(membership.path)),
   );
-  const additions = unique.filter((path) => !existing.has(path));
+  const additions = unique.filter((path) => !existing.has(pathIdentity(path)));
   if (library.memberships.length + additions.length > MAX_MEMBERSHIPS) {
     throw new Error('the plan-folder item limit has been reached');
   }
@@ -328,10 +329,11 @@ export function removePlanFromFolder(
   path: string,
 ): boolean {
   requireFolder(library, folderId);
-  const canonical = resolve(path);
+  const identity = pathIdentity(path);
   const before = library.memberships.length;
   library.memberships = library.memberships.filter(
-    (membership) => membership.folderId !== folderId || membership.path !== canonical,
+    (membership) =>
+      membership.folderId !== folderId || pathIdentity(membership.path) !== identity,
   );
   return library.memberships.length !== before;
 }
