@@ -319,9 +319,17 @@ export function verifyWritable(doc: RVDocument): WritableCheck {
   const before = census(doc);
   const after = census(reparsed);
   if (before.length !== after.length) {
+    // Seen once in 1,955 corpus files, and always as the reparse resolving one
+    // *more* reference than the document held. The bytes are self-consistent —
+    // they round-trip — but the object graph is not provably the one intended,
+    // and that is exactly the case to decline rather than guess about.
+    const more = after.length > before.length;
     return {
       ok: false,
-      reason: `reading back the document found ${after.length} entries, not ${before.length}`,
+      reason:
+        `reading the document back found ${after.length} objects where it held ${before.length}. ` +
+        `Its structure is not reproduced exactly enough to write ${more ? 'into' : 'from'} safely. ` +
+        `Adding at the top level of the plan rather than inside a group may work.`,
     };
   }
   for (let i = 0; i < before.length; i++) {

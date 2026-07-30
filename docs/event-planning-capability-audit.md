@@ -159,6 +159,36 @@ before committing to the rest.
 
 ---
 
+## Result, measured 2026-07-30
+
+Phase 2 holds. Synthesis was run against every file in the corpus:
+
+```
+files scanned          1955
+editable (round-trips) 1954
+synthesis verified     1953   (99.9%)
+refused                   1
+```
+
+Two corrections to the plan above, both found in the doing:
+
+**`roundTrip()` cannot gate creation.** It asks whether a document still reproduces
+the file it was read from, and a document with a new wall in it is deliberately not
+that file — so it fails by design, on every successful synthesis. The working gate is
+`verifyWritable()`: serialize, reparse, and require the reparse to round-trip byte for
+byte, with a matching object census and no new warnings.
+
+**The single refusal is a refusal, not a corruption.** In
+`Augusta Room (Session 3)`, reading the written bytes back resolves one *more*
+reference than the document held. The bytes are self-consistent — they round-trip —
+but the object graph is not provably the intended one, so the write is declined.
+Inserting at the top level of that plan rather than inside a group succeeds. No file
+in the corpus was written incorrectly; one was not written at all.
+
+The round-trip gate itself re-measured at 1,954/1,955, matching the figure above.
+
+---
+
 ## 6. What I'd do first
 
 Phase 2 spike, one file, one class: synthesize a single `RVSegmentLine` from scratch and prove
