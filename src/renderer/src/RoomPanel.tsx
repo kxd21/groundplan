@@ -65,11 +65,13 @@ function LengthField({
   id,
   label,
   field,
+  units,
   disabled,
 }: {
   id: string;
   label: string;
   field: ReturnType<typeof useLength>;
+  units: UnitSystem;
   disabled?: boolean;
 }) {
   return (
@@ -81,6 +83,12 @@ function LengthField({
         inputMode="text"
         value={field.text}
         disabled={disabled}
+        placeholder={units === 'metric' ? 'e.g. 120cm' : "e.g. 4' 6\""}
+        title={
+          units === 'metric'
+            ? 'Metres or centimetres (bare number = metres). ft/in suffixes also work.'
+            : 'Feet or inches (bare number = feet). cm/m/mm suffixes also work.'
+        }
         aria-invalid={field.text.trim() !== '' && !field.valid}
         onChange={(e) => field.setText(e.target.value)}
       />
@@ -308,8 +316,8 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
         )}
 
         <div className="field-row">
-          <LengthField id="room-width" label="Width" field={width} disabled={!editable} />
-          <LengthField id="room-depth" label="Depth" field={depth} disabled={!editable} />
+          <LengthField id="room-width" label="Width" field={width} units={units} disabled={!editable} />
+          <LengthField id="room-depth" label="Depth" field={depth} units={units} disabled={!editable} />
         </div>
         <div className="actions-row">
           <button
@@ -363,12 +371,12 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           </div>
 
           <div className="field-row">
-            <LengthField id="reshape-x" label="X" field={reshapeX} disabled={!editable} />
-            <LengthField id="reshape-y" label="Y" field={reshapeY} disabled={!editable} />
+            <LengthField id="reshape-x" label="X" field={reshapeX} units={units} disabled={!editable} />
+            <LengthField id="reshape-y" label="Y" field={reshapeY} units={units} disabled={!editable} />
           </div>
           <div className="field-row">
-            <LengthField id="reshape-w" label="Width" field={reshapeW} disabled={!editable} />
-            <LengthField id="reshape-d" label="Depth" field={reshapeD} disabled={!editable} />
+            <LengthField id="reshape-w" label="Width" field={reshapeW} units={units} disabled={!editable} />
+            <LengthField id="reshape-d" label="Depth" field={reshapeD} units={units} disabled={!editable} />
           </div>
           <div className="actions-row">
             <button
@@ -419,7 +427,7 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
                 ))}
               </select>
             </div>
-            <LengthField id="wall-length" label="Length" field={wallLengthField} disabled={!editable} />
+            <LengthField id="wall-length" label="Length" field={wallLengthField} units={units} disabled={!editable} />
           </div>
           <div className="actions-row">
             <button
@@ -435,7 +443,7 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           </div>
 
           <div className="field-row" style={{ marginTop: 12 }}>
-            <LengthField id="curve-radius" label="Radius" field={curveRadius} disabled={!editable} />
+            <LengthField id="curve-radius" label="Radius" field={curveRadius} units={units} disabled={!editable} />
           </div>
           <label className="setting-check">
             <input
@@ -538,12 +546,12 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
         </div>
 
         <div className="field-row">
-          <LengthField id="seat-spacing" label="Seat spacing" field={seatSpacing} disabled={!editable} />
-          <LengthField id="row-spacing" label="Row spacing" field={rowSpacing} disabled={!editable} />
+          <LengthField id="seat-spacing" label="Seat spacing" field={seatSpacing} units={units} disabled={!editable} />
+          <LengthField id="row-spacing" label="Row spacing" field={rowSpacing} units={units} disabled={!editable} />
         </div>
         <div className="field-row">
-          <LengthField id="front-clearance" label="Front clearance" field={frontClearance} disabled={!editable} />
-          <LengthField id="centre-aisle" label="Centre aisle" field={centreAisle} disabled={!editable} />
+          <LengthField id="front-clearance" label="Front clearance" field={frontClearance} units={units} disabled={!editable} />
+          <LengthField id="centre-aisle" label="Centre aisle" field={centreAisle} units={units} disabled={!editable} />
         </div>
 
         <div className="field-row">
@@ -640,10 +648,10 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           <span>Stage</span>
         </div>
         <div className="field-row">
-          <LengthField id="stage-width" label="Width" field={stageWidth} disabled={!editable} />
-          <LengthField id="stage-depth" label="Depth" field={stageDepth} disabled={!editable} />
+          <LengthField id="stage-width" label="Width" field={stageWidth} units={units} disabled={!editable} />
+          <LengthField id="stage-depth" label="Depth" field={stageDepth} units={units} disabled={!editable} />
         </div>
-        <LengthField id="stage-height" label="Deck height" field={stageHeight} disabled={!editable} />
+        <LengthField id="stage-height" label="Deck height" field={stageHeight} units={units} disabled={!editable} />
 
         <div className="actions-row">
           <button

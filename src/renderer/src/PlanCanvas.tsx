@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { Scene, Layer, ScenePrimitive } from '../../format/scene.js';
+import { formatLength, UNITS_PER_METRE, type UnitSystem } from '../../format/units.js';
 import { IconPlus, IconMinus, IconFit, IconHand } from './icons.js';
 
 const UNITS_PER_FOOT = 120;
@@ -39,6 +40,8 @@ interface Props {
   /** True while the measure tool is active. */
   /** Grid step to snap to, in logical units. Zero disables snapping. */
   snapStep?: number;
+  /** How rulers and temporary measurements are labelled. */
+  units?: UnitSystem;
   measuring?: boolean;
   /** The first point of a measurement, once taken. */
   measureFrom?: { x: number; y: number } | null;
@@ -167,9 +170,23 @@ function colorRefToCss(color: number, paper: boolean): string {
 }
 
 /** Picks a grid step so lines land roughly `target` pixels apart. */
-function gridStepFeet(scale: number, target: number): number {
-  const candidates = [1, 2, 5, 10, 25, 50, 100, 250];
-  return candidates.find((f) => f * UNITS_PER_FOOT * scale > target) ?? 500;
+/** Returns a ruler/grid major step in logical units for the current zoom. */
+function gridStepUnits(scale: number, targetPx: number, system: UnitSystem): number {
+  if (system === 'metric') {
+    const metres = [0.1, 0.2, 0.5, 1, 2, 5, 10, 25, 50];
+    return metres.map((m) => m * UNITS_PER_METRE).find((u) => u * scale > targetPx) ?? 100 * UNITS_PER_METRE;
+  }
+  const feet = [1, 2, 5, 10, 25, 50, 100, 250];
+  return feet.map((f) => f * UNITS_PER_FOOT).find((u) => u * scale > targetPx) ?? 500 * UNITS_PER_FOOT;
+}
+
+function rulerLabel(logical: number, system: UnitSystem): string {
+  if (system === 'metric') {
+    const metres = logical / UNITS_PER_METRE;
+    if (Math.abs(metres) < 1) return `${Math.round(metres * 100)}cm`;
+    return Number.isInteger(metres) ? `${metres}m` : `${metres.toFixed(1)}m`;
+  }
+  return `${Math.round(logical / UNITS_PER_FOOT)}′`;
 }
 
 export function PlanCanvas({
@@ -188,6 +205,7 @@ export function PlanCanvas({
   onPlaceAt,
   onDropItem,
   snapStep = 0,
+  units = 'imperial',
   measuring,
   measureFrom,
   measurement,
@@ -423,7 +441,7 @@ export function PlanCanvas({
     ctx.fillRect(0, 0, size.width, size.height);
 
     if (!scene) {
-      drawRulers(ctx, size, view, paper);
+      drawRulers(ctx, size, view, paper, units);
       return;
     }
 
@@ -440,7 +458,7 @@ export function PlanCanvas({
       maxY: (size.height - offsetY + 36) / scale,
     };
 
-    drawGrid(ctx, size, view, paper, showGrid);
+    drawGrid(ctx, size, view, paper, showGrid, units);
 
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -535,12 +553,12 @@ export function PlanCanvas({
       const to = pointer ?? activeFrom;
       // A line tool wants no dimension text; it is drawing, not measuring.
       if (drawTool === 'line') drawShapePreview(ctx, activeFrom, pointer ?? activeFrom, 'line', view);
-      else drawMeasurement(ctx, activeFrom, to, view, paper);
+      else drawMeasurement(ctx, activeFrom, to, view, paper, units);
     } else if (measurement) {
-      drawMeasurement(ctx, measurement.from, measurement.to, view, paper);
+      drawMeasurement(ctx, measurement.from, measurement.to, view, paper, units);
     }
 
-    drawRulers(ctx, size, view, paper);
+    drawRulers(ctx, size, view, paper, units);
   }, [
     scene,
     prepared,
@@ -550,6 +568,7 @@ export function PlanCanvas({
     visibleLayers,
     paper,
     showGrid,
+    units,
     selection,
     selectionSet,
     hover,
@@ -1017,7 +1036,7 @@ function drawShapePreview(
 }
 
 /**
- * Draws a measurement between two points, with the distance in feet and inches.
+ * Draws a measurement between two points, labelled in the drawing unit system.
  */
 function drawMeasurement(
   ctx: CanvasRenderingContext2D,
@@ -1025,17 +1044,15 @@ function drawMeasurement(
   to: { x: number; y: number },
   view: View,
   paper: boolean,
+  system: UnitSystem,
 ): void {
   const x0 = from.x * view.scale + view.offsetX;
   const y0 = from.y * view.scale + view.offsetY;
   const x1 = to.x * view.scale + view.offsetX;
   const y1 = to.y * view.scale + view.offsetY;
 
-  const units = Math.hypot(to.x - from.x, to.y - from.y);
-  const inches = units / 10;
-  const feet = Math.floor(inches / 12);
-  const rest = Math.round(inches - feet * 12);
-  const label = rest === 12 ? `${feet + 1}′ 0″` : `${feet}′ ${rest}″`;
+  const span = Math.hypot(to.x - from.x, to.y - from.y);
+  const label = formatLength(span, system);
 
   ctx.save();
   ctx.strokeStyle = '#ff9f43';
@@ -1084,10 +1101,11 @@ function drawGrid(
   view: View,
   paper: boolean,
   visible = true,
+  system: UnitSystem = 'imperial',
 ): void {
   if (!visible) return;
-  const minor = gridStepFeet(view.scale, 9);
-  const spacing = minor * UNITS_PER_FOOT * view.scale;
+  const minor = gridStepUnits(view.scale, 9, system);
+  const spacing = minor * view.scale;
   if (spacing < 5) return;
 
   const draw = (step: number, alpha: number) => {
@@ -1095,7 +1113,7 @@ function drawGrid(
     ctx.strokeStyle = paper ? `rgba(20,26,36,${alpha})` : `rgba(150,180,220,${alpha})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    const gap = step * UNITS_PER_FOOT * view.scale;
+    const gap = step * view.scale;
     const startX = view.offsetX % gap;
     for (let x = startX; x < size.width; x += gap) {
       if (x < RULER) continue;
@@ -1141,7 +1159,7 @@ function drawSelectionFrame(
 }
 
 /**
- * Rulers along the top and left edges, marked in feet.
+ * Rulers along the top and left edges, marked in the drawing unit system.
  *
  * They occlude a strip of the sheet, which is the usual trade in drafting
  * software: knowing the scale at a glance is worth more than the pixels.
@@ -1151,6 +1169,7 @@ function drawRulers(
   size: { width: number; height: number },
   view: View,
   paper: boolean,
+  system: UnitSystem,
 ): void {
   const bg = paper ? '#f1f1ef' : '#141619';
   const line = paper ? 'rgba(20,26,36,0.16)' : 'rgba(255,255,255,0.12)';
@@ -1170,8 +1189,8 @@ function drawRulers(
   ctx.lineTo(RULER + 0.5, size.height);
   ctx.stroke();
 
-  const step = gridStepFeet(view.scale, 54);
-  const gap = step * UNITS_PER_FOOT * view.scale;
+  const step = gridStepUnits(view.scale, 54, system);
+  const gap = step * view.scale;
   if (gap < 12) {
     ctx.restore();
     return;
@@ -1186,18 +1205,18 @@ function drawRulers(
   ctx.textBaseline = 'alphabetic';
   const firstX = Math.ceil((RULER - view.offsetX) / gap) * gap + view.offsetX;
   for (let x = firstX; x < size.width; x += gap) {
-    const feet = Math.round((x - view.offsetX) / view.scale / UNITS_PER_FOOT);
+    const logical = Math.round((x - view.offsetX) / view.scale / step) * step;
     ctx.beginPath();
     ctx.moveTo(Math.round(x) + 0.5, RULER - 5);
     ctx.lineTo(Math.round(x) + 0.5, RULER);
     ctx.stroke();
-    ctx.fillText(`${feet}′`, Math.round(x) + 3, 11);
+    ctx.fillText(rulerLabel(logical, system), Math.round(x) + 3, 11);
   }
 
   // Vertical ruler, labels rotated to read along the edge.
   const firstY = Math.ceil((RULER - view.offsetY) / gap) * gap + view.offsetY;
   for (let y = firstY; y < size.height; y += gap) {
-    const feet = Math.round((y - view.offsetY) / view.scale / UNITS_PER_FOOT);
+    const logical = Math.round((y - view.offsetY) / view.scale / step) * step;
     ctx.beginPath();
     ctx.moveTo(RULER - 5, Math.round(y) + 0.5);
     ctx.lineTo(RULER, Math.round(y) + 0.5);
@@ -1205,7 +1224,7 @@ function drawRulers(
     ctx.save();
     ctx.translate(11, Math.round(y) + 3);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(`${feet}′`, 0, 0);
+    ctx.fillText(rulerLabel(logical, system), 0, 0);
     ctx.restore();
   }
 

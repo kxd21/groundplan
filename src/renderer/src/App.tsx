@@ -141,20 +141,6 @@ const SNAP_STEPS = [
   [FOOT * 5, '5′'],
 ] as const;
 
-function formatFeet(units: number): string {
-  return `${(units / FOOT).toFixed(1)}′`;
-}
-
-/** Feet and inches, the unit these plans are dimensioned in. */
-function formatFeetInches(units: number): string {
-  const totalInches = units / 10;
-  const sign = totalInches < 0 ? '−' : '';
-  const abs = Math.abs(totalInches);
-  const feet = Math.floor(abs / 12);
-  const inches = Math.round(abs - feet * 12);
-  return inches === 12 ? `${sign}${feet + 1}′ 0″` : `${sign}${feet}′ ${inches}″`;
-}
-
 function formatBytes(n: number): string {
   return n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
 }
@@ -880,6 +866,11 @@ export function App() {
       void api.settingsPatch({ drawing: { snapStep: next } }).catch(() => undefined);
       return next;
     });
+  }, []);
+
+  const setDrawingUnits = useCallback((next: 'imperial' | 'metric') => {
+    setUnitSystem(next);
+    void api.settingsPatch({ drawing: { units: next } }).catch(() => undefined);
   }, []);
 
   const importGear = useCallback(async () => {
@@ -2784,6 +2775,7 @@ export function App() {
                   onQuery={setPaletteQuery}
                   category={paletteCategory}
                   onCategory={setPaletteCategory}
+                  units={unitSystem}
                   canPlace={!!doc?.editable}
                   onPlace={(id, name) => {
                     armInventory(id, name);
@@ -2887,6 +2879,7 @@ export function App() {
               inventory={inventory}
               query={libQuery}
               department={libDept}
+              units={unitSystem}
               onChanged={inventoryChanged}
               onRemoved={(name) => setInventoryUndoNotice(`Removed “${name}” from inventory`)}
               canPlace={!!doc?.editable}
@@ -2951,6 +2944,7 @@ export function App() {
               onPlaceAt={placeArmed}
               onDropItem={dropItem}
               snapStep={snapStep}
+              units={unitSystem}
               measuring={measuring}
               measureFrom={measureFrom}
               measurement={measurement}
@@ -3288,7 +3282,7 @@ export function App() {
                     <dt>Room</dt>
                     <dd className="num">
                       {extent
-                        ? `${formatFeet(extent.maxX - extent.minX)} × ${formatFeet(extent.maxY - extent.minY)}`
+                        ? `${formatLength(extent.maxX - extent.minX, unitSystem)} × ${formatLength(extent.maxY - extent.minY, unitSystem)}`
                         : '—'}
                     </dd>
                   </div>
@@ -3566,10 +3560,28 @@ export function App() {
                       </div>
                     )}
 
+                    {(canResizeSelection || canPositionSelection) && (
+                      <div className="field">
+                        <label htmlFor="drawing-units">Measurements</label>
+                        <select
+                          id="drawing-units"
+                          value={unitSystem}
+                          onChange={(e) => setDrawingUnits(e.target.value === 'metric' ? 'metric' : 'imperial')}
+                          title="How lengths are shown and how bare numbers are read. You can still type cm, m, ft, or inches on any field."
+                        >
+                          <option value="imperial">Feet &amp; inches</option>
+                          <option value="metric">Metres &amp; centimetres</option>
+                        </select>
+                        <span className="field-help">
+                          Type {unitSystem === 'metric' ? '120cm or 1.2m' : "4' or 48\""} — or use a suffix in either system.
+                        </span>
+                      </div>
+                    )}
+
                     {canResizeSelection && (
                       <div className="field">
                         <label htmlFor="size-w">
-                          Size ({unitSystem === 'metric' ? 'metric' : 'ft / in'})
+                          Size ({unitSystem === 'metric' ? 'cm / m' : 'ft / in'})
                         </label>
                         <div className="size-row">
                           <input
@@ -3582,7 +3594,7 @@ export function App() {
                               if (e.key === 'Enter') void commitSelectionSize();
                             }}
                             aria-label="Selection width"
-                            placeholder={unitSystem === 'metric' ? '1.2m' : "4'"}
+                            placeholder={unitSystem === 'metric' ? '120cm' : "4'"}
                           />
                           <span className="inv-x">×</span>
                           <input
@@ -3594,7 +3606,7 @@ export function App() {
                               if (e.key === 'Enter') void commitSelectionSize();
                             }}
                             aria-label="Selection height"
-                            placeholder={unitSystem === 'metric' ? '0.8m' : "3'"}
+                            placeholder={unitSystem === 'metric' ? '80cm' : "3'"}
                           />
                           <button
                             onClick={() => void commitSelectionSize()}
@@ -4028,7 +4040,7 @@ export function App() {
         {view === 'plan' && cursor && (
           <>
             <span className="num">
-              {formatFeetInches(cursor.x)}, {formatFeetInches(cursor.y)}
+              {formatLength(cursor.x, unitSystem)}, {formatLength(cursor.y, unitSystem)}
             </span>
             <span className="status-sep" />
           </>

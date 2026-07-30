@@ -230,9 +230,9 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
                   </select>
                 </div>
                 <p className="settings-note">
-                  Changes how lengths and areas are shown and typed. Plans are always stored in tenths of an inch, so
-                  switching does not alter a single byte of a drawing — and a measurement typed one way reads back the
-                  other.
+                  Changes how lengths and areas are shown and typed. Bare numbers mean feet in imperial and metres in
+                  metric; you can always type cm, mm, ft, or inches with a suffix. Plans stay in tenths of an inch on
+                  disk — switching units does not alter a drawing.
                 </p>
 
                 <div className="setting">
