@@ -312,6 +312,24 @@ const api = {
     ipcRenderer.invoke('inventory:import'),
   inventoryAbsorbGear: (): Promise<{ ok: boolean; reason?: string; added?: number; updated?: number; inventory?: InventoryState }> =>
     ipcRenderer.invoke('inventory:absorb-gear'),
+  inventoryExportPack: (): Promise<{
+    ok: boolean;
+    reason?: string;
+    cancelled?: boolean;
+    path?: string;
+    items?: number;
+    assets?: number;
+  }> => ipcRenderer.invoke('inventory:export-pack'),
+  inventoryImportPack: (): Promise<{
+    ok: boolean;
+    reason?: string;
+    cancelled?: boolean;
+    added?: number;
+    updated?: number;
+    assets?: number;
+    items?: number;
+    inventory?: InventoryState;
+  }> => ipcRenderer.invoke('inventory:import-pack'),
   inventoryAdd: (name: string, department?: string): Promise<{ ok: boolean; reason?: string; inventory?: InventoryState }> =>
     ipcRenderer.invoke('inventory:add', name, department),
   inventoryUpdate: (
@@ -392,6 +410,7 @@ const api = {
 
   gearImport: (): Promise<GearState | null> => ipcRenderer.invoke('gear:import'),
   gearOpen: (): Promise<GearState | null> => ipcRenderer.invoke('gear:open'),
+  gearNew: (): Promise<GearState | null> => ipcRenderer.invoke('gear:new'),
   gearImportPath: (path: string): Promise<GearState | null> => ipcRenderer.invoke('gear:import-path', path),
   gearOpenPath: (path: string): Promise<GearState | null> => ipcRenderer.invoke('gear:open-path', path),
   gearSave: (saveAs: boolean): Promise<{ ok: boolean; reason?: string; cancelled?: boolean; path?: string; gear?: GearState }> =>
@@ -420,8 +439,19 @@ const api = {
     departmentId: string,
     parentId: string | null,
     description: string,
+    quantity?: number,
   ): Promise<{ ok: boolean; reason?: string; gear?: GearState; createdId?: string }> =>
-    ipcRenderer.invoke('gear:add', listIndex, departmentId, parentId, description),
+    ipcRenderer.invoke('gear:add', listIndex, departmentId, parentId, description, quantity ?? 1),
+  gearDuplicate: (
+    listIndex: number,
+    itemId: string,
+  ): Promise<{ ok: boolean; reason?: string; gear?: GearState; createdId?: string }> =>
+    ipcRenderer.invoke('gear:duplicate', listIndex, itemId),
+  gearAddDepartment: (
+    listIndex: number,
+    name: string,
+  ): Promise<{ ok: boolean; reason?: string; gear?: GearState; createdId?: string }> =>
+    ipcRenderer.invoke('gear:add-department', listIndex, name),
 
   onMenu: (handler: (command: string, arg?: string) => void): (() => void) => {
     const channels = [

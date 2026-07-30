@@ -79,6 +79,8 @@ import {
   updateGearItem,
   removeGearItem,
   restoreGearItem,
+  createBlankGearList,
+  cloneGearItem,
   type GearList,
   type GearTotals,
   type RemovedGearItem,
@@ -110,6 +112,7 @@ import {
   type Category,
 } from '../inventory/classify.js';
 import { loadInventoryWithStatus, saveInventory, inventoryPath } from '../inventory/store.js';
+import { exportInventoryPack, importInventoryPack } from '../inventory/share.js';
 import { atomicWriteFile, atomicWriteJson } from './storage.js';
 import {
   copyShowForSaveAs,
@@ -644,6 +647,62 @@ async function persistInventory(): Promise<void> {
   await saveInventory(inventoryFile, inventory);
 }
 
+function stampForPack(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
+/** Folds every open gear list into the company inventory. */
+async function absorbOpenGearIntoInventory(): Promise<{ added: number; updated: number } | null> {
+  if (!gear) return null;
+
+  let added = 0;
+  let updated = 0;
+  for (const list of gear.lists) {
+    for (const department of list.departments) {
+      const incoming = [];
+      for (const item of walkItems({ ...list, departments: [department] })) {
+        if (item.note) continue;
+        const size = parseDimensions(item.description);
+        incoming.push({
+          name: item.description,
+          department: department.name,
+          quantity: item.quantity,
+          width: size.source === 'parsed' ? size.width : undefined,
+          height: size.source === 'parsed' ? size.height : undefined,
+          sizeSource: size.source === 'parsed' ? ('parsed' as const) : ('unknown' as const),
+        });
+      }
+      const summary = mergeItems(inventory, incoming, new Date(), {
+        id: list.jobNumber
+          ? `gear-job:${normaliseName(list.jobNumber)}`
+          : list.sourceFingerprint
+            ? `gear-source:${list.sourceFingerprint}`
+            : `gear-list:${list.id ?? list.sourcePath ?? list.title}`,
+        type: 'gear-pdf',
+        jobId: list.id ?? list.jobNumber,
+        label: list.title,
+        sourcePath: list.sourcePath,
+      });
+      added += summary.added;
+      updated += summary.updated;
+    }
+  }
+
+  await persistInventory();
+  return { added, updated };
+}
+
+async function maybeAutoAbsorbGear(): Promise<string | undefined> {
+  settings ??= await loadSettings(app.getPath('userData'));
+  if (!settings.inventory.autoAbsorbGear) return undefined;
+  const summary = await absorbOpenGearIntoInventory();
+  if (!summary) return undefined;
+  if (!summary.added && !summary.updated) return 'Company inventory already had these lines.';
+  return `Pushed to company inventory — ${summary.added} new, ${summary.updated} updated. Share an inventory pack so other computers get them.`;
+}
+
 /** The gear lists currently loaded, independent of the open plan. */
 let gear: {
   lists: GearList[];
@@ -888,6 +947,8 @@ const RESULT_CHANNELS = new Set([
   'inventory:harvest',
   'inventory:cancel-harvest',
   'inventory:import',
+  'inventory:export-pack',
+  'inventory:import-pack',
   'inventory:add',
   'inventory:update',
   'inventory:duplicate',
@@ -895,9 +956,12 @@ const RESULT_CHANNELS = new Set([
   'inventory:restore-last',
   'inventory:place',
   'gear:save',
+  'gear:new',
   'gear:update',
   'gear:restore-last',
   'gear:add',
+  'gear:duplicate',
+  'gear:add-department',
   'show:link-current',
   'plan:place-gear',
   'plan:rotate',
@@ -2238,43 +2302,38 @@ app.whenReady().then(async () => {
 
   /** Folds the gear lists currently open into the inventory. */
   handle('inventory:absorb-gear', async () => {
-    if (!gear) return { ok: false, reason: 'no gear list is open' };
+    const summary = await absorbOpenGearIntoInventory();
+    if (!summary) return { ok: false, reason: 'no gear list is open' };
+    return { ok: true, ...summary, inventory: inventoryState() };
+  });
 
-    let added = 0;
-    let updated = 0;
-    for (const list of gear.lists) {
-      for (const department of list.departments) {
-        const incoming = [];
-        for (const item of walkItems({ ...list, departments: [department] })) {
-          if (item.note) continue;
-          const size = parseDimensions(item.description);
-          incoming.push({
-            name: item.description,
-            department: department.name,
-            quantity: item.quantity,
-            width: size.source === 'parsed' ? size.width : undefined,
-            height: size.source === 'parsed' ? size.height : undefined,
-            sizeSource: size.source === 'parsed' ? ('parsed' as const) : ('unknown' as const),
-          });
-        }
-        const summary = mergeItems(inventory, incoming, new Date(), {
-          id: list.jobNumber
-            ? `gear-job:${normaliseName(list.jobNumber)}`
-            : list.sourceFingerprint
-              ? `gear-source:${list.sourceFingerprint}`
-              : `gear-list:${list.id ?? list.sourcePath ?? list.title}`,
-          type: 'gear-pdf',
-          jobId: list.id ?? list.jobNumber,
-          label: list.title,
-          sourcePath: list.sourcePath,
-        });
-        added += summary.added;
-        updated += summary.updated;
-      }
-    }
+  /** Writes the company inventory to a folder other machines can import. */
+  handle('inventory:export-pack', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Export inventory pack for other computers',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Export here',
+    });
+    if (result.canceled || !result.filePaths[0]) return { ok: false, cancelled: true };
+    const parent = grantDirectory(result.filePaths[0]);
+    const destination = join(parent, `Groundplan-inventory-${stampForPack()}`);
+    const exported = await exportInventoryPack(inventoryFile, inventory, destination);
+    return exported;
+  });
 
-    await persistInventory();
-    return { ok: true, added, updated, inventory: inventoryState() };
+  /** Merges an inventory pack from USB / shared folder into this install. */
+  handle('inventory:import-pack', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Import inventory pack',
+      properties: ['openDirectory'],
+      buttonLabel: 'Import from here',
+    });
+    if (result.canceled || !result.filePaths[0]) return { ok: false, cancelled: true };
+    const source = grantDirectory(result.filePaths[0]);
+    const imported = await importInventoryPack(source, inventoryFile, inventory);
+    if (!imported.ok) return imported;
+    inventoryNotice = `Imported inventory pack — ${imported.added} new, ${imported.updated} updated.`;
+    return { ...imported, inventory: inventoryState() };
   });
 
   /** Imports straight from a gear-list PDF or a CSV, without opening it first. */
@@ -2743,6 +2802,8 @@ app.whenReady().then(async () => {
     lastRemovedGear = null;
     activeGearRecoveryId = null;
     scheduleGearRecovery();
+    const absorbed = await maybeAutoAbsorbGear();
+    if (absorbed) gear.notice = absorbed;
     return gearState();
   });
 
@@ -2753,6 +2814,18 @@ app.whenReady().then(async () => {
     await enforceFileSize(source, MAX_IMPORT_BYTES);
     const lists = await importGearPdf(new Uint8Array(await readFile(source)), source);
     gear = { lists, dirty: true };
+    lastRemovedGear = null;
+    activeGearRecoveryId = null;
+    scheduleGearRecovery();
+    const absorbed = await maybeAutoAbsorbGear();
+    if (absorbed) gear.notice = absorbed;
+    return gearState();
+  });
+
+  handle('gear:new', async () => {
+    if (gearSaving) throw new Error('wait for the current gear-list save to finish');
+    if (!(await confirmDiscard('gear'))) return null;
+    gear = { lists: [createBlankGearList()], dirty: true };
     lastRemovedGear = null;
     activeGearRecoveryId = null;
     scheduleGearRecovery();
@@ -2903,15 +2976,23 @@ app.whenReady().then(async () => {
 
   handle(
     'gear:add',
-    (_event, listIndex: number, departmentId: string, parentId: string | null, description: string) => {
+    (
+      _event,
+      listIndex: number,
+      departmentId: string,
+      parentId: string | null,
+      description: string,
+      quantity = 1,
+    ) => {
       const list = gear?.lists[listIndex];
       if (!list || !gear) return { ok: false, reason: 'no gear list is open' };
       const department = list.departments.find((d) => d.id === departmentId);
       if (!department) return { ok: false, reason: 'department no longer exists' };
 
+      const qty = Number.isInteger(quantity) && quantity >= 0 ? quantity : 1;
       const item = {
         id: nextId(),
-        quantity: 1,
+        quantity: qty,
         description: description.trim() || 'New item',
         children: [],
       };
@@ -2930,6 +3011,37 @@ app.whenReady().then(async () => {
       return { ok: true, gear: gearState(), createdId: item.id };
     },
   );
+
+  handle('gear:duplicate', (_event, listIndex: number, itemId: string) => {
+    const list = gear?.lists[listIndex];
+    if (!list || !gear) return { ok: false, reason: 'no gear list is open' };
+    const located = locateGearItem(list, itemId);
+    if (!located) return { ok: false, reason: 'item no longer exists' };
+    const copy = cloneGearItem(located.item, `${located.item.description} (copy)`);
+    located.siblings.splice(located.index + 1, 0, copy);
+    list.revision = (Number.isSafeInteger(list.revision) ? list.revision! : 0) + 1;
+    gear.dirty = true;
+    lastRemovedGear = null;
+    scheduleGearRecovery();
+    return { ok: true, gear: gearState(), createdId: copy.id };
+  });
+
+  handle('gear:add-department', (_event, listIndex: number, name: string) => {
+    const list = gear?.lists[listIndex];
+    if (!list || !gear) return { ok: false, reason: 'no gear list is open' };
+    const trimmed = name.trim();
+    if (!trimmed) return { ok: false, reason: 'enter a department name' };
+    if (list.departments.some((d) => normaliseName(d.name) === normaliseName(trimmed))) {
+      return { ok: false, reason: 'that department already exists' };
+    }
+    const department = { id: nextId('dept'), name: trimmed, items: [] };
+    list.departments.push(department);
+    list.revision = (Number.isSafeInteger(list.revision) ? list.revision! : 0) + 1;
+    gear.dirty = true;
+    lastRemovedGear = null;
+    scheduleGearRecovery();
+    return { ok: true, gear: gearState(), createdId: department.id };
+  });
 
   handle('plan:place-gear', (_event, description: string, x: number, y: number) =>
     applyEdit((s) => placeGear(s.loaded.document, s.index, description, x, y)),

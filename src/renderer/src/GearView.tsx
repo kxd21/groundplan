@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { IconPlus, IconTrash, IconSearch, IconExport, IconFit, IconWarning } from './icons.js';
+import { IconPlus, IconTrash, IconSearch, IconExport, IconFit, IconWarning, IconDuplicate } from './icons.js';
 import type { GearDepartment, GearItem, GearList, GearTotals } from '../../gear/model.js';
 
 const api = window.groundplan;
@@ -13,11 +13,20 @@ interface Props {
   query: string;
   onApplied: (gear: unknown) => void;
   onError: (message: string) => void;
+  onStatus?: (message: string) => void;
   notice?: string;
   /** Arms an item for dropping onto the plan. */
   onPlace: (description: string) => void;
   /** False when no plan is open to place onto. */
   canPlace: boolean;
+  /** Refresh company inventory after absorb / auto-absorb. */
+  onInventoryChanged?: () => void;
+}
+
+interface InventoryPick {
+  id: string;
+  name: string;
+  department?: string;
 }
 
 /** Case-insensitive filter that keeps a package when any of its pieces match. */
@@ -48,17 +57,51 @@ export function GearView({
   query,
   onApplied,
   onError,
+  onStatus,
   notice,
   onPlace,
   canPlace,
+  onInventoryChanged,
 }: Props) {
   const [editing, setEditing] = useState<{ id: string; field: 'quantity' | 'description' } | null>(null);
   const [draft, setDraft] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [undoNotice, setUndoNotice] = useState<string | null>(null);
+  const [adding, setAdding] = useState<{ departmentId: string; parentId: string | null } | null>(null);
+  const [addName, setAddName] = useState('');
+  const [addQty, setAddQty] = useState('1');
+  const [addingDepartment, setAddingDepartment] = useState(false);
+  const [departmentDraft, setDepartmentDraft] = useState('');
+  const [pickingInventory, setPickingInventory] = useState<{
+    departmentId: string;
+    parentId: string | null;
+  } | null>(null);
+  const [inventoryQuery, setInventoryQuery] = useState('');
+  const [inventoryPicks, setInventoryPicks] = useState<InventoryPick[]>([]);
 
   const list = lists[activeIndex];
   const departments = useMemo(() => filterDepartments(list?.departments ?? [], query), [list, query]);
+
+  useEffect(() => {
+    if (!pickingInventory) return;
+    let live = true;
+    void api
+      .inventoryList(inventoryQuery, null)
+      .then((state) => {
+        if (!live || !state) return;
+        setInventoryPicks(
+          (state.items as InventoryPick[]).slice(0, 40).map((item) => ({
+            id: item.id,
+            name: item.name,
+            department: item.department,
+          })),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [pickingInventory, inventoryQuery]);
 
   if (!list) return null;
 
@@ -71,15 +114,82 @@ export function GearView({
     else if (reply.reason) onError(reply.reason);
   };
 
-  const addTo = async (departmentId: string, parentId: string | null) => {
-    const reply = await api.gearAdd(activeIndex, departmentId, parentId, 'New item');
+  const beginAdd = (departmentId: string, parentId: string | null) => {
+    setAdding({ departmentId, parentId });
+    setAddName('');
+    setAddQty('1');
+    setPickingInventory(null);
+  };
+
+  const commitAdd = async () => {
+    if (!adding) return;
+    const description = addName.trim();
+    const quantity = Number(addQty);
+    if (!description) {
+      onError('Enter an item description.');
+      return;
+    }
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      onError('Quantity must be a whole number of zero or more.');
+      return;
+    }
+    const reply = await api.gearAdd(activeIndex, adding.departmentId, adding.parentId, description, quantity);
+    if (reply.ok && reply.gear) {
+      onApplied(reply.gear);
+      setUndoNotice(null);
+      setAdding(null);
+      onStatus?.(`Added ${description}`);
+    } else if (reply.reason) onError(reply.reason);
+  };
+
+  const addFromInventory = async (item: InventoryPick) => {
+    if (!pickingInventory) return;
+    const reply = await api.gearAdd(
+      activeIndex,
+      pickingInventory.departmentId,
+      pickingInventory.parentId,
+      item.name,
+      1,
+    );
+    if (reply.ok && reply.gear) {
+      onApplied(reply.gear);
+      setUndoNotice(null);
+      setPickingInventory(null);
+      onStatus?.(`Added ${item.name} from inventory`);
+    } else if (reply.reason) onError(reply.reason);
+  };
+
+  const duplicateItem = async (item: GearItem) => {
+    const reply = await api.gearDuplicate(activeIndex, item.id);
     if (reply.ok && reply.gear) {
       onApplied(reply.gear);
       setUndoNotice(null);
       if (reply.createdId) {
         setEditing({ id: reply.createdId, field: 'description' });
-        setDraft('New item');
+        setDraft(`${item.description} (copy)`);
       }
+    } else if (reply.reason) onError(reply.reason);
+  };
+
+  const commitDepartment = async () => {
+    const name = departmentDraft.trim();
+    setAddingDepartment(false);
+    setDepartmentDraft('');
+    if (!name) return;
+    const reply = await api.gearAddDepartment(activeIndex, name);
+    if (reply.ok && reply.gear) {
+      onApplied(reply.gear);
+      onStatus?.(`Added department ${name}`);
+    } else if (reply.reason) onError(reply.reason);
+  };
+
+  const pushToInventory = async () => {
+    const reply = await api.inventoryAbsorbGear();
+    if (reply.ok) {
+      onInventoryChanged?.();
+      onStatus?.(
+        `Company inventory updated — ${reply.added ?? 0} new, ${reply.updated ?? 0} updated. Export an inventory pack to share with other computers.`,
+      );
     } else if (reply.reason) onError(reply.reason);
   };
 
@@ -240,10 +350,18 @@ export function GearView({
                 <IconFit size={13} />
               </button>
             )}
+            <button
+              className="icon-btn"
+              onClick={() => void duplicateItem(item)}
+              title="Duplicate this line"
+              aria-label={`Duplicate ${item.description}`}
+            >
+              <IconDuplicate size={13} />
+            </button>
             {isPackage && (
               <button
                 className="icon-btn"
-                onClick={() => addTo(department.id, item.id)}
+                onClick={() => beginAdd(department.id, item.id)}
                 title="Add a piece to this package"
                 aria-label={`Add a piece to ${item.description}`}
               >
@@ -260,6 +378,36 @@ export function GearView({
             </button>
           </span>
         </div>
+
+        {adding?.departmentId === department.id && adding.parentId === item.id && (
+          <div className="gear-add-row" style={{ paddingLeft: 28 + depth * 18 }}>
+            <input
+              className="gear-qty-input num"
+              type="number"
+              min={0}
+              step={1}
+              value={addQty}
+              onChange={(e) => setAddQty(e.target.value)}
+              aria-label="Quantity"
+              title="Quantity"
+            />
+            <input
+              autoFocus
+              className="gear-desc-input"
+              value={addName}
+              placeholder="Piece description"
+              onChange={(e) => setAddName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commitAdd();
+                if (e.key === 'Escape') setAdding(null);
+              }}
+            />
+            <button className="btn-outline" onClick={() => void commitAdd()}>
+              Add
+            </button>
+            <button onClick={() => setAdding(null)}>Cancel</button>
+          </div>
+        )}
 
         {isPackage && !isCollapsed && item.children.map((child) => renderItem(child, department, depth + 1))}
       </div>
@@ -310,8 +458,82 @@ export function GearView({
         </div>
       )}
 
+      <div className="gear-toolbar">
+        <button className="btn-outline" onClick={() => setAddingDepartment(true)} title="Add a department">
+          <IconPlus size={13} />
+          Department
+        </button>
+        <button
+          className="btn-outline"
+          onClick={() => void pushToInventory()}
+          title="Copy every line into the company inventory on this computer"
+        >
+          Push to inventory
+        </button>
+        <span className="hint">
+          Inventory stays on this computer until you export a pack for USB / shared folder.
+        </span>
+      </div>
+
+      {addingDepartment && (
+        <div className="gear-add-row">
+          <input
+            autoFocus
+            className="gear-desc-input"
+            value={departmentDraft}
+            placeholder="Department name (e.g. Lighting)"
+            onChange={(e) => setDepartmentDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void commitDepartment();
+              if (e.key === 'Escape') setAddingDepartment(false);
+            }}
+          />
+          <button className="btn-outline" onClick={() => void commitDepartment()}>
+            Add
+          </button>
+          <button onClick={() => setAddingDepartment(false)}>Cancel</button>
+        </div>
+      )}
+
+      {pickingInventory && (
+        <div className="gear-inventory-picker">
+          <div className="gear-add-row">
+            <IconSearch size={13} />
+            <input
+              autoFocus
+              className="gear-desc-input"
+              value={inventoryQuery}
+              placeholder="Search company inventory…"
+              onChange={(e) => setInventoryQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setPickingInventory(null);
+              }}
+            />
+            <button onClick={() => setPickingInventory(null)}>Close</button>
+          </div>
+          <ul className="gear-inventory-results">
+            {inventoryPicks.length === 0 ? (
+              <li className="empty">No inventory items match.</li>
+            ) : (
+              inventoryPicks.map((item) => (
+                <li key={item.id}>
+                  <button onClick={() => void addFromInventory(item)}>
+                    <span className="fname">{item.name}</span>
+                    {item.department && <span className="num">{item.department}</span>}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
+
       <div className="gear-scroll">
-        {departments.length === 0 ? (
+        {departments.length === 0 && !query.trim() ? (
+          <p className="empty" style={{ padding: 24 }}>
+            This list has no departments yet. Add a department, then add lines — or import a gear PDF.
+          </p>
+        ) : departments.length === 0 ? (
           <p className="empty" style={{ padding: 24 }}>
             Nothing matches that search.
           </p>
@@ -325,13 +547,54 @@ export function GearView({
                 </span>
                 <button
                   className="icon-btn"
-                  onClick={() => addTo(d.id, null)}
+                  onClick={() => beginAdd(d.id, null)}
                   title={`Add a line to ${d.name}`}
                   aria-label={`Add a line to ${d.name}`}
                 >
                   <IconPlus size={13} />
                 </button>
+                <button
+                  className="icon-btn"
+                  onClick={() => {
+                    setPickingInventory({ departmentId: d.id, parentId: null });
+                    setInventoryQuery('');
+                    setAdding(null);
+                  }}
+                  title={`Add from company inventory into ${d.name}`}
+                  aria-label={`Add from inventory into ${d.name}`}
+                >
+                  <IconSearch size={13} />
+                </button>
               </header>
+              {adding?.departmentId === d.id && adding.parentId === null && (
+                <div className="gear-add-row">
+                  <input
+                    className="gear-qty-input num"
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={addQty}
+                    onChange={(e) => setAddQty(e.target.value)}
+                    aria-label="Quantity"
+                    title="Quantity"
+                  />
+                  <input
+                    autoFocus
+                    className="gear-desc-input"
+                    value={addName}
+                    placeholder="Item description (e.g. 60&quot; round)"
+                    onChange={(e) => setAddName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void commitAdd();
+                      if (e.key === 'Escape') setAdding(null);
+                    }}
+                  />
+                  <button className="btn-outline" onClick={() => void commitAdd()}>
+                    Add
+                  </button>
+                  <button onClick={() => setAdding(null)}>Cancel</button>
+                </div>
+              )}
               {d.items.map((item) => renderItem(item, d, 0))}
             </section>
           ))

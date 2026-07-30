@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
-import { IconPlus, IconTrash, IconFit, IconExport, IconWarning } from './icons.js';
+import { IconPlus, IconTrash, IconFit, IconExport, IconWarning, IconFolder } from './icons.js';
 
 const api = window.groundplan;
 const PAGE_SIZE = 200;
@@ -364,6 +364,33 @@ export function InventoryView({
         >
           <IconExport size={13} />
           Upload…
+        </button>
+        <button
+          onClick={async () => {
+            const reply = await api.inventoryExportPack();
+            if (reply.cancelled) return;
+            if (reply.ok) {
+              onStatus(`Exported ${reply.items ?? 0} items for other computers`);
+            } else if (reply.reason) onError(reply.reason);
+          }}
+          title="Write a folder for USB / shared drive so other Groundplan installs can import it"
+        >
+          <IconExport size={13} />
+          Export pack…
+        </button>
+        <button
+          onClick={async () => {
+            const reply = await api.inventoryImportPack();
+            if (reply.cancelled) return;
+            if (reply.ok) {
+              onChanged();
+              onStatus(`Imported pack — ${reply.added} new, ${reply.updated} updated`);
+            } else if (reply.reason) onError(reply.reason);
+          }}
+          title="Merge an inventory pack from another computer into this one"
+        >
+          <IconFolder size={13} />
+          Import pack…
         </button>
         <button
           onClick={harvest}

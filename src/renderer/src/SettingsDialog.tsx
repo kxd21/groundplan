@@ -294,6 +294,10 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
                   />
                   <span>Add gear to the inventory when a gear list is imported</span>
                 </label>
+                <p className="hint">
+                  That only updates this computer. To push new stock to the rest of the shop, use Inventory →
+                  Export pack…, put the folder on a USB stick or shared drive, then Import pack… on each machine.
+                </p>
 
                 <label className="setting-check">
                   <input

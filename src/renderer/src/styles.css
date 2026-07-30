@@ -1681,6 +1681,65 @@ button:disabled {
   padding-block: 4px;
 }
 
+.gear-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+  flex-wrap: wrap;
+}
+
+.gear-toolbar .hint {
+  flex: 1;
+  min-width: 12rem;
+  margin: 0;
+}
+
+.gear-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.gear-add-row .gear-desc-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.gear-inventory-picker {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex: none;
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
+
+.gear-inventory-results {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.gear-inventory-results button {
+  width: 100%;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+}
+
+.gear-inventory-results .num {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
 .gear-undo {
   display: flex;
   align-items: center;

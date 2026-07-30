@@ -882,7 +882,11 @@ export function App() {
         setGear(state);
         setGearIndex(0);
         showWorkspace('gear');
-        showStatus(`Imported ${state.lists.length} list${state.lists.length === 1 ? '' : 's'}`);
+        showStatus(
+          state.notice ??
+            `Imported ${state.lists.length} list${state.lists.length === 1 ? '' : 's'}`,
+        );
+        inventoryChanged();
       }
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err));
@@ -890,7 +894,7 @@ export function App() {
       setBusy(false);
       setBusyMessage(null);
     }
-  }, [notify, showStatus, showWorkspace]);
+  }, [notify, showStatus, showWorkspace, inventoryChanged]);
 
   const openGear = useCallback(async () => {
     try {
@@ -904,6 +908,20 @@ export function App() {
       notify(err instanceof Error ? err.message : String(err));
     }
   }, [notify, showWorkspace]);
+
+  const newGear = useCallback(async () => {
+    try {
+      const state = await api.gearNew();
+      if (state && Array.isArray(state.lists)) {
+        setGear(state);
+        setGearIndex(0);
+        showWorkspace('gear');
+        showStatus('Started a blank gear list');
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err));
+    }
+  }, [notify, showStatus, showWorkspace]);
 
   const saveGear = useCallback(
     async (saveAs: boolean) => {
@@ -2445,6 +2463,9 @@ export function App() {
                     <button className="btn-outline" onClick={openGear} style={{ justifyContent: 'center' }}>
                       Open gear list…
                     </button>
+                    <button className="btn-outline" onClick={() => void newGear()} style={{ justifyContent: 'center' }}>
+                      New blank list…
+                    </button>
                   </li>
                 </ul>
               )}
@@ -2900,8 +2921,10 @@ export function App() {
                 query={gearQuery}
                 onApplied={(next) => setGear(next as typeof gear)}
                 onError={notify}
+                onStatus={showStatus}
                 canPlace={!!doc?.editable}
                 notice={gear.notice}
+                onInventoryChanged={inventoryChanged}
                 onPlace={(description) => {
                   armGear(description);
                   setView('plan');
@@ -2912,8 +2935,8 @@ export function App() {
                 <Mark size={34} className="placeholder-mark" />
                 <h1>No gear list open</h1>
                 <p>
-                  Import the gear list your rental system prints and Groundplan rebuilds it as an inventory —
-                  departments, packages and every piece inside them.
+                  Import the gear list your rental system prints — or start a blank list and type lines by hand /
+                  pull them from the company inventory.
                 </p>
                 <div className="placeholder-actions">
                   <button className="btn-outline" onClick={importGear}>
@@ -2923,6 +2946,10 @@ export function App() {
                   <button className="btn-outline" onClick={openGear}>
                     <IconFolder />
                     Open gear list…
+                  </button>
+                  <button className="btn-outline" onClick={() => void newGear()}>
+                    <IconPlus />
+                    New blank list…
                   </button>
                 </div>
               </div>
@@ -3213,9 +3240,42 @@ export function App() {
                   <IconPlus size={14} />
                   Add the open gear list
                 </button>
+                <button
+                  className="btn-outline"
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 8 }}
+                  title="Write a folder you can put on a USB stick or shared drive for other Groundplan installs"
+                  onClick={async () => {
+                    const reply = await api.inventoryExportPack();
+                    if (reply.cancelled) return;
+                    if (reply.ok) {
+                      showStatus(
+                        `Exported ${reply.items ?? 0} items to ${reply.path?.split(/[\\/]/).pop() ?? 'folder'}`,
+                      );
+                    } else if (reply.reason) notify(reply.reason);
+                  }}
+                >
+                  <IconExport size={14} />
+                  Export pack for other computers…
+                </button>
+                <button
+                  className="btn-outline"
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 8 }}
+                  title="Merge an inventory pack from USB or a shared folder into this computer"
+                  onClick={async () => {
+                    const reply = await api.inventoryImportPack();
+                    if (reply.cancelled) return;
+                    if (reply.ok && reply.inventory) {
+                      setInventory(reply.inventory as InventoryState);
+                      showStatus(`Imported pack — ${reply.added} new, ${reply.updated} updated`);
+                    } else if (reply.reason) notify(reply.reason);
+                  }}
+                >
+                  <IconFolder size={14} />
+                  Import pack from USB / folder…
+                </button>
                 <p className="hint">
-                  Or use <strong>Upload…</strong> for gear-list PDFs, spreadsheets, and existing plans or shape
-                  libraries — those bring their drawn symbols with them.
+                  Company inventory lives on this computer. To push new items to the shop, export a pack and import
+                  it on each machine. Upload… still works for PDFs, spreadsheets, and shape libraries.
                 </p>
               </div>
 
