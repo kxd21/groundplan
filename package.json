@@ -1,6 +1,6 @@
 {
   "name": "groundplan",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Cross-platform editor for legacy Room Viewer event floor plans — runs on Windows and macOS",
   "main": "out/main/index.js",
   "author": "Prince Thompson",
