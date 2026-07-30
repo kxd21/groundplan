@@ -325,7 +325,7 @@ const scene = {
     // the product outline, which should survive
     { id: 1, nodeId: 1, selectId: 10, type: 'polygon', pts: [0, 0, 100, 0, 100, 50, 0, 50], color: 0, cls: 'RVShape', layer: 'furniture', owner: 'Barco LC w/1.2 Lens' },
     // a label naming the client, which must not
-    { id: 2, nodeId: 1, selectId: 10, type: 'text', pts: [10, 10], color: 0, cls: 'RVLabel', layer: 'furniture', owner: 'Barco LC w/1.2 Lens', text: 'Bank of America — Card Party 2026' },
+    { id: 2, nodeId: 1, selectId: 10, type: 'text', pts: [10, 10], color: 0, cls: 'RVLabel', layer: 'furniture', owner: 'Barco LC w/1.2 Lens', text: 'Northwind Traders — Spring Gala 2026' },
     // a dimension line, which must not
     { id: 3, nodeId: 1, selectId: 10, type: 'dimension', pts: [0, 0, 100, 0], color: 0, cls: 'RVDim', layer: 'annotation', owner: 'Barco LC w/1.2 Lens', text: "74 ft 1 in" },
     // another object entirely, which must not
@@ -365,7 +365,7 @@ check('a room-sized outline is refused', !isPublishable(roomSized.icon!).ok);
 for (const name of ['Barco LC w/1.2 Lens', 'DLP 15SX - 2.0', `6' x 30"`, 'Leko Light', 'Standard 18"x18"', 'Steps', 'Lighting Control']) {
   check(`"${name}" is publishable as technology`, screenIconName(name).safe);
 }
-for (const name of ['BofA Podium', 'Grand Ballroom Riser', 'Card Party 2026 Stage', "Prince's Table", 'Room 402 Chair', 'Acme Inc Screen']) {
+for (const name of ['Meridian Bank Podium', 'Grand Ballroom Riser', 'Spring Gala 2026 Stage', "Prince's Table", 'Room 402 Chair', 'Acme Inc Screen']) {
   check(`"${name}" is flagged as client-tied`, !screenIconName(name).safe);
 }
 
@@ -375,9 +375,9 @@ for (const name of ['BofA Podium', 'Grand Ballroom Riser', 'Card Party 2026 Stag
 // default — the correct bias when the risk is leaking a customer's name.
 
 for (const [input, expected] of [
-  ['BofA Podium', 'Podium'],
+  ['Meridian Bank Podium', 'Podium'],
   ['Grand Ballroom Riser', 'Riser'],
-  ['Card Party 2026 Stage', 'Stage'],
+  ['Spring Gala 2026 Stage', 'Stage'],
   ["Prince's Table", 'Table'],
   ['Room 402 Chair', 'Chair'],
   ['Acme Inc Screen', 'Screen'],
@@ -389,7 +389,7 @@ for (const [input, expected] of [
 }
 
 // A year or a room number is not a dimension, however number-like it looks.
-check('a year does not survive as a dimension', !genericiseName('Card Party 2026 Stage').name.includes('2026'));
+check('a year does not survive as a dimension', !genericiseName('Spring Gala 2026 Stage').name.includes('2026'));
 check('a room number does not survive', !genericiseName('Room 402 Chair').name.includes('402'));
 
 // Nothing recognisable left means the category's plain name.

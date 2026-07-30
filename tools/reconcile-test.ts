@@ -5,8 +5,8 @@ import { loadBuffer } from '../src/format/index.js';
 import { buildScene } from '../src/format/scene.js';
 import { reconcile } from '../src/gear/reconcile.js';
 
-const PDF = '/Users/princedavidthompson/Downloads/Card Party 2026 - Dallas TX.pdf';
-const PLAN = '/Volumes/Prince/Roomviewer/Data/Card Party East 2026 Main Stage - (Fort Lauderdale Broward County Convention Center).rv4';
+const PDF = '/Users/princedavidthompson/Downloads/Spring Gala 2026 - Example City.pdf';
+const PLAN = '/Volumes/Prince/Roomviewer/Data/Riverbend Hall 2026 Main Stage - (Riverbend Convention Center).rv4';
 const checks: Array<[string, boolean, string?]> = [];
 const check = (n: string, ok: boolean, d?: string) => checks.push([n, ok, d]);
 

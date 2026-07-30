@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { importGearPdf } from '../src/gear/import-pdf.js';
 import { totalsFor, departmentTotals, type GearItem } from '../src/gear/model.js';
 
-const path = process.argv[2] ?? '/Users/princedavidthompson/Downloads/Card Party 2026 - Dallas TX.pdf';
+const path = process.argv[2] ?? '/Users/princedavidthompson/Downloads/Spring Gala 2026 - Example City.pdf';
 const dump = process.argv.includes('--dump');
 
 async function main() {

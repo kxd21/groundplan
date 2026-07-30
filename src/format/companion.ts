@@ -10,8 +10,8 @@
  *
  * So it goes beside the plan instead:
  *
- *   Card Party East.rv4              unchanged, byte-identical, opens in Room Viewer
- *   Card Party East.groundplan.json  the room model, seating configurations,
+ *   Riverbend Hall.rv4              unchanged, byte-identical, opens in Room Viewer
+ *   Riverbend Hall.groundplan.json  the room model, seating configurations,
  *                                    stage builds, AV pairings, layers
  *
  * Two rules keep this honest rather than clever:

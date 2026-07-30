@@ -108,8 +108,8 @@ You said keep all files compatible. That rules out replacing `.rv4`, and it does
 out the rest. The answer is a companion file.
 
 ```
-Card Party East.rv4                 ← untouched, byte-identical, opens in Room Viewer
-Card Party East.groundplan.json     ← room model, wall segments, curves, seating configs,
+Riverbend Hall.rv4                 ← untouched, byte-identical, opens in Room Viewer
+Riverbend Hall.groundplan.json     ← room model, wall segments, curves, seating configs,
                                        stage configs, screen↔projector pairs, layers,
                                        inventory links, associative dimensions, versions
 ```

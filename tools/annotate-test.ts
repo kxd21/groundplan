@@ -1,6 +1,6 @@
 /**
  * Verifies annotation creation and angled seating blocks — the pieces needed to
- * rebuild a show like the Card Party East arena plan.
+ * rebuild a show like the Riverbend Hall arena plan.
  */
 import { copyFileSync, readFileSync, mkdtempSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';

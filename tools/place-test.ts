@@ -1,7 +1,7 @@
 /**
  * Proves gear placed on a plan survives a save.
  *
- * Places several real lines from the Card Party gear list onto a copy of a
+ * Places several real lines from the Spring Gala gear list onto a copy of a
  * plan, saves, reopens, and checks each one is present, named correctly, sized
  * as the description implies, and that the file still parses cleanly.
  *
@@ -22,7 +22,7 @@ import type { RVNode } from '../src/format/index.js';
 const SOURCE = process.argv[2] ?? '/Volumes/Prince/Roomviewer/Data/ADDISON TRAINING ROOM bootcamp v1.rv4';
 const UNITS_PER_FOOT = 120;
 
-/** Real lines from the Card Party list, spanning matched and synthesized. */
+/** Real lines from the Spring Gala list, spanning matched and synthesized. */
 const GEAR = [
   { description: 'Round 66"', expect: 'matched' },
   { description: "Intellistage 4' x 4' Stage Deck", expect: 'synthesized', width: 4, height: 4 },

@@ -39,7 +39,7 @@ export interface SeatingRequest {
   /**
    * Rotation of the whole block, in degrees.
    *
-   * Angled banks are how real houses are laid out: the Card Party East arena
+   * Angled banks are how real houses are laid out: the Riverbend Hall arena
    * plan has 227 chairs at +30 degrees and 227 at -30, flanking a straight
    * centre block.
    */

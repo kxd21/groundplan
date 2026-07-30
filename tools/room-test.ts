@@ -285,8 +285,8 @@ console.log('\ncompanion document\n');
   // so it matches the schedule sidecar this app already writes.
   check(
     'the sidecar sits beside the plan',
-    companionPathFor('/x/Card Party.rv4') === '/x/Card Party.rv4.groundplan.json',
-    companionPathFor('/x/Card Party.rv4'),
+    companionPathFor('/x/Spring Gala.rv4') === '/x/Spring Gala.rv4.groundplan.json',
+    companionPathFor('/x/Spring Gala.rv4'),
   );
   check('a fresh companion matches its plan', companionStatus(companion, doc).freshness === 'fresh');
 

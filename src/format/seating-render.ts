@@ -53,14 +53,27 @@ export function renderSeating(
     if (deleteNode(doc, indexDocument(doc), node).ok) result.removed++;
   }
 
+  /**
+   * The index has to be rebuilt as we go.
+   *
+   * `placeGear` looks its template up in the index, and on a plan with nothing
+   * to clone it *synthesizes* the first item — which the caller's index has
+   * never seen. Every later placement then matches that new shape by name,
+   * fails to find it in the stale index, concludes it is a document-level
+   * object, and gives up with "object is not part of the document". Rebuilding
+   * costs a walk per placement and is what makes seating work on a new plan.
+   */
+  let live = index;
+
   const put = (name: string, x: number, y: number, rotation: number, size?: { width: number; height: number }) => {
-    const placed = placeGear(doc, index, name, x, y, size);
+    const placed = placeGear(doc, live, name, x, y, size);
     if (!placed.ok || !placed.created?.length) return placed;
     result.created.push(...placed.created);
     if (rotation) {
       const node = byId(doc, placed.created[0]);
       if (node) rotateNode(doc, node, rotation);
     }
+    live = indexDocument(doc);
     return placed;
   };
 

@@ -15,7 +15,7 @@ import { parseDimensions } from '../src/format/place.js';
 import { emptyInventory, mergeItems, searchInventory, departmentsOf, parseCsv } from '../src/inventory/model.js';
 import { loadInventory, saveInventory } from '../src/inventory/store.js';
 
-const PDF = process.argv[2] ?? '/Users/princedavidthompson/Downloads/Card Party 2026 - Dallas TX.pdf';
+const PDF = process.argv[2] ?? '/Users/princedavidthompson/Downloads/Spring Gala 2026 - Example City.pdf';
 const UNITS_PER_FOOT = 120;
 
 const checks: Array<[string, boolean, string?]> = [];

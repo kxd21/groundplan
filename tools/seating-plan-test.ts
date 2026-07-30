@@ -23,6 +23,8 @@ import { indexDocument } from '../src/format/edit.js';
 import { loadBuffer, walk } from '../src/format/index.js';
 import { packContainer, verifyWritable } from '../src/format/write.js';
 import { fixturePlanBuffer } from './test-fixture.js';
+import { createBlankPlan } from '../src/format/blank.js';
+import { deriveRoom } from '../src/format/room.js';
 
 let passed = 0;
 let failed = 0;
@@ -473,6 +475,28 @@ console.log('\nthe controls the original app has\n');
   check('and it costs seats', around.seats.length < solveSeating(base, room).seats.length);
 
   check('something not flagged reserves nothing', reservedFromObstacles([{ ...column, spec: {} }]).length === 0);
+}
+
+{
+  // The regression: on a plan with nothing to clone, placeGear synthesizes the
+  // first item, which the caller's index has never seen. Every later placement
+  // then matched that shape by name, failed to find it in the stale index, and
+  // gave up with "object is not part of the document" — so seating worked on an
+  // existing plan and failed on a new one.
+  const blank = createBlankPlan({ room: { width: 60 * F, depth: 40 * F } });
+  const doc = loadBuffer(blank.file!, 'new.rv4').document;
+  const room = deriveRoom(doc).room;
+
+  const plan = createSeatingPlan('banquet', { x: 30 * F, y: -6 * F });
+  plan.maxSeats = 40;
+  const solution = solveSeating(plan, room);
+  check('a brand-new plan solves a banquet', solution.tables.length > 1, `${solution.tables.length}`);
+
+  const drawn = renderSeating(doc, indexDocument(doc), solution, { chair: 'Chair', table: 'Round 60"' });
+  check('and seating draws onto it', drawn.ok, drawn.reason);
+  check('every table placed', drawn.tables === solution.tables.length, `${drawn.tables} of ${solution.tables.length}`);
+  check('every chair placed', drawn.chairs === solution.seats.length, `${drawn.chairs} of ${solution.seats.length}`);
+  check('and the result verifies', verifyWritable(doc).ok);
 }
 
 console.log(`\n${passed}/${passed + failed} checks passed`);

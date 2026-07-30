@@ -178,7 +178,7 @@ export function isPublishable(icon: CatalogIcon): { ok: boolean; reason?: string
  * The line is between the technology and the client. `Barco LC w/1.2 Lens`,
  * `DLP 15SX - 2.0` and `6' x 30"` all describe equipment and should be shared
  * exactly as they are — that identity is the useful part, and stripping it
- * would leave a catalog of anonymous boxes. `BofA Podium` or
+ * would leave a catalog of anonymous boxes. `Meridian Bank Podium` or
  * `Grand Ballroom Riser` names a customer or a venue and must not be.
  *
  * A survey of 400 real plans found 83 distinct symbol names and not one client
@@ -290,9 +290,9 @@ export interface GenericName {
  * So anything tying a symbol to a customer, a venue, a room or a date is
  * removed automatically, and what remains describes the technology:
  *
- *     "BofA Podium"           -> "Podium"
+ *     "Meridian Bank Podium"           -> "Podium"
  *     "Grand Ballroom Riser"  -> "Riser"
- *     "Card Party 2026 Stage" -> "Stage"
+ *     "Spring Gala 2026 Stage" -> "Stage"
  *     "Barco LC w/1.2 Lens"   -> unchanged
  *
  * Where stripping leaves nothing useful, the category's plain name is used, so
@@ -319,8 +319,8 @@ export function genericiseName(name: string, category?: string): GenericName {
   if (removed.length === 0) return { name: original, changed: false, removed: [] };
 
   // Rebuilt from an allowlist rather than by deleting the parts that looked
-  // wrong. Deleting leaves whatever it failed to recognise, so "Card Party 2026
-  // Stage" kept the client and became "Card Party Stage". Keeping only words
+  // wrong. Deleting leaves whatever it failed to recognise, so "Spring Gala 2026
+  // Stage" kept the client and became "Spring Gala Stage". Keeping only words
   // that are known equipment vocabulary cannot do that: anything unrecognised
   // is dropped by default, which is the correct bias for a privacy control.
   const tokens = original.split(/\s+/);
@@ -333,7 +333,7 @@ export function genericiseName(name: string, category?: string): GenericName {
 
       // A dimension describes the product, so it stays — but only when it is
       // actually a dimension. A bare integer is just as likely to be a year or
-      // a room number, which is how "Card Party 2026 Stage" kept its year and
+      // a room number, which is how "Spring Gala 2026 Stage" kept its year and
       // "Room 402 Chair" kept its room.
       if (/^[x×]$/i.test(bare)) return true;
       if (/\d+\s*['"′″]\s*[x×]?\s*\d*/.test(bare) && /['"′″]/.test(bare)) return true;
