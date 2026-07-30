@@ -141,6 +141,21 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const width = useLength(40 * 120, units);
   const depth = useLength(30 * 120, units);
 
+  // Seed the draw-room fields from the room actually on the plan, so "Redraw
+  // room" starts from its real size rather than silently resetting it to the
+  // 40 × 30 default. Only once per open plan, so a mid-edit value is not fought.
+  const [roomSeeded, setRoomSeeded] = useState(false);
+  useEffect(() => {
+    setRoomSeeded(false);
+  }, [doc.path]);
+  useEffect(() => {
+    if (!room || roomSeeded) return;
+    width.setText(formatLength(room.width, units));
+    depth.setText(formatLength(room.height, units));
+    setRoomSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, units, roomSeeded]);
+
   // ---- Reshape / curve ----------------------------------------------------
   const [reshapeOp, setReshapeOp] = useState<'union' | 'difference'>('union');
   const reshapeX = useLength(0, units);
@@ -240,7 +255,35 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const stageDepth = useLength(16 * 120, units);
   const stageHeight = useLength(24 * 10, units);
 
-  const names = doc.scene.inventory.map((i) => i.name);
+  // Chairs and tables to place come from the plan's own shapes *and* from the
+  // persistent equipment library — the library being "what new plans get built
+  // from" — so a brand-new plan, which has drawn nothing yet, can still seat
+  // from the company's stock instead of offering an empty list.
+  const [libraryNames, setLibraryNames] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .inventoryList('', null, null)
+      .then((state) => {
+        if (!cancelled) setLibraryNames(state.items.map((item) => item.name));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.path]);
+
+  const names = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const name of [...doc.scene.inventory.map((i) => i.name), ...libraryNames]) {
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        out.push(name);
+      }
+    }
+    return out;
+  }, [doc.scene.inventory, libraryNames]);
 
   if (!model) {
     return (
