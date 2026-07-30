@@ -23,6 +23,7 @@ import {
   cleanStaging,
   installAppUpdate,
   stageAppUpdate,
+  type StagedUpdate,
 } from '../update/app-update.js';
 import {
   applyUpdate,
@@ -40,6 +41,17 @@ import {
   readUsbSource,
   stageUsbUpdate,
 } from '../update/usb-update.js';
+import {
+  clearReminder,
+  formatReminderTime,
+  loadReminder,
+  msUntilReminder,
+  reminderAfterLater,
+  reminderAfterSchedule,
+  saveReminder,
+  scheduleOptions,
+  shouldOfferUpdate,
+} from '../update/reminder.js';
 import { loadBuffer } from '../format/index.js';
 import { findCatalogPath, loadCatalog, lookup, type Catalog } from '../format/catalog.js';
 import {
@@ -303,6 +315,10 @@ export interface DirectoryEntry {
 let mainWindow: BrowserWindow | null = null;
 /** Allows a close to continue after the unsaved-work prompt has been accepted. */
 let closeConfirmed = false;
+/** Fires when a previously scheduled application update is due. */
+let scheduledUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+/** Prevents overlapping update prompts while one is already on screen. */
+let appUpdatePromptOpen = false;
 let rendererReady = false;
 let pendingOpenPath: string | null = null;
 export interface RecentFile {
@@ -1420,86 +1436,246 @@ async function confirmDiscard(kind: 'plan' | 'gear' | 'all'): Promise<boolean> {
   return true;
 }
 
-/**
- * Offers an application update, downloads it, and restarts into it.
- *
- * Uses the system dialog rather than a bespoke panel: an update prompt has to
- * work when the window is busy or a plan is mid-edit, and it is the one moment
- * where interrupting is the point.
- */
-async function runAppUpdate(interactive: boolean): Promise<void> {
-  const staging = join(app.getPath('userData'), 'updates');
-  await cleanStaging(staging);
-
-  const plan = await checkForAppUpdate({
-    currentVersion: app.getVersion(),
-    platform: process.platform,
-    arch: process.arch,
-  });
-
-  if (!plan.available) {
-    // A silent check that finds nothing says nothing; only a deliberate one
-    // deserves an answer.
-    if (interactive) {
-      await dialog.showMessageBox({
-        type: 'info',
-        message: plan.reason === 'the application is up to date' ? 'Groundplan is up to date' : 'No update available',
-        detail:
-          plan.reason === 'the application is up to date'
-            ? `You are running version ${plan.currentVersion}.`
-            : (plan.reason ?? 'Could not check for updates just now.'),
-        buttons: ['OK'],
-      });
-    }
-    return;
-  }
-
-  const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
-  const answer = await dialog.showMessageBox({
-    type: 'info',
-    message: `Groundplan ${plan.latestVersion} is available`,
-    detail: `${plan.notes ? `${plan.notes}\n\n` : ''}You are on ${plan.currentVersion}. Download size: ${size}.\n\nGroundplan will restart to finish installing.`,
-    buttons: ['Download and install', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (answer.response !== 0) return;
-
-  mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received: 0, total: plan.package?.bytes });
-
-  const staged = await stageAppUpdate(plan, staging, (received, total) => {
-    mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received, total });
-    if (total > 0) mainWindow?.setProgressBar(received / total);
-  });
-  mainWindow?.setProgressBar(-1);
-
-  if (!staged.ok) {
-    mainWindow?.webContents.send('app:update-progress', { phase: 'failed', message: staged.reason });
-    await dialog.showMessageBox({
-      type: 'error',
-      message: 'The update could not be downloaded',
-      detail: `${staged.reason ?? 'The download did not finish.'}\n\nGroundplan ${plan.currentVersion} is unchanged and still works.`,
-      buttons: ['OK'],
-    });
-    return;
-  }
-
+function appBundlePath(): string {
   // macOS replaces the .app bundle, so the path has to be the bundle rather
   // than the executable buried inside it. Windows hands off to the installer
   // and never reads this.
-  const bundlePath =
-    process.platform === 'darwin'
-      ? app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]*$/, '')
-      : app.getPath('exe');
+  return process.platform === 'darwin'
+    ? app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]*$/, '')
+    : app.getPath('exe');
+}
 
-  const installed = await installAppUpdate(staged, bundlePath, () => app.quit());
+function clearScheduledUpdateTimer(): void {
+  if (scheduledUpdateTimer) {
+    clearTimeout(scheduledUpdateTimer);
+    scheduledUpdateTimer = null;
+  }
+}
+
+/** Arms an in-session timer when the user scheduled an update for later today. */
+async function armScheduledUpdateTimer(latestVersion?: string): Promise<void> {
+  clearScheduledUpdateTimer();
+  const reminder = await loadReminder(app.getPath('userData'));
+  const version = latestVersion ?? reminder.version;
+  if (!version) return;
+  const wait = msUntilReminder(reminder, version);
+  if (wait == null) return;
+  // Cap at ~24 days — setTimeout is 32-bit; longer waits re-arm on next launch.
+  const delay = Math.min(wait, 2_000_000_000);
+  scheduledUpdateTimer = setTimeout(() => {
+    scheduledUpdateTimer = null;
+    void runAppUpdate(true);
+  }, delay);
+}
+
+/**
+ * Lets the user save open work before an update restarts the app.
+ *
+ * Returns false when they cancel. Clean sessions skip the question.
+ */
+async function confirmSaveBeforeUpdate(latestVersion: string): Promise<boolean> {
+  const dirtyPlan = !!session?.dirty;
+  const dirtyGear = !!gear?.dirty;
+  if (!dirtyPlan && !dirtyGear) return true;
+
+  const work =
+    dirtyPlan && dirtyGear
+      ? 'the open plan and gear list'
+      : dirtyPlan
+        ? `“${session?.loaded.name ?? 'the open plan'}”`
+        : 'the open gear list';
+
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    title: 'Save before updating',
+    message: `Save ${work} before updating to Groundplan ${latestVersion}?`,
+    detail:
+      'Groundplan will restart to finish installing. Saving keeps your latest edits; updating without saving discards them.',
+    buttons: ['Save and update', 'Update without saving', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  };
+  const response = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+
+  if (response.response === 2) return false;
+  if (response.response === 1) return true;
+
+  if (dirtyPlan) {
+    const saved = await savePlanDocument(false);
+    if (!saved.ok) {
+      if (!saved.cancelled) await showSaveFailure(saved);
+      return false;
+    }
+  }
+  if (dirtyGear) {
+    const saved = await saveGearDocument(false);
+    if (!saved.ok) {
+      if (!saved.cancelled) await showSaveFailure(saved);
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Follow-up dialog that picks when to ask about the update again. */
+async function chooseUpdateSchedule(latestVersion: string): Promise<boolean> {
+  const choices = scheduleOptions();
+  const labels = choices.map((choice) => choice.label);
+  const options: Electron.MessageBoxOptions = {
+    type: 'question',
+    title: 'Schedule update',
+    message: `When should Groundplan ask about version ${latestVersion}?`,
+    detail: 'You can still update sooner from Help → Check for Updates…',
+    buttons: [...labels, 'Cancel'],
+    defaultId: 0,
+    cancelId: labels.length,
+    noLink: true,
+  };
+  const response = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  if (response.response < 0 || response.response >= choices.length) return false;
+
+  const picked = choices[response.response];
+  await saveReminder(app.getPath('userData'), reminderAfterSchedule(latestVersion, picked.at));
+  await armScheduledUpdateTimer(latestVersion);
+
+  await dialog.showMessageBox({
+    type: 'info',
+    message: 'Update scheduled',
+    detail: `Groundplan will remind you about version ${latestVersion} around ${formatReminderTime(picked.at)}.`,
+    buttons: ['OK'],
+  });
+  return true;
+}
+
+/**
+ * Downloads (or uses a staged package) and installs, quitting only after the
+ * user has had a chance to save.
+ */
+async function installStagedAppUpdate(
+  staged: StagedUpdate,
+  currentVersion: string,
+): Promise<void> {
+  await clearReminder(app.getPath('userData'));
+  clearScheduledUpdateTimer();
+  closeConfirmed = true;
+  const installed = await installAppUpdate(staged, appBundlePath(), () => app.quit());
   if (!installed.ok) {
+    closeConfirmed = false;
     await dialog.showMessageBox({
       type: 'error',
       message: 'The update could not be installed',
-      detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${plan.currentVersion} is unchanged.`,
+      detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${currentVersion} is unchanged.`,
       buttons: ['OK'],
     });
+  }
+}
+
+/**
+ * Offers an application update, downloads it, and restarts into it.
+ *
+ * First open after a release (and every quiet launch check that is not snoozed)
+ * gets a clear choice: update now, later, or schedule a reminder. Work can be
+ * saved before the restart. Uses the system dialog so the prompt still appears
+ * while a plan is mid-edit.
+ */
+async function runAppUpdate(interactive: boolean): Promise<void> {
+  if (appUpdatePromptOpen) return;
+  appUpdatePromptOpen = true;
+  try {
+    const staging = join(app.getPath('userData'), 'updates');
+    await cleanStaging(staging);
+
+    const plan = await checkForAppUpdate({
+      currentVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    });
+
+    if (!plan.available) {
+      // A silent check that finds nothing says nothing; only a deliberate one
+      // deserves an answer.
+      if (interactive) {
+        await dialog.showMessageBox({
+          type: 'info',
+          message: plan.reason === 'the application is up to date' ? 'Groundplan is up to date' : 'No update available',
+          detail:
+            plan.reason === 'the application is up to date'
+              ? `You are running version ${plan.currentVersion}.`
+              : (plan.reason ?? 'Could not check for updates just now.'),
+          buttons: ['OK'],
+        });
+      }
+      return;
+    }
+
+    const latestVersion = plan.latestVersion ?? 'the new version';
+    const reminder = await loadReminder(app.getPath('userData'));
+    const offer = shouldOfferUpdate(reminder, latestVersion, new Date(), interactive);
+    if (!offer.offer) {
+      // Keep an in-session timer armed for a scheduled remind time.
+      if (offer.reason === 'scheduled') await armScheduledUpdateTimer(latestVersion);
+      return;
+    }
+
+    const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
+    const answer = await dialog.showMessageBox({
+      type: 'info',
+      title: 'Update available',
+      message: `Groundplan ${latestVersion} is available`,
+      detail:
+        `${plan.notes ? `${plan.notes}\n\n` : ''}` +
+        `You are on ${plan.currentVersion}. Download size: ${size}.\n\n` +
+        'Choose Update Now to install and restart, Update Later to be asked again tomorrow, or Schedule… to pick a time.',
+      buttons: ['Update Now', 'Update Later', 'Schedule…'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+
+    if (answer.response === 1) {
+      await saveReminder(app.getPath('userData'), reminderAfterLater(latestVersion));
+      clearScheduledUpdateTimer();
+      return;
+    }
+    if (answer.response === 2) {
+      await chooseUpdateSchedule(latestVersion);
+      return;
+    }
+    if (answer.response !== 0) return;
+
+    if (!(await confirmSaveBeforeUpdate(latestVersion))) return;
+
+    mainWindow?.webContents.send('app:update-progress', {
+      phase: 'downloading',
+      received: 0,
+      total: plan.package?.bytes,
+    });
+
+    const staged = await stageAppUpdate(plan, staging, (received, total) => {
+      mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received, total });
+      if (total > 0) mainWindow?.setProgressBar(received / total);
+    });
+    mainWindow?.setProgressBar(-1);
+
+    if (!staged.ok) {
+      mainWindow?.webContents.send('app:update-progress', { phase: 'failed', message: staged.reason });
+      await dialog.showMessageBox({
+        type: 'error',
+        message: 'The update could not be downloaded',
+        detail: `${staged.reason ?? 'The download did not finish.'}\n\nGroundplan ${plan.currentVersion} is unchanged and still works.`,
+        buttons: ['OK'],
+      });
+      return;
+    }
+
+    await installStagedAppUpdate(staged, plan.currentVersion);
+  } finally {
+    appUpdatePromptOpen = false;
   }
 }
 
@@ -1691,10 +1867,11 @@ async function runUsbUpdate(): Promise<void> {
     return;
   }
 
+  const latestVersion = plan.latestVersion ?? 'the new version';
   const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
   const answer = await dialog.showMessageBox({
     type: 'info',
-    message: `Install Groundplan ${plan.latestVersion} from this drive?`,
+    message: `Install Groundplan ${latestVersion} from this drive?`,
     detail:
       `${plan.notes ? `${plan.notes}\n\n` : ''}You are on ${plan.currentVersion}. ${size} will be copied off the drive ` +
       `and checked against its signature before anything is replaced.\n\nGroundplan will restart to finish installing.`,
@@ -1703,6 +1880,8 @@ async function runUsbUpdate(): Promise<void> {
     cancelId: 1,
   });
   if (answer.response !== 0) return;
+
+  if (!(await confirmSaveBeforeUpdate(latestVersion))) return;
 
   const staging = join(app.getPath('userData'), 'updates');
   await cleanStaging(staging);
@@ -1722,20 +1901,7 @@ async function runUsbUpdate(): Promise<void> {
     return;
   }
 
-  const bundlePath =
-    process.platform === 'darwin'
-      ? app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]*$/, '')
-      : app.getPath('exe');
-
-  const installed = await installAppUpdate(staged, bundlePath, () => app.quit());
-  if (!installed.ok) {
-    await dialog.showMessageBox({
-      type: 'error',
-      message: 'The update could not be installed',
-      detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${plan.currentVersion} is unchanged.`,
-      buttons: ['OK'],
-    });
-  }
+  await installStagedAppUpdate(staged, plan.currentVersion);
 }
 
 function createWindow(): void {
@@ -3737,10 +3903,13 @@ app.whenReady().then(async () => {
 
   // Quiet check a little after launch — late enough not to compete with opening
   // a plan, and it says nothing unless there is an update. Off if asked.
+  // A previously scheduled reminder is also re-armed here so it still fires if
+  // the app was quit and reopened before the chosen time.
   setTimeout(() => {
     void (async () => {
       settings ??= await loadSettings(app.getPath('userData'));
       if (settings.app.checkOnLaunch) await runAppUpdate(false);
+      else await armScheduledUpdateTimer();
       await runCatalogUpdate(false);
     })();
   }, 8000);

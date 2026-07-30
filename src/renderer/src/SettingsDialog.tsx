@@ -389,9 +389,10 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
                   <button onClick={() => void api.checkAppUpdate()}>Check for updates now</button>
                 </div>
                 <p className="hint">
-                  Checking for updates looks for a new Groundplan build and a signed equipment
-                  catalog. Both are verified before anything is installed, and the copy you have is
-                  kept until the new one is in place.
+                  When a new Groundplan build is available you can update now, later, or schedule a
+                  reminder — and save open work before the restart. Checking also looks for a signed
+                  equipment catalog. Both are verified before anything is installed, and the copy you
+                  have is kept until the new one is in place.
                 </p>
               </>
             )}
