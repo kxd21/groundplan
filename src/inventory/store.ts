@@ -285,7 +285,11 @@ function quarantinePath(path: string): string {
 }
 
 async function syncFile(path: string): Promise<void> {
-  const handle = await open(path, 'r');
+  // Opened for writing, not reading. Windows refuses to flush a read-only
+  // handle — `FlushFileBuffers` needs write access — so `'r'` here raised
+  // EPERM on every save. POSIX is happy either way, which is why it went
+  // unnoticed until this ran on Windows.
+  const handle = await open(path, 'r+');
   try {
     await handle.sync();
   } finally {
