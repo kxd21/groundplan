@@ -197,7 +197,28 @@ async function launch(app: PackagedApp): Promise<void> {
         }),
       ]);
     }
-    rmSync(data, { recursive: true, force: true });
+    discardTemp(data);
+  }
+}
+
+/**
+ * Removes the throwaway user-data directory.
+ *
+ * Windows keeps Chromium's network-service files open for a moment after the
+ * process is killed, so deleting immediately loses a race against the OS and
+ * fails with EBUSY on `Network\Trust Tokens`. `maxRetries` makes Node back off
+ * and try again, which clears it.
+ *
+ * A directory that still will not go is reported and ignored rather than
+ * thrown. This function runs after the checks have already passed, so failing
+ * here would report a launch problem the run did not have — and it is a temp
+ * directory on a machine CI is about to discard.
+ */
+function discardTemp(data: string): void {
+  try {
+    rmSync(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (err) {
+    console.log(`  note  left ${data} behind: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
