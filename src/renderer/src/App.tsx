@@ -40,6 +40,17 @@ import {
   IconRotateRight,
   IconBringFront,
   IconSendBack,
+  IconFlipHorizontal,
+  IconFlipVertical,
+  IconAlignLeft,
+  IconAlignCenter,
+  IconAlignRight,
+  IconAlignTop,
+  IconAlignMiddle,
+  IconAlignBottom,
+  IconDistributeHorizontal,
+  IconDistributeVertical,
+  IconHelp,
 } from './icons.js';
 import type { Layer, Scene } from '../../format/scene.js';
 import RoomPanel from './RoomPanel.js';
@@ -119,6 +130,16 @@ type InspectorTab = 'properties' | 'room' | 'create' | 'layers';
 
 /** One foot in logical units — the arrow-key nudge and duplicate offset. */
 const FOOT = 120;
+
+/** Same steps as Settings → Drawing → Snap. Values are logical units (0.1"). */
+const SNAP_STEPS = [
+  [0, 'Off'],
+  [10, '1″'],
+  [30, '3″'],
+  [60, '6″'],
+  [FOOT, '1′'],
+  [FOOT * 5, '5′'],
+] as const;
 
 function formatFeet(units: number): string {
   return `${(units / FOOT).toFixed(1)}′`;
@@ -248,6 +269,8 @@ export function App() {
   const annotationInputRef = useRef<HTMLTextAreaElement | null>(null);
   /** Snap step in logical units; 0 is off. Object alignment always applies. */
   const [snapStep, setSnapStep] = useState(FOOT);
+  /** Last non-zero snap, so the magnet toggle can restore Off ↔ step. */
+  const lastSnapStepRef = useRef(FOOT);
   const [printOpen, setPrintOpen] = useState(false);
   const [printScale, setPrintScale] = useState('1/8');
   const [printPaper, setPrintPaper] = useState('Tabloid');
@@ -480,6 +503,7 @@ export function App() {
         setDxfIncludeSchedule(s.dxf.includeSchedule);
         setDxfVisibleOnly(s.dxf.visibleLayersOnly);
         setSnapStep(s.drawing.snapStep);
+        if (s.drawing.snapStep > 0) lastSnapStepRef.current = s.drawing.snapStep;
         setUnitSystem(s.drawing.units === 'metric' ? 'metric' : 'imperial');
         setShowGrid(s.drawing.showGrid !== false);
         setBulkDeleteWarning(
@@ -838,6 +862,22 @@ export function App() {
     setShowGrid((current) => {
       const next = !current;
       void api.settingsPatch({ drawing: { showGrid: next } }).catch(() => undefined);
+      return next;
+    });
+  }, []);
+
+  const commitSnapStep = useCallback((next: number) => {
+    const step = Number.isFinite(next) && next > 0 ? next : 0;
+    if (step > 0) lastSnapStepRef.current = step;
+    setSnapStep(step);
+    void api.settingsPatch({ drawing: { snapStep: step } }).catch(() => undefined);
+  }, []);
+
+  const toggleSnap = useCallback(() => {
+    setSnapStep((current) => {
+      const next = current ? 0 : lastSnapStepRef.current || FOOT;
+      if (current > 0) lastSnapStepRef.current = current;
+      void api.settingsPatch({ drawing: { snapStep: next } }).catch(() => undefined);
       return next;
     });
   }, []);
@@ -1412,7 +1452,7 @@ export function App() {
       }
       if (e.key.toLowerCase() === 's' && !mod && doc) {
         e.preventDefault();
-        setSnapStep((v) => (v ? 0 : FOOT));
+        toggleSnap();
         return;
       }
       if (e.key.toLowerCase() === 'g' && !mod && doc) {
@@ -1520,6 +1560,7 @@ export function App() {
     toggleMeasure,
     toggleDimension,
     toggleGrid,
+    toggleSnap,
     keepMeasurement,
     selectAll,
     view,
@@ -1931,16 +1972,6 @@ export function App() {
                 {paper ? <IconMoon /> : <IconSun />}
               </button>
               <button
-                className={`icon-btn${snapStep ? ' is-on' : ''}`}
-                onClick={() => setSnapStep((v) => (v ? 0 : FOOT))}
-                disabled={!doc}
-                title={snapStep ? 'Snapping on — 1ft grid and object alignment (S)' : 'Snapping off (S)'}
-                aria-label={snapStep ? 'Disable snapping' : 'Enable snapping'}
-                aria-pressed={!!snapStep}
-              >
-                <IconMagnet />
-              </button>
-              <button
                 className={`icon-btn${showGrid ? ' is-on' : ''}`}
                 onClick={() => void toggleGrid()}
                 disabled={!doc}
@@ -1950,6 +1981,40 @@ export function App() {
               >
                 <IconGrid />
               </button>
+            </div>
+
+            <div className="seg plan-snap-controls" aria-label="Snap">
+              <button
+                className={`icon-btn${snapStep ? ' is-on' : ''}`}
+                onClick={() => toggleSnap()}
+                disabled={!doc}
+                title={
+                  snapStep
+                    ? 'Snapping on — grid and object alignment (S)'
+                    : 'Snapping off (S)'
+                }
+                aria-label={snapStep ? 'Disable snapping' : 'Enable snapping'}
+                aria-pressed={!!snapStep}
+              >
+                <IconMagnet />
+              </button>
+              <select
+                className="toolbar-select"
+                value={SNAP_STEPS.some(([value]) => value === snapStep) ? snapStep : snapStep || 0}
+                onChange={(e) => commitSnapStep(Number(e.target.value))}
+                disabled={!doc}
+                title="Snap step"
+                aria-label="Snap step"
+              >
+                {SNAP_STEPS.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+                {!SNAP_STEPS.some(([value]) => value === snapStep) && snapStep > 0 && (
+                  <option value={snapStep}>Custom</option>
+                )}
+              </select>
             </div>
 
             <div className="seg plan-tool-controls" aria-label="Plan drawing tools">
@@ -2064,6 +2129,98 @@ export function App() {
               </button>
               <button
                 className="icon-btn"
+                onClick={() => void flipSelection('horizontal')}
+                disabled={!doc?.editable || !selectedIds.length}
+                title="Flip horizontal"
+                aria-label="Flip horizontal"
+              >
+                <IconFlipHorizontal />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void flipSelection('vertical')}
+                disabled={!doc?.editable || !selectedIds.length}
+                title="Flip vertical"
+                aria-label="Flip vertical"
+              >
+                <IconFlipVertical />
+              </button>
+              <span className="seg-divider" aria-hidden />
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('align-left')}
+                disabled={!doc?.editable || selectedIds.length < 2}
+                title="Align left"
+                aria-label="Align left"
+              >
+                <IconAlignLeft />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('align-center')}
+                disabled={!doc?.editable || selectedIds.length < 2}
+                title="Align centre"
+                aria-label="Align centre"
+              >
+                <IconAlignCenter />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('align-right')}
+                disabled={!doc?.editable || selectedIds.length < 2}
+                title="Align right"
+                aria-label="Align right"
+              >
+                <IconAlignRight />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('align-top')}
+                disabled={!doc?.editable || selectedIds.length < 2}
+                title="Align top"
+                aria-label="Align top"
+              >
+                <IconAlignTop />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('align-middle')}
+                disabled={!doc?.editable || selectedIds.length < 2}
+                title="Align middle"
+                aria-label="Align middle"
+              >
+                <IconAlignMiddle />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('align-bottom')}
+                disabled={!doc?.editable || selectedIds.length < 2}
+                title="Align bottom"
+                aria-label="Align bottom"
+              >
+                <IconAlignBottom />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('distribute-horizontal')}
+                disabled={!doc?.editable || selectedIds.length < 3}
+                title="Distribute horizontally"
+                aria-label="Distribute horizontally"
+              >
+                <IconDistributeHorizontal />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void arrangeSelection('distribute-vertical')}
+                disabled={!doc?.editable || selectedIds.length < 3}
+                title="Distribute vertically"
+                aria-label="Distribute vertically"
+              >
+                <IconDistributeVertical />
+              </button>
+              <span className="seg-divider" aria-hidden />
+              <button
+                className="icon-btn"
                 onClick={() => void reorderSelection('bring-to-front')}
                 disabled={!doc?.editable || !selectedIds.length}
                 title="Bring to front"
@@ -2131,6 +2288,17 @@ export function App() {
             </div>
           </>
         )}
+
+        <div className="seg" aria-label="Help">
+          <button
+            className="icon-btn"
+            onClick={() => setShortcutsOpen(true)}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
+          >
+            <IconHelp />
+          </button>
+        </div>
 
         <div className="spacer" />
 

@@ -360,3 +360,105 @@ export function IconSendBack({ size = 16, className }: IconProps) {
     </svg>
   );
 }
+
+export function IconFlipHorizontal({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M8 2.25v11.5" />
+      <path d="M6.25 4.5 3.25 8l3 3.5M9.75 4.5l3 3.5-3 3.5" />
+    </svg>
+  );
+}
+
+export function IconFlipVertical({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.25 8h11.5" />
+      <path d="M4.5 6.25 8 3.25l3.5 3M4.5 9.75l3.5 3 3.5-3" />
+    </svg>
+  );
+}
+
+export function IconAlignLeft({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.5 2.5v11" />
+      <path d="M5 4.5h8.5M5 8h6M5 11.5h7" />
+    </svg>
+  );
+}
+
+export function IconAlignCenter({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M8 2.5v11" />
+      <path d="M3.5 4.5h9M4.5 8h7M4 11.5h8" />
+    </svg>
+  );
+}
+
+export function IconAlignRight({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M13.5 2.5v11" />
+      <path d="M2.5 4.5H11M5 8h6M4 11.5h7" />
+    </svg>
+  );
+}
+
+export function IconAlignTop({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.5 2.5h11" />
+      <path d="M4.5 5v8.5M8 5v6M11.5 5v7" />
+    </svg>
+  );
+}
+
+export function IconAlignMiddle({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.5 8h11" />
+      <path d="M4.5 3.5v9M8 4.5v7M11.5 4v8" />
+    </svg>
+  );
+}
+
+export function IconAlignBottom({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.5 13.5h11" />
+      <path d="M4.5 2.5V11M8 5v6M11.5 3.5V11" />
+    </svg>
+  );
+}
+
+export function IconDistributeHorizontal({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.5 3v10M13.5 3v10" />
+      <rect x="5.25" y="5.25" width="1.75" height="5.5" rx="0.4" fill="currentColor" stroke="none" />
+      <rect x="9" y="5.25" width="1.75" height="5.5" rx="0.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function IconDistributeVertical({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3 2.5h10M3 13.5h10" />
+      <rect x="5.25" y="5.25" width="5.5" height="1.75" rx="0.4" fill="currentColor" stroke="none" />
+      <rect x="5.25" y="9" width="5.5" height="1.75" rx="0.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function IconHelp({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="8" cy="8" r="5.75" />
+      <path d="M6.4 6.35a1.7 1.7 0 0 1 3.3.7c0 1.15-1.15 1.45-1.7 2.05V10" />
+      <path d="M8 11.85h.01" />
+    </svg>
+  );
+}

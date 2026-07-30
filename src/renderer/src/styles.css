@@ -185,6 +185,7 @@ button:disabled {
 
 .toolbar button,
 .toolbar input,
+.toolbar select,
 .toolbar .seg {
   -webkit-app-region: no-drag;
 }
@@ -212,6 +213,51 @@ button:disabled {
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 9px;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.toolbar .seg:hover {
+  border-color: var(--line-strong);
+}
+
+.toolbar .seg-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  background: var(--line);
+  flex: none;
+  align-self: center;
+}
+
+.toolbar-select {
+  height: 30px;
+  min-width: 4.75rem;
+  padding: 0 6px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toolbar-select:hover:not(:disabled) {
+  background: var(--hover-strong);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+.toolbar-select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.toolbar-select:disabled {
+  opacity: 0.32;
+  cursor: default;
 }
 
 .tool-button {
@@ -2832,12 +2878,17 @@ button,
 [role='button'],
 .file-list button,
 .settings-nav button,
-.link-btn {
+.link-btn,
+.toolbar .icon-btn,
+.toolbar .tool-button,
+.toolbar .seg.tabs button,
+.toolbar-select {
   transition:
     background-color 120ms ease,
     border-color 120ms ease,
     color 120ms ease,
-    opacity 120ms ease;
+    opacity 120ms ease,
+    transform 80ms ease;
 }
 
 /* The base hover, strong enough to see at a glance without shouting. */
@@ -2852,6 +2903,32 @@ button:hover:not(:disabled),
 .icon-btn:hover:not(:disabled) {
   background: var(--hover-strong);
   color: var(--ink);
+}
+
+/* Toolbar controls are denser — give every kind the same clear fill. */
+.toolbar .icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--ink);
+}
+
+.toolbar .tool-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+}
+
+.toolbar .seg.tabs button:hover:not(:disabled):not(.active) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink);
+}
+
+.toolbar .seg.tabs button.active:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.toolbar .tool-button.is-on:hover:not(:disabled) {
+  background: rgba(77, 148, 255, 0.26);
+  color: var(--accent);
 }
 
 button:active:not(:disabled),
@@ -2895,8 +2972,10 @@ button:disabled:hover,
   border-color: var(--accent-line);
 }
 
-.icon-btn.is-on:hover:not(:disabled) {
-  background: rgba(77, 148, 255, 0.26);
+.icon-btn.is-on:hover:not(:disabled),
+.toolbar .icon-btn.is-on:hover:not(:disabled) {
+  background: rgba(77, 148, 255, 0.28);
+  color: var(--accent);
 }
 
 /* Rows behave like buttons: the whole row is the target, not just its text. */
@@ -2947,7 +3026,12 @@ a,
   [role='button'],
   .file-list button,
   .settings-nav button,
-  .link-btn {
+  .link-btn,
+  .toolbar .icon-btn,
+  .toolbar .tool-button,
+  .toolbar .seg.tabs button,
+  .toolbar-select,
+  .seg {
     transition: none;
   }
 
