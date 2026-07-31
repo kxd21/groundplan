@@ -1,7 +1,7 @@
 # Installing Groundplan
 
-Groundplan opens Room Viewer floor plans (`.rv4` and friends) on Windows and
-macOS. Room Viewer itself is not needed and does not have to be installed.
+Groundplan opens legacy event floor plans (`.rv4` and friends) on Windows and
+macOS. The original editor is not needed and does not have to be installed.
 
 **Prefer the [download page](https://kxd21.github.io/groundplan/download/)** — it
 detects your computer and offers one primary installer. Or pick a file from
@@ -122,15 +122,15 @@ follow it**, so move them together.
 
 ---
 
-## Keeping files compatible with Room Viewer
+## Keeping files compatible with the original editor
 
-Everything Groundplan writes is ordinary Room Viewer geometry, so a plan it has
-edited still opens in Room Viewer. Two things are worth knowing:
+Everything Groundplan writes is ordinary legacy geometry, so a plan it has
+edited still opens in the original editor. Two things are worth knowing:
 
-- **Room Viewer does not read the companion files.** A room, a seating plan or a
-  stage build is drawn into the `.rv4` as walls, chairs and deck outlines, which
-  Room Viewer shows normally — but the parameters behind them live in the
-  companion, so editing the plan in Room Viewer and coming back means
+- **The original editor does not read the companion files.** A room, a seating
+  plan or a stage build is drawn into the `.rv4` as walls, chairs and deck
+  outlines, which it shows normally — but the parameters behind them live in the
+  companion, so editing the plan there and coming back means
   Groundplan can no longer match its saved settings to the drawing. It notices
   and tells you, rather than applying settings that no longer describe the file.
 
@@ -199,6 +199,6 @@ what kind of file was opened and how many objects were read.
 read-only?** reports which part of the file could not be accounted for.
 
 **Text or dimensions look wrong after editing elsewhere.** If a plan was saved
-in Room Viewer since Groundplan last wrote it, the companion data no longer
+in the original editor since Groundplan last wrote it, the companion data no longer
 lines up. Groundplan says so on open and offers to work out the room again from
 the drawing.

@@ -102,7 +102,8 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         <div className="new-plan-head">
           <h2 id="new-plan-title">New plan</h2>
           <p>
-            A real Room Viewer file, created from nothing. It opens in Room Viewer like any other plan.
+            A real <code>.rv4</code> plan, created from nothing. It opens in the original editor like
+            any other plan.
           </p>
         </div>
 

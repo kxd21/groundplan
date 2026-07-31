@@ -2618,7 +2618,7 @@ export function App() {
               <Mark size={34} className="placeholder-mark" />
               <h1>Start a plan</h1>
               <p>
-                Create one from nothing, or open an existing Room Viewer file — <code>.rv4</code>,{' '}
+                Create one from nothing, or open an existing plan file — <code>.rv4</code>,{' '}
                 <code>.rs4</code>, <code>.se4</code>, <code>.rsd</code> — plus <code>.add</code>,{' '}
                 <code>.stk</code> and <code>.lib</code> shape libraries. Nothing is converted.
               </p>

@@ -1,12 +1,11 @@
 # Groundplan
 
-A cross-platform rebuild of Room Viewer — the Windows-only event-diagramming
-tool (TimeSaver Software, last built 2013) — that reads **and edits** the
-original plan files directly. It runs on **Windows and macOS** and needs no
-Windows VM.
+A cross-platform rebuild of the discontinued Windows-only event-diagramming tool
+(last built 2013) that reads **and edits** the original plan files directly. It
+runs on **Windows and macOS** and needs no Windows VM.
 
-The original `RV.exe` is a 32-bit Win32 binary that cannot run on modern macOS
-at all. This project replaces the application while keeping the data: the file
+The original editor is a 32-bit Win32 binary that cannot run on modern macOS at
+all. This project replaces the application while keeping the data: the file
 formats were reverse-engineered so existing plans open, edit and save unchanged.
 
 *A "ground plan" is the standard term in theatre and live events for a scaled
@@ -54,7 +53,7 @@ fail to open**, every file yields geometry, 2.49 million objects decode, and
 
 ## Three views
 
-**Plan** — open, edit and save the original Room Viewer floor plans.
+**Plan** — open, edit and save the original floor plans.
 **Gear** — one job's equipment list, imported straight from the PDF your rental
 system prints.
 **Inventory** — the company's equipment library, which accumulates across jobs
@@ -134,7 +133,7 @@ These are irreplaceable event plans, and the file format has fields this
 project never identified. Three rules protect them:
 
 1. **Only archive streams that reproduce themselves exactly can be saved.** On
-   open, Groundplan re-serializes the Room Viewer `Contents` stream and compares
+   open, Groundplan re-serializes the legacy `Contents` stream and compares
    it byte for byte with what it read. A stream that does not match is opened
    read-only and says so.
    **1,954 of the 1,955 files pass**; the only one that does not has physically
@@ -212,7 +211,7 @@ hands it to the existing window instead of starting a competing writer.
 
 ## How the file formats work
 
-Room Viewer persisted its documents with MFC's `CArchive`, which writes a tag
+The original editor persisted its documents with MFC's `CArchive`, which writes a tag
 stream with no field metadata — the layouts lived only in the original C++
 `Serialize()` methods. `src/format/` reconstructs them:
 

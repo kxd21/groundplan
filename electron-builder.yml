@@ -16,28 +16,28 @@ files:
 # them directly, so the desktop packages advertise the same complete set.
 fileAssociations:
   - ext: rv4
-    name: Room Viewer Plan
+    name: Event Floor Plan
     role: Editor
   - ext: rs4
-    name: Room Viewer Room
+    name: Event Room
     role: Editor
   - ext: se4
-    name: Room Viewer Shape
+    name: Event Shape
     role: Editor
   - ext: ds4
-    name: Room Viewer Deep Save
+    name: Event Plan Archive
     role: Editor
   - ext: rsd
-    name: Room Viewer Schematic
+    name: Event Schematic
     role: Editor
   - ext: add
-    name: Room Viewer Add-on Library
+    name: Event Add-on Library
     role: Viewer
   - ext: stk
-    name: Room Viewer Stock Library
+    name: Event Stock Library
     role: Viewer
   - ext: lib
-    name: Room Viewer Shape Library
+    name: Event Shape Library
     role: Viewer
 
 afterPack: build/afterPack.cjs
