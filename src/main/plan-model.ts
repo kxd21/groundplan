@@ -36,6 +36,7 @@ import {
   roomArea,
   roomBounds,
   roomPerimeter,
+  roomPolygon,
   wallLength,
   type RoomModel,
 } from '../format/room.js';
@@ -61,7 +62,9 @@ import {
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
 import { walk, UNITS_PER_FOOT, type RVDocument } from '../format/rv.js';
 import { addRoot, appendChild, indexDocument } from '../format/edit.js';
+import { placeGear } from '../format/place.js';
 import { createSegment, createShape } from '../format/synthesize.js';
+import { walkItems, type GearList } from '../gear/model.js';
 import { companionPathFor, loadCompanion, saveCompanion } from './companion-store.js';
 import type { Session } from './session.js';
 
@@ -437,6 +440,130 @@ export function dimensionTheRoom(session: Session, units: UnitSystem): ModelEdit
   return { ok: true, created: drawn.created, note: `${drawings.length} dimensions added.` };
 }
 
+/**
+ * Rings the room in pipe and drape.
+ *
+ * A real show masks the walls with a run of drape, which the corpus stores as a
+ * line of "Pipe and Drape" panels — Card Party has 51 of them. Placing those by
+ * hand, one panel at a time, is what makes draping a room from scratch
+ * impractical, so this lays the whole run along the room outline in one step:
+ * each wall is divided into panels of roughly `panelWidth`, and each panel is a
+ * thin rectangle named so it counts in the inventory like the real thing.
+ */
+export function drapePerimeter(session: Session, panelWidth = 5 * UNITS_PER_FOOT): ModelEdit {
+  const doc = session.loaded.document;
+  const room = currentRoom(doc);
+  if (!room) return { ok: false, reason: 'there is no room outline to drape' };
+
+  const poly = roomPolygon(room.walls);
+  if (poly.length < 2) return { ok: false, reason: 'this room has no walls to drape' };
+
+  const panel = Math.max(2 * UNITS_PER_FOOT, panelWidth);
+  const thickness = UNITS_PER_FOOT; // reads as a ~1 ft deep masking line on the plan
+  const host = stageHost(doc);
+  const created: number[] = [];
+
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1) continue;
+    const ux = (b.x - a.x) / len;
+    const uy = (b.y - a.y) / len;
+    const nx = -uy;
+    const ny = ux;
+    const count = Math.max(1, Math.round(len / panel));
+    const panelLen = len / count;
+
+    for (let k = 0; k < count; k++) {
+      const t = (k + 0.5) * panelLen;
+      const cx = a.x + ux * t;
+      const cy = a.y + uy * t;
+      const hl = panelLen / 2;
+      const ht = thickness / 2;
+      const corners = [
+        { x: -ux * hl - nx * ht, y: -uy * hl - ny * ht },
+        { x: ux * hl - nx * ht, y: uy * hl - ny * ht },
+        { x: ux * hl + nx * ht, y: uy * hl + ny * ht },
+        { x: -ux * hl + nx * ht, y: -uy * hl + ny * ht },
+        { x: -ux * hl - nx * ht, y: -uy * hl - ny * ht },
+      ];
+      const shape = createShape(doc, { name: 'Pipe and Drape', x: cx, y: cy, outline: [corners] });
+      if (!shape.ok || !shape.node) return { ok: false, reason: shape.reason };
+      const added = host ? appendChild(doc, host, shape.node) : addRoot(doc, shape.node);
+      if (!added.ok) return { ok: false, reason: added.reason };
+      created.push(shape.node.id);
+    }
+  }
+
+  if (!created.length) return { ok: false, reason: 'the room outline was too small to drape' };
+  return { ok: true, created, note: `${created.length} drape panels around the room.` };
+}
+
+/** Cable, consumables and hardware that no one draws on a floor plan. */
+const NOT_DRAWN =
+  /\b(cable|jumper|xlr|sdi|hdmi|cat\s*6|cat6|dmx|soca|edison|feeder|adapter|adaptor|battery|batteries|barrel|coupler|shackle|clamp|tape|clip|bolt|sandbag|case|bag|strap|spanset|zipties?|screw|pin|whip|breakout|snake|loom|power supply|remote|gel|gaff)\b/i;
+
+/**
+ * Places every drawable line of a gear list onto the plan.
+ *
+ * A gear list holds descriptions and quantities but no positions — the truck
+ * doesn't know where anything goes — so the pieces are laid out in a tidy
+ * staging grid below the room for the user to drag into place. That turns "150
+ * lines on the manifest" into 150 real objects in one step instead of arming
+ * and clicking each one, which is what made dressing a plan from a list
+ * impractical. Cable and consumables are skipped so they don't become
+ * room-sized boxes.
+ */
+export function placeGearList(
+  session: Session,
+  list: GearList,
+): ModelEdit & { placed?: number } {
+  const doc = session.loaded.document;
+
+  const room = currentRoom(doc);
+  const bounds = room ? roomBounds(room) : null;
+  const originX = bounds ? bounds.minX : 0;
+  const startY = bounds ? bounds.maxY + 10 * UNITS_PER_FOOT : 0;
+  const pitch = 8 * UNITS_PER_FOOT;
+  const perRow = 24;
+  const MAX = 1500;
+
+  const created: number[] = [];
+  let placed = 0;
+  let cell = 0;
+  let index = indexDocument(doc);
+
+  for (const item of walkItems(list)) {
+    if (item.children.length || item.note) continue; // packages/instructions are not objects
+    const description = item.description.trim();
+    if (!description || NOT_DRAWN.test(description)) continue;
+    const qty = Math.max(0, Math.min(Math.round(item.quantity || 0), 200));
+
+    for (let n = 0; n < qty && placed < MAX; n++) {
+      const px = originX + (cell % perRow) * pitch;
+      const py = startY + Math.floor(cell / perRow) * pitch;
+      const result = placeGear(doc, index, description, px, py);
+      if (result.ok && result.created?.length) {
+        created.push(...result.created);
+        placed++;
+        // A synthesized shape must enter the index before it can be cloned by
+        // name; a matched clone reuses a template already in it.
+        if (result.method !== 'matched') index = indexDocument(doc);
+      }
+      cell++;
+    }
+  }
+
+  if (!placed) return { ok: false, reason: 'this gear list has nothing drawable to place' };
+  return {
+    ok: true,
+    created,
+    placed,
+    note: `Placed ${placed} gear object${placed === 1 ? '' : 's'} in a staging grid below the room.`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Seating
 // ---------------------------------------------------------------------------
@@ -448,12 +575,14 @@ export interface SeatingRequestView {
   seatSpacing?: number;
   rowSpacing?: number;
   front?: number;
+  depth?: number;
   perimeter?: number;
   aisle?: number;
   rowsPerBlock?: number;
   centreAisle?: number;
   stagger?: boolean;
   splay?: number;
+  blocksAcross?: number;
   tableDiameter?: number;
   seatsPerTable?: number;
   maxSeats?: number;
@@ -464,6 +593,7 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
   if (request.seatSpacing && request.seatSpacing > 0) plan.seatSpacing = request.seatSpacing;
   if (request.rowSpacing && request.rowSpacing > 0) plan.rowSpacing = request.rowSpacing;
   if (request.front != null) plan.clearances.front = Math.max(0, request.front);
+  if (request.depth != null) plan.clearances.depth = Math.max(0, request.depth);
   if (request.perimeter != null) plan.clearances.perimeter = Math.max(0, request.perimeter);
   if (request.aisle != null) plan.clearances.aisle = Math.max(0, request.aisle);
   if (request.rowsPerBlock != null) plan.clearances.rowsPerBlock = Math.max(0, Math.floor(request.rowsPerBlock));
@@ -473,7 +603,13 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
   if (request.seatsPerTable && request.seatsPerTable > 0) plan.seatsPerTable = request.seatsPerTable;
   if (request.maxSeats && request.maxSeats > 0) plan.maxSeats = request.maxSeats;
 
-  if (request.splay && Math.abs(request.splay) > 0.5) {
+  const blocks = request.blocksAcross && request.blocksAcross > 1 ? Math.floor(request.blocksAcross) : 1;
+  plan.blocksAcross = blocks;
+
+  // Splayed banks and side-by-side straight blocks are two different houses;
+  // when blocks are asked for they win, so the splay fan is only built for a
+  // single-block layout.
+  if (blocks <= 1 && request.splay && Math.abs(request.splay) > 0.5) {
     plan.sections = [
       { splay: -Math.abs(request.splay), gap: 2 * UNITS_PER_FOOT },
       { splay: 0, gap: 0 },

@@ -384,6 +384,8 @@ export function GearSummary({
   planPath,
   gearPath,
   gearDirty,
+  onDoc,
+  onStatus,
 }: {
   list: GearList;
   totals: GearTotals;
@@ -395,6 +397,8 @@ export function GearSummary({
   planPath?: string;
   gearPath?: string;
   gearDirty: boolean;
+  onDoc?: (doc: unknown) => void;
+  onStatus?: (message: string) => void;
 }) {
   const progress = totals.allLines ? Math.round((totals.checked / totals.allLines) * 100) : 0;
   const [report, setReport] = useState<ReconcileReport | null>(null);
@@ -616,6 +620,34 @@ export function GearSummary({
           </>
         )}
       </div>
+
+      {hasPlan && (
+        <div className="section">
+          <div className="section-title">
+            <span>Place</span>
+          </div>
+          <button
+            className="btn-outline"
+            style={{ width: '100%', justifyContent: 'center' }}
+            onClick={async () => {
+              const reply = await api.gearPlaceAll(listIndex);
+              if (!reply.ok) {
+                onError(reply.reason ?? 'nothing on this list could be placed');
+                return;
+              }
+              if (reply.doc) onDoc?.(reply.doc);
+              onStatus?.(reply.note ?? 'Placed the gear list on the plan');
+            }}
+          >
+            <IconPlus size={14} />
+            Place all on plan
+          </button>
+          <p className="hint">
+            Lays every drawable line in a staging grid below the room to drag into place. Cable and consumables are
+            skipped.
+          </p>
+        </div>
+      )}
 
       <div className="section">
         <div className="section-title">

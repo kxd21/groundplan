@@ -138,6 +138,8 @@ import {
   curveRoomWall,
   drawShape,
   dimensionTheRoom,
+  drapePerimeter,
+  placeGearList,
   openPlanModel,
   planAllocation,
   planModelView,
@@ -945,10 +947,11 @@ function handle(
   });
 }
 
-function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: string; created?: number[] }): {
+function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: string; note?: string; created?: number[] }): {
   ok: boolean;
   reason?: string;
   text?: string;
+  note?: string;
   created?: number[];
   doc?: OpenResult;
 } {
@@ -960,7 +963,7 @@ function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: s
 
   const associationsBefore = cloneDimensionAssociations();
   s.checkpoint();
-  let result: { ok: boolean; reason?: string; text?: string; created?: number[] };
+  let result: { ok: boolean; reason?: string; text?: string; note?: string; created?: number[] };
   try {
     result = run(s);
     if (!result.ok) {
@@ -990,7 +993,7 @@ function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: s
     commitDimensionHistory(associationsBefore);
     if (associatedUpdates > 0) persistDimensionAssociations(s.path);
     schedulePlanRecovery(s);
-    return { ok: true, text: result.text, created: result.created, doc: describe(s) };
+    return { ok: true, text: result.text, note: result.note, created: result.created, doc: describe(s) };
   } catch (err) {
     // Roll back rather than undo: an edit that threw must not be offered as a
     // redo, or Redo would re-apply the half-finished change.
@@ -1973,7 +1976,23 @@ if (!gotTheLock) {
 app.whenReady().then(async () => {
   recoveryRoot = join(app.getPath('userData'), 'recovery');
 
-  handle('recovery:list', async (): Promise<RecoveryEntry[]> => listRecoveries(recoveryRoot), []);
+  handle(
+    'recovery:list',
+    async (): Promise<RecoveryEntry[]> => {
+      const entries = await listRecoveries(recoveryRoot);
+      // The plan or gear list currently open already holds its own unsaved work,
+      // so listing a "recover" entry for it reads as lost work when it is simply
+      // the live document. The journal file stays on disk — a crash still leaves
+      // it recoverable on the next launch — it is only hidden from the list while
+      // its document is the one open in front of the user.
+      const activeIds = new Set<string>();
+      if (session) activeIds.add(recoveryId('plan', canonicalPath(session.path)));
+      const gearKey = currentGearRecoveryKey();
+      if (gear && gearKey) activeIds.add(recoveryId('gear', gearKey));
+      return entries.filter((entry) => !activeIds.has(entry.id));
+    },
+    [],
+  );
 
   handle('recovery:open', async (_event, id: string) => {
     const recovered = await readRecovery(recoveryRoot, id);
@@ -2840,6 +2859,12 @@ app.whenReady().then(async () => {
     });
   });
 
+  handle('gear:place-all', (_event, listIndex: number) => {
+    const list = gear?.lists[listIndex];
+    if (!list) return { ok: false, reason: 'no gear list is open' };
+    return applyEdit((s) => placeGearList(s, list));
+  });
+
   handle('gear:export-csv', async (_event, listIndex: number) => {
     const list = gear?.lists[listIndex];
     if (!list) return null;
@@ -3023,6 +3048,8 @@ app.whenReady().then(async () => {
   );
 
   handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
+
+  handle('plan:drape-perimeter', () => applyEdit((s) => drapePerimeter(s)));
 
   /** Solves without drawing, so the panel can show the count as it is tuned. */
   handle(
