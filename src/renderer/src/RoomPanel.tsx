@@ -190,6 +190,7 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const rowSpacing = useLength(36 * 10, units);
   const frontClearance = useLength(8 * 120, units);
   const centreAisle = useLength(0, units);
+  const seatingDepth = useLength(0, units);
   const [preview, setPreview] = useState<SeatingPreview | null>(null);
 
   const styleInfo = model?.seatingStyles.find((s) => s.id === style);
@@ -211,12 +212,13 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
       seatSpacing: seatSpacing.value ?? undefined,
       rowSpacing: rowSpacing.value ?? undefined,
       front: frontClearance.value ?? undefined,
+      depth: seatingDepth.value ?? undefined,
       centreAisle: centreAisle.value ?? 0,
       rowsPerBlock,
       stagger,
       splay,
     }),
-    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, centreAisle.value, rowsPerBlock, stagger, splay],
+    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, seatingDepth.value, centreAisle.value, rowsPerBlock, stagger, splay],
   );
 
   // Live count. Solving is pure and cheap, so this runs on every change —
@@ -503,6 +505,10 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
         <div className="field-row">
           <LengthField id="front-clearance" label="Front clearance" field={frontClearance} disabled={!editable} />
           <LengthField id="centre-aisle" label="Centre aisle" field={centreAisle} disabled={!editable} />
+        </div>
+        <div className="field-row">
+          <LengthField id="seating-depth" label="Seating depth (0 = fill)" field={seatingDepth} disabled={!editable} />
+          <div className="field" aria-hidden="true" />
         </div>
 
         <div className="field-row">
