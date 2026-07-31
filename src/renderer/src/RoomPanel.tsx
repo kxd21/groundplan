@@ -325,6 +325,14 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
             <IconRuler size={14} />
             Dimension
           </button>
+          <button
+            onClick={() => void run('Room draped', () => api.drapePerimeter())}
+            disabled={!editable || !room}
+            title="Ring the room in pipe and drape"
+          >
+            <IconPlus size={14} />
+            Drape perimeter
+          </button>
         </div>
         <p className="hint">
           Drawing a room again moves the walls it drew before rather than adding a second set. Curved walls are drawn

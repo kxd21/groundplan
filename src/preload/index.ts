@@ -246,6 +246,7 @@ const api = {
   roomCurve: (wallIndex: number, radius: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-curve', wallIndex, radius),
   roomDimension: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:room-dimension'),
+  drapePerimeter: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:drape-perimeter'),
 
   seatingPreview: (request: SeatingRequestView): Promise<SeatingPreview | null> =>
     ipcRenderer.invoke('plan:seating-preview', request),
