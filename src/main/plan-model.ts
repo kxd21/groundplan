@@ -454,6 +454,7 @@ export interface SeatingRequestView {
   centreAisle?: number;
   stagger?: boolean;
   splay?: number;
+  blocksAcross?: number;
   tableDiameter?: number;
   seatsPerTable?: number;
   maxSeats?: number;
@@ -473,7 +474,13 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
   if (request.seatsPerTable && request.seatsPerTable > 0) plan.seatsPerTable = request.seatsPerTable;
   if (request.maxSeats && request.maxSeats > 0) plan.maxSeats = request.maxSeats;
 
-  if (request.splay && Math.abs(request.splay) > 0.5) {
+  const blocks = request.blocksAcross && request.blocksAcross > 1 ? Math.floor(request.blocksAcross) : 1;
+  plan.blocksAcross = blocks;
+
+  // Splayed banks and side-by-side straight blocks are two different houses;
+  // when blocks are asked for they win, so the splay fan is only built for a
+  // single-block layout.
+  if (blocks <= 1 && request.splay && Math.abs(request.splay) > 0.5) {
     plan.sections = [
       { splay: -Math.abs(request.splay), gap: 2 * UNITS_PER_FOOT },
       { splay: 0, gap: 0 },

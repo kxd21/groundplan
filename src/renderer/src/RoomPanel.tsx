@@ -185,6 +185,7 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const [table, setTable] = useState('');
   const [stagger, setStagger] = useState(true);
   const [splay, setSplay] = useState(0);
+  const [blocksAcross, setBlocksAcross] = useState(1);
   const [rowsPerBlock, setRowsPerBlock] = useState(0);
   const seatSpacing = useLength(20 * 10, units);
   const rowSpacing = useLength(36 * 10, units);
@@ -215,8 +216,9 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
       rowsPerBlock,
       stagger,
       splay,
+      blocksAcross,
     }),
-    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, centreAisle.value, rowsPerBlock, stagger, splay],
+    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, centreAisle.value, rowsPerBlock, stagger, splay, blocksAcross],
   );
 
   // Live count. Solving is pure and cheap, so this runs on every change —
@@ -530,6 +532,22 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
               onChange={(e) => setSplay(Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
             />
           </div>
+        </div>
+
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="blocks-across">Blocks across</label>
+            <input
+              id="blocks-across"
+              type="number"
+              min={1}
+              max={12}
+              value={blocksAcross}
+              disabled={!editable}
+              onChange={(e) => setBlocksAcross(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
+            />
+          </div>
+          <div className="field" aria-hidden="true" />
         </div>
 
         <label className="check">
