@@ -61,7 +61,9 @@ import {
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
 import { walk, UNITS_PER_FOOT, type RVDocument } from '../format/rv.js';
 import { addRoot, appendChild, indexDocument } from '../format/edit.js';
+import { placeGear } from '../format/place.js';
 import { createSegment, createShape } from '../format/synthesize.js';
+import { walkItems, type GearList } from '../gear/model.js';
 import { companionPathFor, loadCompanion, saveCompanion } from './companion-store.js';
 import type { Session } from './session.js';
 
@@ -435,6 +437,70 @@ export function dimensionTheRoom(session: Session, units: UnitSystem): ModelEdit
   const drawn = renderDimensions(doc, drawings);
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
   return { ok: true, created: drawn.created, note: `${drawings.length} dimensions added.` };
+}
+
+/** Cable, consumables and hardware that no one draws on a floor plan. */
+const NOT_DRAWN =
+  /\b(cable|jumper|xlr|sdi|hdmi|cat\s*6|cat6|dmx|soca|edison|feeder|adapter|adaptor|battery|batteries|barrel|coupler|shackle|clamp|tape|clip|bolt|sandbag|case|bag|strap|spanset|zipties?|screw|pin|whip|breakout|snake|loom|power supply|remote|gel|gaff)\b/i;
+
+/**
+ * Places every drawable line of a gear list onto the plan.
+ *
+ * A gear list holds descriptions and quantities but no positions — the truck
+ * doesn't know where anything goes — so the pieces are laid out in a tidy
+ * staging grid below the room for the user to drag into place. That turns "150
+ * lines on the manifest" into 150 real objects in one step instead of arming
+ * and clicking each one, which is what made dressing a plan from a list
+ * impractical. Cable and consumables are skipped so they don't become
+ * room-sized boxes.
+ */
+export function placeGearList(
+  session: Session,
+  list: GearList,
+): ModelEdit & { placed?: number } {
+  const doc = session.loaded.document;
+
+  const room = currentRoom(doc);
+  const bounds = room ? roomBounds(room) : null;
+  const originX = bounds ? bounds.minX : 0;
+  const startY = bounds ? bounds.maxY + 10 * UNITS_PER_FOOT : 0;
+  const pitch = 8 * UNITS_PER_FOOT;
+  const perRow = 24;
+  const MAX = 1500;
+
+  const created: number[] = [];
+  let placed = 0;
+  let cell = 0;
+  let index = indexDocument(doc);
+
+  for (const item of walkItems(list)) {
+    if (item.children.length || item.note) continue; // packages/instructions are not objects
+    const description = item.description.trim();
+    if (!description || NOT_DRAWN.test(description)) continue;
+    const qty = Math.max(0, Math.min(Math.round(item.quantity || 0), 200));
+
+    for (let n = 0; n < qty && placed < MAX; n++) {
+      const px = originX + (cell % perRow) * pitch;
+      const py = startY + Math.floor(cell / perRow) * pitch;
+      const result = placeGear(doc, index, description, px, py);
+      if (result.ok && result.created?.length) {
+        created.push(...result.created);
+        placed++;
+        // A synthesized shape must enter the index before it can be cloned by
+        // name; a matched clone reuses a template already in it.
+        if (result.method !== 'matched') index = indexDocument(doc);
+      }
+      cell++;
+    }
+  }
+
+  if (!placed) return { ok: false, reason: 'this gear list has nothing drawable to place' };
+  return {
+    ok: true,
+    created,
+    placed,
+    note: `Placed ${placed} gear object${placed === 1 ? '' : 's'} in a staging grid below the room.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
