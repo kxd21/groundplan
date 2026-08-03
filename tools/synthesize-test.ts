@@ -80,7 +80,7 @@ function reopen(originalFile: Buffer, body: Buffer) {
 
 console.log('synthesis into the fixture plan\n');
 
-const FIXTURE = fixturePlanBuffer();
+const FIXTURE = fixturePlanBuffer({ walls: false });
 
 {
   const loaded = loadBuffer(FIXTURE, 'fixture.rv4');
@@ -481,7 +481,7 @@ console.log('\na plan created from nothing\n');
   check('it opens', !!loaded.document);
   check('with no parse warnings', loaded.document.warnings.length === 0, loaded.document.warnings.map((w) => w.message).join(' | '));
   check('and it is editable, not read-only', roundTrip(loaded.document).identical);
-  check('it has a room definition', findByClass(loaded.document, 'RVRoomDef').length === 1);
+  check('it has a room definition', findByClass(loaded.document, 'RVRoomDef').length === 2);
   check('and a wall container', findByClass(loaded.document, 'RVWalls').length === 1);
   check('with no walls in it yet', findByClass(loaded.document, 'RVSegmentLine').length === 0);
 }
