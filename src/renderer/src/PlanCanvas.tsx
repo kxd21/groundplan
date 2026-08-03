@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { Scene, Layer, ScenePrimitive } from '../../format/scene.js';
+import { resolveStyle, type DrawingStyle } from '../../format/style.js';
+import { formatLength, UNITS_PER_METRE, type UnitSystem } from '../../format/units.js';
 import { IconPlus, IconMinus, IconFit, IconHand } from './icons.js';
+import type { PlanPoint, PointerSpec } from './tool/machine.js';
 
 const UNITS_PER_FOOT = 120;
 /** Width of the ruler gutters along the top and left edges. */
@@ -31,33 +34,47 @@ interface Props {
   /** Reports the pointer position in logical units, or null when outside. */
   onCursor?: (position: { x: number; y: number } | null) => void;
   onZoom?: (scale: number) => void;
-  /** Description of a gear item waiting to be dropped, if any. */
-  armed?: string | null;
-  onPlaceAt?: (x: number, y: number) => void;
   /** Fired when a inventory item is dropped onto the drawing. */
   onDropItem?: (id: string, x: number, y: number) => void;
-  /** True while the measure tool is active. */
+  /** Fired when a gear-list line is dragged onto the drawing. */
+  onDropGear?: (description: string, x: number, y: number) => void;
   /** Grid step to snap to, in logical units. Zero disables snapping. */
   snapStep?: number;
-  measuring?: boolean;
-  /** The first point of a measurement, once taken. */
-  measureFrom?: { x: number; y: number } | null;
-  /** The last completed measurement remains visible until the tool is closed. */
-  measurement?: {
-    from: { x: number; y: number; nodeId?: number };
-    to: { x: number; y: number; nodeId?: number };
-  } | null;
-  /** Dimension creation uses the same two-point canvas interaction. */
-  dimensioning?: boolean;
-  dimensionFrom?: { x: number; y: number; nodeId?: number } | null;
+  /** How rulers and temporary measurements are labelled. */
+  units?: UnitSystem;
   /**
-   * The shape being drawn, when a draw tool is active.
+   * How to read the next click.
    *
-   * Picking two points is the same interaction as a dimension — same snapping,
-   * same rubber band — so it reuses that machinery and only the preview differs.
+   * The canvas used to take eight tool props and work out what a click meant by
+   * testing them in a fixed order, two of them pre-mixed at the call site to
+   * squeeze three tools through two slots. It now reads one projection of one
+   * value: what mode, whether to snap, whether to hit-test, what to rubber-band.
+   * The ordering in `onPointerDown` no longer carries any weight, because the
+   * modes are exclusive by construction.
    */
-  drawTool?: 'line' | 'rect' | 'ellipse' | null;
-  onMeasurePoint?: (point: { x: number; y: number; nodeId?: number }) => void;
+  pointerMode: PointerSpec;
+  /** The start point of a half-made span, for the rubber band. */
+  spanFrom?: PlanPoint | null;
+  /** Corners already clicked for a multi-point room outline. */
+  pathPoints?: PlanPoint[];
+  /** The completed measure readout; stays visible until the tool is put down. */
+  readout?: { from: PlanPoint; to: PlanPoint } | null;
+  /** A click that the pointer mode says means something. Already snapped. */
+  onCanvasClick?: (at: PlanPoint) => void;
+  /** The Hand button and H both ask for the same tool, which App owns. */
+  onToggleHand?: () => void;
+}
+
+/**
+ * A pen grade in screen pixels.
+ *
+ * Deliberately independent of zoom: a pen has one thickness, and a wall should
+ * read as heavier than a chair whether the plan is at 2% or 200%. The floor
+ * keeps the finest grade visible on a normal display.
+ */
+const SCREEN_PIXELS_PER_POINT = 1.7;
+function pointsToScreenPixels(points: number): number {
+  return Math.max(0.9, points * SCREEN_PIXELS_PER_POINT);
 }
 
 interface Bounds {
@@ -71,6 +88,8 @@ interface PreparedPrimitive extends Bounds {
   primitive: ScenePrimitive;
   paperColor: string;
   darkColor: string;
+  /** Appearance from the shared drafting vocabulary the export also reads. */
+  style: DrawingStyle;
 }
 
 /** Distance from a point to a line segment, used for hit-testing. */
@@ -167,9 +186,23 @@ function colorRefToCss(color: number, paper: boolean): string {
 }
 
 /** Picks a grid step so lines land roughly `target` pixels apart. */
-function gridStepFeet(scale: number, target: number): number {
-  const candidates = [1, 2, 5, 10, 25, 50, 100, 250];
-  return candidates.find((f) => f * UNITS_PER_FOOT * scale > target) ?? 500;
+/** Returns a ruler/grid major step in logical units for the current zoom. */
+function gridStepUnits(scale: number, targetPx: number, system: UnitSystem): number {
+  if (system === 'metric') {
+    const metres = [0.1, 0.2, 0.5, 1, 2, 5, 10, 25, 50];
+    return metres.map((m) => m * UNITS_PER_METRE).find((u) => u * scale > targetPx) ?? 100 * UNITS_PER_METRE;
+  }
+  const feet = [1, 2, 5, 10, 25, 50, 100, 250];
+  return feet.map((f) => f * UNITS_PER_FOOT).find((u) => u * scale > targetPx) ?? 500 * UNITS_PER_FOOT;
+}
+
+function rulerLabel(logical: number, system: UnitSystem): string {
+  if (system === 'metric') {
+    const metres = logical / UNITS_PER_METRE;
+    if (Math.abs(metres) < 1) return `${Math.round(metres * 100)}cm`;
+    return Number.isInteger(metres) ? `${metres}m` : `${metres.toFixed(1)}m`;
+  }
+  return `${Math.round(logical / UNITS_PER_FOOT)}′`;
 }
 
 export function PlanCanvas({
@@ -184,17 +217,16 @@ export function PlanCanvas({
   editable,
   onCursor,
   onZoom,
-  armed,
-  onPlaceAt,
   onDropItem,
+  onDropGear,
   snapStep = 0,
-  measuring,
-  measureFrom,
-  measurement,
-  dimensioning,
-  dimensionFrom,
-  drawTool,
-  onMeasurePoint,
+  units = 'imperial',
+  pointerMode,
+  spanFrom,
+  pathPoints = [],
+  readout,
+  onCanvasClick,
+  onToggleHand,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -204,11 +236,23 @@ export function PlanCanvas({
   const moveRef = useRef<{ startX: number; startY: number } | null>(null);
   const [nudge, setNudge] = useState<{ dx: number; dy: number } | null>(null);
   const [hover, setHover] = useState<number | null>(null);
-  const [dropping, setDropping] = useState(false);
-  /** Held space pans, so navigating never fights the selection tools. */
+  const [dropping, setDropping] = useState<{
+    kind: 'inventory' | 'gear';
+    label: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  /**
+   * Held space pans, so navigating never fights the selection tools.
+   *
+   * Deliberately NOT part of the tool machine: Space is a transient modifier
+   * held during another operation, and the tool value describes what the *next*
+   * click will do. Folding one into the other is the kind of coupling this
+   * rebuild removed. The persistent Hand tool, which is a tool, lives in the
+   * machine — it used to be a fourteenth cell here, force-cleared from an
+   * effect because nothing enforced its exclusivity.
+   */
   const [spaceHeld, setSpaceHeld] = useState(false);
-  /** Persistent navigation mode for mouse users; Space remains a temporary override. */
-  const [handTool, setHandTool] = useState(false);
   const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
   /** Rubber-band rectangle, in plan units, while dragging on empty space. */
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
@@ -246,6 +290,7 @@ export function PlanCanvas({
         maxY,
         paperColor: colorRefToCss(primitive.color, true),
         darkColor: colorRefToCss(primitive.color, false),
+        style: resolveStyle(primitive),
       };
     });
   }, [scene]);
@@ -311,11 +356,26 @@ export function PlanCanvas({
     return () => observer.disconnect();
   }, []);
 
-  const fit = useCallback(() => {
+  /** Fits the whole room on the sheet. Returns false when there is nothing to fit to yet. */
+  const fit = useCallback((): boolean => {
     const target = scene?.roomExtent ?? scene?.extent;
-    if (!target || size.width < 10 || size.height < 10) return;
-    const padX = Math.max(size.width - RULER - 72, 1);
-    const padY = Math.max(size.height - RULER - 72, 1);
+    if (!target) return false;
+
+    // Measure the sheet here rather than trusting `size`.
+    //
+    // `size` starts at a placeholder and only becomes real once the
+    // ResizeObserver's update has been rendered — a render later than the
+    // first fit, which React flushes while the placeholder is still in state.
+    // Fitting to that placeholder left every freshly mounted plan at the wrong
+    // zoom and off centre until the Fit button was pressed a second time. The
+    // element knows its own size at every one of those moments, so ask it.
+    const el = wrapRef.current;
+    const width = el ? el.clientWidth : size.width;
+    const height = el ? el.clientHeight : size.height;
+    if (width < 10 || height < 10) return false;
+
+    const padX = Math.max(width - RULER - 72, 1);
+    const padY = Math.max(height - RULER - 72, 1);
     const w = Math.max(target.maxX - target.minX, 1);
     const h = Math.max(target.maxY - target.minY, 1);
     const scale = Math.min(4, Math.max(0.0015, Math.min(padX / w, padY / h)));
@@ -323,13 +383,20 @@ export function PlanCanvas({
     const cy = (target.minY + target.maxY) / 2;
     setView({
       scale,
-      offsetX: (size.width + RULER) / 2 - cx * scale,
-      offsetY: (size.height + RULER) / 2 - cy * scale,
+      offsetX: (width + RULER) / 2 - cx * scale,
+      offsetY: (height + RULER) / 2 - cy * scale,
     });
+    return true;
   }, [scene, size.width, size.height]);
 
   // Space temporarily pans and H toggles a persistent Hand tool. Both are
   // ignored while typing, so navigation never eats text-field input.
+  //
+  // H asks the machine for the Hand tool rather than setting local state, so
+  // picking it puts down whatever else was in hand — the exclusivity that used
+  // to be patched in by an effect further down this file.
+  const toggleHandRef = useRef(onToggleHand);
+  toggleHandRef.current = onToggleHand;
   useEffect(() => {
     const typing = (target: EventTarget | null): boolean => {
       const el = target as HTMLElement | null;
@@ -342,7 +409,7 @@ export function PlanCanvas({
         setSpaceHeld(true);
       } else if (e.key.toLowerCase() === 'h' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.repeat) {
         e.preventDefault();
-        setHandTool((active) => !active);
+        toggleHandRef.current?.();
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -379,20 +446,15 @@ export function PlanCanvas({
 
   useEffect(() => {
     if (fittedFor.current === fitToken) return;
-    if (!scene || size.width < 10) return;
-    fittedFor.current = fitToken;
-    fitRef.current();
+    if (!scene) return;
+    // Only record the token once a fit actually happened, so a canvas that has
+    // no size yet is fitted on the render that gives it one.
+    if (fitRef.current()) fittedFor.current = fitToken;
   }, [fitToken, scene, size.width]);
 
   useEffect(() => {
     onZoom?.(view.scale);
   }, [view.scale, onZoom]);
-
-  useEffect(() => {
-    // Choosing a drawing/placement tool exits persistent Hand mode. Space
-    // remains available as a temporary pan override during the operation.
-    if (armed || measuring || dimensioning) setHandTool(false);
-  }, [armed, measuring, dimensioning]);
 
   const zoomBy = (factor: number) => {
     const cx = (size.width + RULER) / 2;
@@ -423,7 +485,7 @@ export function PlanCanvas({
     ctx.fillRect(0, 0, size.width, size.height);
 
     if (!scene) {
-      drawRulers(ctx, size, view, paper);
+      drawRulers(ctx, size, view, paper, units);
       return;
     }
 
@@ -440,7 +502,7 @@ export function PlanCanvas({
       maxY: (size.height - offsetY + 36) / scale,
     };
 
-    drawGrid(ctx, size, view, paper, showGrid);
+    drawGrid(ctx, size, view, paper, showGrid, units);
 
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -464,13 +526,15 @@ export function PlanCanvas({
 
       ctx.strokeStyle = isSelected ? '#4d94ff' : isHovered ? '#8bb9ff' : paper ? item.paperColor : item.darkColor;
       ctx.fillStyle = ctx.strokeStyle;
+      // The same pen grades the export uses. A point of paper is a different
+      // number of screen pixels at every zoom, so it is converted here rather
+      // than each renderer inventing its own widths — that divergence is why
+      // the canvas and the print never matched.
       ctx.lineWidth = isSelected
         ? 2.2
         : isHovered
           ? 1.6
-          : p.layer === 'walls'
-            ? Math.max(1.5, 2.4 * Math.min(scale * 20, 1.4))
-            : 1;
+          : pointsToScreenPixels(item.style.strokePoints);
 
       switch (p.type) {
         case 'text': {
@@ -500,8 +564,10 @@ export function PlanCanvas({
         }
         case 'dimension': {
           ctx.save();
-          ctx.setLineDash([5, 4]);
-          ctx.globalAlpha = 0.7;
+          // Solid, like the export and like a drawing. The dashes here were a
+          // hardcoded consequence of the primitive's type, with no way to ask
+          // for anything else.
+          ctx.globalAlpha = 0.85;
           ctx.beginPath();
           ctx.moveTo(tx(p.pts[0] + ox), ty(p.pts[1] + oy));
           for (let i = 2; i < p.pts.length; i += 2) ctx.lineTo(tx(p.pts[i] + ox), ty(p.pts[i + 1] + oy));
@@ -514,6 +580,14 @@ export function PlanCanvas({
           ctx.moveTo(tx(p.pts[0] + ox), ty(p.pts[1] + oy));
           for (let i = 2; i < p.pts.length; i += 2) ctx.lineTo(tx(p.pts[i] + ox), ty(p.pts[i + 1] + oy));
           if (p.type === 'polygon') ctx.closePath();
+          // A deck is a surface. Nothing was ever filled here: fillStyle was set
+          // for text and `fill()` was never called for geometry, so a stage read
+          // as an empty outline.
+          if (item.style.fill && !isSelected && !isHovered) {
+            ctx.fillStyle = item.style.fill;
+            ctx.fill();
+            ctx.fillStyle = ctx.strokeStyle;
+          }
           ctx.stroke();
           break;
         }
@@ -528,19 +602,20 @@ export function PlanCanvas({
     if (marquee) drawMarquee(ctx, marquee, view);
     if (guides.x != null || guides.y != null) drawGuides(ctx, guides, size, view);
 
-    const activeFrom = dimensionFrom ?? measureFrom;
-    if (activeFrom && drawTool && drawTool !== 'line') {
-      drawShapePreview(ctx, activeFrom, pointer ?? activeFrom, drawTool, view);
-    } else if (activeFrom) {
-      const to = pointer ?? activeFrom;
-      // A line tool wants no dimension text; it is drawing, not measuring.
-      if (drawTool === 'line') drawShapePreview(ctx, activeFrom, pointer ?? activeFrom, 'line', view);
-      else drawMeasurement(ctx, activeFrom, to, view, paper);
-    } else if (measurement) {
-      drawMeasurement(ctx, measurement.from, measurement.to, view, paper);
+    // One rubber band, chosen by the tool rather than by testing three cells:
+    // a draw tool previews its own shape, a measure or dimension previews the
+    // measurement, and a line wants no dimension text because it is drawing.
+    if (spanFrom && pointerMode.preview !== 'none') {
+      const to = pointer ?? spanFrom;
+      if (pointerMode.preview === 'measure') drawMeasurement(ctx, spanFrom, to, view, paper, units);
+      else if (pointerMode.preview !== 'room') drawShapePreview(ctx, spanFrom, to, pointerMode.preview, view);
+    } else if (pointerMode.preview === 'room') {
+      drawRoomPathPreview(ctx, pathPoints, pointer, view);
+    } else if (readout) {
+      drawMeasurement(ctx, readout.from, readout.to, view, paper, units);
     }
 
-    drawRulers(ctx, size, view, paper);
+    drawRulers(ctx, size, view, paper, units);
   }, [
     scene,
     prepared,
@@ -550,17 +625,18 @@ export function PlanCanvas({
     visibleLayers,
     paper,
     showGrid,
+    units,
     selection,
     selectionSet,
     hover,
     nudge,
-    measureFrom,
-    measurement,
-    dimensionFrom,
+    spanFrom,
+    pathPoints,
+    readout,
+    pointerMode,
     pointer,
     marquee,
     guides,
-    drawTool,
   ]);
 
   /** Screen pixels to plan coordinates. */
@@ -609,41 +685,38 @@ export function PlanCanvas({
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
 
-    // Temporary and persistent navigation overrides are evaluated before any
-    // drawing tool. Holding Space or choosing Hand must never place an item or
-    // record a measurement point.
-    const wantsPan = handTool || e.button === 1 || e.button === 2 || e.altKey || spaceHeld || !scene;
+    // Two decisions, in this order, and the order is now inert: navigation
+    // overrides first — holding Space, the Hand tool, a middle/right button or
+    // Alt must never place an item or record a point — then whatever the one
+    // tool value says. There is no third case to get wrong, because a stamp and
+    // a span cannot both be live.
+    const wantsPan =
+      pointerMode.mode === 'pan' || e.button === 1 || e.button === 2 || e.altKey || spaceHeld || !scene;
     if (wantsPan) {
       panRef.current = { x: e.clientX, y: e.clientY, ox: view.offsetX, oy: view.offsetY };
       return;
     }
 
-    if ((measuring || dimensioning) && onMeasurePoint && e.button === 0 && !e.altKey) {
+    if (
+      (pointerMode.mode === 'stamp' || pointerMode.mode === 'span' || pointerMode.mode === 'path') &&
+      onCanvasClick &&
+      e.button === 0
+    ) {
       const point = toPlan(e);
       // Association is decided at the actual click location, before optional
       // grid snapping changes the coordinate. This lets a dimension follow the
       // object that was clicked instead of becoming a detached drawing line.
-      const nodeId = hitTest(prepared, visibleLayers, point.x, point.y, 8 / view.scale) ?? undefined;
+      const nodeId = pointerMode.associate
+        ? (hitTest(prepared, visibleLayers, point.x, point.y, 8 / view.scale) ?? undefined)
+        : undefined;
       const coordinate =
-        dimensioning && snapStep
+        pointerMode.snap === 'grid' && snapStep
           ? {
               x: Math.round(point.x / snapStep) * snapStep,
               y: Math.round(point.y / snapStep) * snapStep,
             }
           : point;
-      onMeasurePoint(
-        nodeId == null ? coordinate : { ...coordinate, nodeId },
-      );
-      return;
-    }
-
-    // Placing takes precedence: the next click drops the armed item.
-    if (armed && onPlaceAt && e.button === 0 && !e.altKey) {
-      const point = toPlan(e);
-      onPlaceAt(
-        snapStep ? Math.round(point.x / snapStep) * snapStep : point.x,
-        snapStep ? Math.round(point.y / snapStep) * snapStep : point.y,
-      );
+      onCanvasClick(nodeId == null ? coordinate : { ...coordinate, nodeId });
       return;
     }
 
@@ -693,7 +766,7 @@ export function PlanCanvas({
 
     const plan = toPlan(e);
     onCursor?.(plan);
-    if (measuring || dimensioning) setPointer(plan);
+    if (pointerMode.mode === 'span') setPointer(plan);
 
     const band = marqueeRef.current;
     if (band) {
@@ -772,15 +845,32 @@ export function PlanCanvas({
     panRef.current = null;
   };
 
+  // The one place the tool's mode becomes the CSS cursor token, plus the two
+  // transient overrides the canvas owns: a held Space and a drag in progress.
   const mode =
-    measuring || dimensioning ? 'measure' : armed ? 'place' : handTool || panRef.current ? 'pan' : 'select';
+    pointerMode.mode === 'span' || pointerMode.mode === 'path'
+      ? 'measure'
+      : pointerMode.mode === 'stamp'
+        ? 'place'
+        : pointerMode.mode === 'pan' || panRef.current
+          ? 'pan'
+          : 'select';
+
+  // Which half of a two-point tool the next click completes. It is the same
+  // thing the on-sheet prompt says in words, published where it can be read
+  // without parsing copy: after every click it must flip, and a run of clicks
+  // that does not flip it has had one taken from it by something over the
+  // sheet.
+  const twoPoint: 'start' | 'end' | undefined = pointerMode.parity;
 
   return (
     <div
       className="canvas-wrap"
       ref={wrapRef}
-      data-mode={spaceHeld || handTool ? 'pan' : mode}
-      data-dropping={dropping || undefined}
+      data-mode={spaceHeld ? 'pan' : mode}
+      data-two-point={twoPoint}
+      data-path-points={pointerMode.mode === 'path' ? pathPoints.length : undefined}
+      data-dropping={dropping?.kind}
     >
       <canvas
         ref={canvasRef}
@@ -798,30 +888,62 @@ export function PlanCanvas({
           setHover(null);
         }}
         onDragOver={(e) => {
-          if (!onDropItem || !e.dataTransfer.types.includes('application/x-groundplan-item')) return;
+          const inventoryDrop =
+            !!onDropItem && e.dataTransfer.types.includes('application/x-groundplan-item');
+          const gearDrop =
+            !!onDropGear && e.dataTransfer.types.includes('application/x-groundplan-gear');
+          if (!inventoryDrop && !gearDrop) return;
           // Without this the browser refuses the drop and no drop event fires.
           e.preventDefault();
           e.dataTransfer.dropEffect = 'copy';
-          setDropping(true);
+          const rect = e.currentTarget.getBoundingClientRect();
+          const cueWidth = 230;
+          const cueHeight = 64;
+          setDropping({
+            kind: gearDrop ? 'gear' : 'inventory',
+            label:
+              e.dataTransfer.getData('application/x-groundplan-label') ||
+              (gearDrop ? 'Gear item' : 'Inventory item'),
+            x: Math.max(8, Math.min(rect.width - cueWidth, e.clientX - rect.left)),
+            y: Math.max(8, Math.min(rect.height - cueHeight, e.clientY - rect.top)),
+          });
         }}
-        onDragLeave={() => setDropping(false)}
+        onDragLeave={() => setDropping(null)}
         onDrop={(e) => {
-          setDropping(false);
+          setDropping(null);
           const id = e.dataTransfer.getData('application/x-groundplan-item');
-          if (!id || !onDropItem) return;
+          const description = e.dataTransfer.getData('application/x-groundplan-gear');
+          if ((!id || !onDropItem) && (!description || !onDropGear)) return;
           e.preventDefault();
           const { x, y } = toPlan(e);
           const step = snapStep ?? 0;
-          onDropItem(id, step ? Math.round(x / step) * step : x, step ? Math.round(y / step) * step : y);
+          const snappedX = step ? Math.round(x / step) * step : x;
+          const snappedY = step ? Math.round(y / step) * step : y;
+          if (description && onDropGear) onDropGear(description, snappedX, snappedY);
+          else if (id && onDropItem) onDropItem(id, snappedX, snappedY);
         }}
       />
+      {dropping && (
+        <div
+          className="canvas-drop-cue"
+          role="status"
+          aria-live="polite"
+          style={{ left: dropping.x, top: dropping.y }}
+        >
+          <span className="canvas-drop-icon" aria-hidden><IconPlus size={15} /></span>
+          <span>
+            <strong>{dropping.label}</strong>
+            <small>Release to place{snapStep ? ' · grid snap on' : ''}</small>
+          </span>
+        </div>
+      )}
       <div className="zoom-cluster">
         <button
-          className={`icon-btn${handTool ? ' is-on' : ''}`}
-          onClick={() => setHandTool((active) => !active)}
+          className={`icon-btn${pointerMode.mode === 'pan' ? ' is-on' : ''}`}
+          onClick={() => onToggleHand?.()}
           title="Hand tool — drag to pan (H)"
           aria-label="Hand tool — drag to pan (H)"
-          aria-pressed={handTool}
+          aria-pressed={pointerMode.mode === 'pan'}
         >
           <IconHand />
         </button>
@@ -1016,8 +1138,65 @@ function drawShapePreview(
   ctx.restore();
 }
 
+/** Live preview for the click-by-click custom room tool. */
+function drawRoomPathPreview(
+  ctx: CanvasRenderingContext2D,
+  points: PlanPoint[],
+  pointer: { x: number; y: number } | null,
+  view: View,
+): void {
+  if (!points.length) return;
+  const sx = (point: { x: number }) => point.x * view.scale + view.offsetX;
+  const sy = (point: { y: number }) => point.y * view.scale + view.offsetY;
+
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // The committed corners read as the future room floor; the pointer leg and
+  // closing leg stay dashed so it is clear they have not been committed yet.
+  if (points.length >= 3) {
+    ctx.beginPath();
+    ctx.moveTo(sx(points[0]), sy(points[0]));
+    for (let index = 1; index < points.length; index++) ctx.lineTo(sx(points[index]), sy(points[index]));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(77, 148, 255, 0.1)';
+    ctx.fill();
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(sx(points[0]), sy(points[0]));
+  for (let index = 1; index < points.length; index++) ctx.lineTo(sx(points[index]), sy(points[index]));
+  ctx.strokeStyle = 'rgba(77, 148, 255, 0.95)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const last = points.at(-1)!;
+  const live = pointer ?? last;
+  ctx.beginPath();
+  ctx.moveTo(sx(last), sy(last));
+  ctx.lineTo(sx(live), sy(live));
+  if (points.length >= 2) ctx.lineTo(sx(points[0]), sy(points[0]));
+  ctx.strokeStyle = 'rgba(77, 148, 255, 0.72)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  for (const [index, point] of points.entries()) {
+    ctx.beginPath();
+    ctx.arc(sx(point), sy(point), index === 0 ? 5 : 4, 0, Math.PI * 2);
+    ctx.fillStyle = index === 0 ? '#1678d3' : '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#1678d3';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 /**
- * Draws a measurement between two points, with the distance in feet and inches.
+ * Draws a measurement between two points, labelled in the drawing unit system.
  */
 function drawMeasurement(
   ctx: CanvasRenderingContext2D,
@@ -1025,17 +1204,15 @@ function drawMeasurement(
   to: { x: number; y: number },
   view: View,
   paper: boolean,
+  system: UnitSystem,
 ): void {
   const x0 = from.x * view.scale + view.offsetX;
   const y0 = from.y * view.scale + view.offsetY;
   const x1 = to.x * view.scale + view.offsetX;
   const y1 = to.y * view.scale + view.offsetY;
 
-  const units = Math.hypot(to.x - from.x, to.y - from.y);
-  const inches = units / 10;
-  const feet = Math.floor(inches / 12);
-  const rest = Math.round(inches - feet * 12);
-  const label = rest === 12 ? `${feet + 1}′ 0″` : `${feet}′ ${rest}″`;
+  const span = Math.hypot(to.x - from.x, to.y - from.y);
+  const label = formatLength(span, system);
 
   ctx.save();
   ctx.strokeStyle = '#ff9f43';
@@ -1084,10 +1261,11 @@ function drawGrid(
   view: View,
   paper: boolean,
   visible = true,
+  system: UnitSystem = 'imperial',
 ): void {
   if (!visible) return;
-  const minor = gridStepFeet(view.scale, 9);
-  const spacing = minor * UNITS_PER_FOOT * view.scale;
+  const minor = gridStepUnits(view.scale, 9, system);
+  const spacing = minor * view.scale;
   if (spacing < 5) return;
 
   const draw = (step: number, alpha: number) => {
@@ -1095,7 +1273,7 @@ function drawGrid(
     ctx.strokeStyle = paper ? `rgba(20,26,36,${alpha})` : `rgba(150,180,220,${alpha})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    const gap = step * UNITS_PER_FOOT * view.scale;
+    const gap = step * view.scale;
     const startX = view.offsetX % gap;
     for (let x = startX; x < size.width; x += gap) {
       if (x < RULER) continue;
@@ -1141,7 +1319,7 @@ function drawSelectionFrame(
 }
 
 /**
- * Rulers along the top and left edges, marked in feet.
+ * Rulers along the top and left edges, marked in the drawing unit system.
  *
  * They occlude a strip of the sheet, which is the usual trade in drafting
  * software: knowing the scale at a glance is worth more than the pixels.
@@ -1151,6 +1329,7 @@ function drawRulers(
   size: { width: number; height: number },
   view: View,
   paper: boolean,
+  system: UnitSystem,
 ): void {
   const bg = paper ? '#f1f1ef' : '#141619';
   const line = paper ? 'rgba(20,26,36,0.16)' : 'rgba(255,255,255,0.12)';
@@ -1170,8 +1349,8 @@ function drawRulers(
   ctx.lineTo(RULER + 0.5, size.height);
   ctx.stroke();
 
-  const step = gridStepFeet(view.scale, 54);
-  const gap = step * UNITS_PER_FOOT * view.scale;
+  const step = gridStepUnits(view.scale, 54, system);
+  const gap = step * view.scale;
   if (gap < 12) {
     ctx.restore();
     return;
@@ -1186,18 +1365,18 @@ function drawRulers(
   ctx.textBaseline = 'alphabetic';
   const firstX = Math.ceil((RULER - view.offsetX) / gap) * gap + view.offsetX;
   for (let x = firstX; x < size.width; x += gap) {
-    const feet = Math.round((x - view.offsetX) / view.scale / UNITS_PER_FOOT);
+    const logical = Math.round((x - view.offsetX) / view.scale / step) * step;
     ctx.beginPath();
     ctx.moveTo(Math.round(x) + 0.5, RULER - 5);
     ctx.lineTo(Math.round(x) + 0.5, RULER);
     ctx.stroke();
-    ctx.fillText(`${feet}′`, Math.round(x) + 3, 11);
+    ctx.fillText(rulerLabel(logical, system), Math.round(x) + 3, 11);
   }
 
   // Vertical ruler, labels rotated to read along the edge.
   const firstY = Math.ceil((RULER - view.offsetY) / gap) * gap + view.offsetY;
   for (let y = firstY; y < size.height; y += gap) {
-    const feet = Math.round((y - view.offsetY) / view.scale / UNITS_PER_FOOT);
+    const logical = Math.round((y - view.offsetY) / view.scale / step) * step;
     ctx.beginPath();
     ctx.moveTo(RULER - 5, Math.round(y) + 0.5);
     ctx.lineTo(RULER, Math.round(y) + 0.5);
@@ -1205,7 +1384,7 @@ function drawRulers(
     ctx.save();
     ctx.translate(11, Math.round(y) + 3);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(`${feet}′`, 0, 0);
+    ctx.fillText(rulerLabel(logical, system), 0, 0);
     ctx.restore();
   }
 

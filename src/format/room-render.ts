@@ -16,6 +16,7 @@
  */
 
 import { appendChild, addRoot, deleteNode, indexDocument, setPoints } from './edit.js';
+import { planBody, planWalls } from './plan-skeleton.js';
 import { flattenWall, type RoomModel, type WallSegment } from './room.js';
 import { walk, type Point, type RVDocument, type RVNode } from './rv.js';
 import { createContainer, createSegment, type SynthesizableSegment } from './synthesize.js';
@@ -77,16 +78,11 @@ function indexGeometry(doc: RVDocument): Map<string, RVNode> {
  * children happily, but the ones in a plan belong to placed shapes, and a wall
  * filed under a table is classified as furniture — so the room would draw
  * correctly, save correctly, and then fail to be recognised as a room when the
- * file was reopened.
+ * file was reopened. `plan-skeleton.ts` owns both answers now — this used to be
+ * one of six copies of the same search, two of which walked the roots backwards.
  */
 function findWallHost(doc: RVDocument): RVNode | null {
-  let fallback: RVNode | null = null;
-  for (const node of walk(doc)) {
-    if (node.fields.childCountAt == null) continue;
-    if (node.cls === 'RVWalls') return node;
-    if (!fallback && (node.cls === 'RVRoomDef' || node.cls === 'RVRoom')) fallback = node;
-  }
-  return fallback;
+  return planWalls(doc) ?? planBody(doc);
 }
 
 function classFor(points: Point[]): SynthesizableSegment {

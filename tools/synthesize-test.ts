@@ -22,8 +22,16 @@ import { extname, join } from 'node:path';
 import { loadBuffer, loadFile, walk, UNITS_PER_FOOT, type RVDocument, type RVNode } from '../src/format/index.js';
 import { packContainer, roundTrip, verifyWritable } from '../src/format/write.js';
 import { appendChild, addRoot, indexDocument } from '../src/format/edit.js';
-import { boxOutline, circleOutline, createContainer, createSegment, createShape } from '../src/format/synthesize.js';
+import {
+  boxOutline,
+  circleOutline,
+  createContainer,
+  createSegment,
+  createShape,
+  rectangleCorners,
+} from '../src/format/synthesize.js';
 import { buildScene } from '../src/format/scene.js';
+import { enclosesArea } from '../src/format/style.js';
 import { createBlankPlan, ROOM_PRESETS } from '../src/format/blank.js';
 import { placeGear } from '../src/format/place.js';
 import { deriveRoom, roomArea } from '../src/format/room.js';
@@ -316,6 +324,144 @@ const FIXTURE = fixturePlanBuffer();
     );
     check('at the right diameter', Math.abs(Math.max(...xs) - Math.min(...xs) - 660) < 1, `${Math.max(...xs) - Math.min(...xs)}`);
     check('and it appears in the inventory', scene.inventory.some((i) => i.name === 'Round 66" (custom)'));
+  }
+
+  {
+    // A curved outline must stay curved. `createShape` used to emit only lines
+    // and polylines, so a run of four control points came out as the three
+    // sides of the Bézier's control polygon — a half-round table redrawn as a
+    // box a third too deep.
+    const r = 900;
+    const k = (r * 4) / 3; // control offset for a semicircle
+    const top = [
+      { x: r, y: 0 },
+      { x: r, y: k },
+      { x: -r, y: k },
+      { x: -r, y: 0 },
+    ];
+    const bottom = top.map((p) => ({ x: p.x, y: -p.y }));
+
+    const table = createShape(doc, {
+      name: 'Round 180" (curved)',
+      x: 3000,
+      y: 3000,
+      outline: [{ curve: top }, { curve: bottom }],
+    });
+    check('a curved outline is synthesized', table.ok, table.reason);
+
+    const arcs = table.node!.children[0].children;
+    check('as real arc segments', arcs.every((a) => a.cls === 'RVSegmentArc'), arcs.map((a) => a.cls).join(' '));
+    check('each holding eight points', arcs.every((a) => a.points.length === 8));
+    check(
+      'whose leading four are the weighted control polygon',
+      arcs.every((a) => {
+        const [a0, a1, a2, a3, p0, p1, p2, p3] = a.points;
+        const eq = (u: typeof a0, v: typeof a0, s = 1) =>
+          Math.abs(u.x - v.x * s) < 1e-9 && Math.abs(u.y - v.y * s) < 1e-9;
+        return eq(a0, p0) && eq(a3, p3) && eq(a1, p1, 3) && eq(a2, p2, 3);
+      }),
+    );
+    // The rect measures the curve, not the control points: a semicircle of
+    // radius 900 reaches y = 900, while its control points stand at y = 1200.
+    check(
+      'and a rect measuring the curve rather than its control points',
+      arcs[0].bounds.bottom === r && arcs[0].bounds.top === 0,
+      JSON.stringify(arcs[0].bounds),
+    );
+    check(
+      'so the shape is as wide as it is tall',
+      table.node!.bounds.right - table.node!.bounds.left === 2 * r &&
+        table.node!.bounds.bottom - table.node!.bounds.top === 2 * r,
+      JSON.stringify(table.node!.bounds),
+    );
+
+    check('it goes into the document', addRoot(doc, table.node!).ok);
+    const curved = verifyWritable(doc);
+    check('a document holding synthesized arcs verifies', curved.ok, curved.reason);
+    if (curved.ok) {
+      const reread = reopen(FIXTURE, curved.bytes!);
+      const back = findByClass(reread.document, 'RVSegmentArc');
+      check('the arcs read back as arcs', back.length === 2, `${back.length}`);
+      check('with all eight points intact', back.every((a) => a.points.length === 8));
+      check(
+        'and the drawn curve unchanged',
+        back[0].points.slice(-4).every((p, i) => Math.abs(p.x - top[i].x) < 1e-9 && Math.abs(p.y - top[i].y) < 1e-9),
+      );
+      const scene = buildScene(reread.document);
+      const beziers = scene.primitives.filter((p) => p.owner === 'Round 180" (curved)' && p.type === 'bezier');
+      check('and the renderer draws them as curves', beziers.length === 2, `${beziers.length}`);
+    }
+  }
+
+  {
+    // A rectangular outline must stay a rectangle. `createShape` used to emit
+    // every straight-sided run as a polyline, so rebuilding a plan from its
+    // shape library produced 5,745 `RVSegmentPoly` where the original held
+    // 5,768 `RVSegmentRect` — the drawing looked right, but every footprint was
+    // an open polyline: not closed by the renderer, not fillable, and a stroke
+    // to click rather than an area.
+    /** An 8ft x 4ft riser top about the origin, in tenths of an inch. */
+    const RECT = [
+      { x: -480, y: -240 },
+      { x: 480, y: -240 },
+      { x: 480, y: 240 },
+      { x: -480, y: 240 },
+    ];
+    const turn = (p: { x: number; y: number }, a: number) => ({
+      x: p.x * Math.cos(a) - p.y * Math.sin(a),
+      y: p.x * Math.sin(a) + p.y * Math.cos(a),
+    });
+    const TURNED = RECT.map((p) => turn(p, 0.4));
+    const SKEWED = [
+      { x: -480, y: -240 },
+      { x: 480, y: -240 },
+      { x: 560, y: 240 },
+      { x: -400, y: 240 },
+    ];
+
+    check('an axis-aligned rectangle is recognised', rectangleCorners(RECT)!.length === 4);
+    check('and so is the same rectangle written closed', rectangleCorners([...RECT, RECT[0]])!.length === 4);
+    // Room Viewer stores turned rectangles under the same class: 1,257 of the
+    // 5,768 in the plan this rebuilds are rotated, and the cached rect is
+    // 0,0,0,0 in 99.4% of corpus rects, so the four corners are what the format
+    // carries.
+    check('a rotated rectangle is still a rectangle', rectangleCorners(TURNED)!.length === 4);
+    check('a parallelogram is not', rectangleCorners(SKEWED) === null);
+    check('nor is a run that does not close', rectangleCorners([...RECT, { x: 0, y: 0 }]) === null);
+    check('nor is one with a collapsed side', rectangleCorners([RECT[0], RECT[0], RECT[2], RECT[3]]) === null);
+
+    const riser = createShape(doc, {
+      name: 'Riser 8x4 (rect)',
+      x: 6000,
+      y: 3000,
+      outline: [{ rect: RECT }, { rect: SKEWED }, RECT],
+    });
+    check('a rectangular outline is synthesized', riser.ok, riser.reason);
+    const runs = riser.node!.children[0].children;
+    check(
+      'a marked rectangle becomes a rect, a marked non-rectangle and an unmarked run stay polys',
+      runs.map((r) => r.cls).join(' ') === 'RVSegmentRect RVSegmentPoly RVSegmentPoly',
+      runs.map((r) => r.cls).join(' '),
+    );
+    check('the rect holds exactly four corners', runs[0].points.length === 4);
+    check('stamped with the rect kind code', runs[0].kind === 2);
+
+    check('it goes into the document', addRoot(doc, riser.node!).ok);
+    const boxed = verifyWritable(doc);
+    check('a document holding a synthesized rect verifies', boxed.ok, boxed.reason);
+    if (boxed.ok) {
+      const reread = reopen(FIXTURE, boxed.bytes!);
+      const back = findByClass(reread.document, 'RVSegmentRect').filter((r) => r.points.length === 4);
+      const mine = back.find((r) => r.points.every((p, i) => Math.abs(p.x - RECT[i].x) < 1e-9 && Math.abs(p.y - RECT[i].y) < 1e-9));
+      check('the rect reads back with its corners intact', mine != null);
+      const scene = buildScene(reread.document);
+      const polygons = scene.primitives.filter((p) => p.owner === 'Riser 8x4 (rect)' && p.type === 'polygon');
+      check('and the renderer draws it as a closed area', polygons.length === 1, `${polygons.length}`);
+      check(
+        'which a deck would fill',
+        polygons.length === 1 && enclosesArea(polygons[0]),
+      );
+    }
   }
 
   const box = createShape(doc, { name: 'Custom Riser', x: 0, y: 0, outline: boxOutline(4 * UNITS_PER_FOOT, 8 * UNITS_PER_FOOT) });

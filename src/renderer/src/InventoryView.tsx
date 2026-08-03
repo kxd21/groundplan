@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { IconPlus, IconTrash, IconFit, IconExport, IconWarning } from './icons.js';
+import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
+import { IconPlus, IconTrash, IconFit, IconExport, IconWarning, IconFolder } from './icons.js';
 
 const api = window.groundplan;
-const UNITS_PER_FOOT = 120;
 const PAGE_SIZE = 200;
 
 interface InventoryItem {
@@ -42,6 +42,8 @@ interface Props {
   inventory: InventoryState | null;
   query: string;
   department: string | null;
+  /** Drawing units — footprints accept ft/in/cm/m with this as the bare-number default. */
+  units: UnitSystem;
   onChanged: () => void;
   onRemoved: (name: string) => void;
   onPlace: (id: string, name: string) => void;
@@ -59,27 +61,15 @@ interface HarvestProgress {
   cancelled?: boolean;
 }
 
-/** Logical units to a feet-and-inches string. */
-function feet(units?: number): string {
-  if (!units) return '—';
-  const totalInches = units / 10;
-  const ft = Math.floor(totalInches / 12);
-  const inches = Math.round(totalInches - ft * 12);
-  if (ft === 0) return `${Math.round(totalInches)}″`;
-  if (inches === 12) return `${ft + 1}′`;
-  return inches === 0 ? `${ft}′` : `${ft}′ ${inches}″`;
+function sizeLabel(width?: number, height?: number, system: UnitSystem = 'imperial'): string {
+  if (!width || !height) return '—';
+  return `${formatLength(width, system)} × ${formatLength(height, system)}`;
 }
 
-/** Accepts `4`, `4'`, `48"`, `4ft`, `4.5` — feet unless inches are marked. */
-function parseLength(text: string): number | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(''|'|"|in|ft)?$/i);
-  if (!match) return null;
-  const n = Number(match[1]);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const unit = (match[2] ?? '').toLowerCase();
-  return unit === '"' || unit === 'in' ? n * 10 : n * UNITS_PER_FOOT;
+function sizeHint(system: UnitSystem): string {
+  return system === 'metric'
+    ? 'Enter sizes like 120cm, 1.2m (or 4\', 48")'
+    : 'Enter sizes like 4\', 48", 4\' 6" (or 120cm, 1.2m)';
 }
 
 /**
@@ -93,6 +83,7 @@ export function InventoryView({
   inventory,
   query,
   department,
+  units,
   onChanged,
   onRemoved,
   onPlace,
@@ -121,18 +112,24 @@ export function InventoryView({
   const shownItems = items.slice(0, visibleCount);
   const sized = useMemo(() => items.filter((i) => i.width && i.height).length, [items]);
 
+  const beginSizeEdit = (item: InventoryItem) => {
+    setEditing(item.id);
+    setWDraft(item.width ? formatLength(item.width, units) : '');
+    setHDraft(item.height ? formatLength(item.height, units) : '');
+  };
+
   const commitSize = async (item: InventoryItem) => {
-    const width = parseLength(wDraft);
-    const height = parseLength(hDraft);
+    const width = parseLength(wDraft, units);
+    const height = parseLength(hDraft, units);
     setEditing(null);
-    if (!width || !height) {
-      if (wDraft.trim() || hDraft.trim()) onError('Enter sizes like 4, 4′ or 48″');
+    if (width == null || height == null || width <= 0 || height <= 0) {
+      if (wDraft.trim() || hDraft.trim()) onError(sizeHint(units));
       return;
     }
     const reply = await api.inventoryUpdate(item.id, { width, height });
     if (reply.ok && reply.inventory) {
       onChanged();
-      onStatus(`${item.name} is now ${feet(width)} × ${feet(height)}`);
+      onStatus(`${item.name} is now ${sizeLabel(width, height, units)}`);
     } else if (reply.reason) onError(reply.reason);
   };
 
@@ -369,6 +366,33 @@ export function InventoryView({
           Upload…
         </button>
         <button
+          onClick={async () => {
+            const reply = await api.inventoryExportPack();
+            if (reply.cancelled) return;
+            if (reply.ok) {
+              onStatus(`Exported ${reply.items ?? 0} items for other computers`);
+            } else if (reply.reason) onError(reply.reason);
+          }}
+          title="Write a folder for USB / shared drive so other Groundplan installs can import it"
+        >
+          <IconExport size={13} />
+          Export pack…
+        </button>
+        <button
+          onClick={async () => {
+            const reply = await api.inventoryImportPack();
+            if (reply.cancelled) return;
+            if (reply.ok) {
+              onChanged();
+              onStatus(`Imported pack — ${reply.added} new, ${reply.updated} updated`);
+            } else if (reply.reason) onError(reply.reason);
+          }}
+          title="Merge an inventory pack from another computer into this one"
+        >
+          <IconFolder size={13} />
+          Import pack…
+        </button>
+        <button
           onClick={harvest}
           disabled={!!harvestProgress}
           title="Take real drawn symbols out of a folder of plans"
@@ -468,10 +492,11 @@ export function InventoryView({
                     autoFocus
                     className="gear-qty-input num"
                     value={wDraft}
-                    placeholder="w"
+                    placeholder={units === 'metric' ? 'w cm/m' : "w ' / \""}
+                    aria-label={`Width for ${item.name}`}
                     onChange={(e) => setWDraft(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitSize(item);
+                      if (e.key === 'Enter') void commitSize(item);
                       if (e.key === 'Escape') setEditing(null);
                     }}
                   />
@@ -479,7 +504,8 @@ export function InventoryView({
                   <input
                     className="gear-qty-input num"
                     value={hDraft}
-                    placeholder="h"
+                    placeholder={units === 'metric' ? 'h cm/m' : "h ' / \""}
+                    aria-label={`Height for ${item.name}`}
                     onChange={(e) => setHDraft(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
@@ -497,13 +523,9 @@ export function InventoryView({
                         ? 'Size guessed from the name. Click to correct it.'
                         : 'No size yet. Click to set one.'
                   }
-                  onClick={() => {
-                    setEditing(item.id);
-                    setWDraft(item.width ? String(+(item.width / UNITS_PER_FOOT).toFixed(2)) : '');
-                    setHDraft(item.height ? String(+(item.height / UNITS_PER_FOOT).toFixed(2)) : '');
-                  }}
+                  onClick={() => beginSizeEdit(item)}
                 >
-                  {item.width ? `${feet(item.width)} × ${feet(item.height)}` : 'set size'}
+                  {item.width ? sizeLabel(item.width, item.height, units) : 'set size'}
                 </button>
               )}
 

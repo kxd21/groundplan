@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 
+import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { IconEdit, IconFit, IconPlus, IconSearch, IconTrash, IconDuplicate, IconWarning } from './icons.js';
 import type { InventoryState } from './InventoryView.js';
 import { TraceDialog } from './TraceDialog.js';
 
 const api = window.groundplan;
-const UNITS_PER_FOOT = 120;
 const PAGE_SIZE = 120;
 
 interface Item {
@@ -101,6 +101,7 @@ interface Props {
   onQuery: (next: string) => void;
   category: string | null;
   onCategory: (next: string | null) => void;
+  units: UnitSystem;
   canPlace: boolean;
   onPlace: (id: string, name: string) => void;
   onChanged: () => void;
@@ -109,26 +110,15 @@ interface Props {
   onStatus: (message: string) => void;
 }
 
-function feet(units?: number): string {
-  if (!units) return '—';
-  const inches = units / 10;
-  const ft = Math.floor(inches / 12);
-  const rest = Math.round(inches - ft * 12);
-  if (ft === 0) return `${Math.round(inches)}″`;
-  if (rest === 12) return `${ft + 1}′`;
-  return rest === 0 ? `${ft}′` : `${ft}′ ${rest}″`;
+function sizeLabel(width?: number, height?: number, system: UnitSystem = 'imperial'): string {
+  if (!width || !height) return '—';
+  return `${formatLength(width, system)} × ${formatLength(height, system)}`;
 }
 
-/** Accepts `4`, `4'`, `48"`, `4ft` — feet unless inches are marked. */
-function parseLength(text: string): number | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(''|'|"|in|ft)?$/i);
-  if (!match) return null;
-  const n = Number(match[1]);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const unit = (match[2] ?? '').toLowerCase();
-  return unit === '"' || unit === 'in' ? n * 10 : n * UNITS_PER_FOOT;
+function sizeHint(system: UnitSystem): string {
+  return system === 'metric'
+    ? 'Enter sizes like 120cm, 1.2m (or 4\', 48")'
+    : 'Enter sizes like 4\', 48", 4\' 6" (or 120cm, 1.2m)';
 }
 
 /**
@@ -150,6 +140,7 @@ export function InventoryPalette({
   onQuery,
   category,
   onCategory,
+  units,
   canPlace,
   onPlace,
   onChanged,
@@ -166,6 +157,7 @@ export function InventoryPalette({
   const [thumbs, setThumbs] = useState<Record<string, Thumb | null>>({});
   const [tracing, setTracing] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
 
   // A filter change can hide whatever was being edited.
   useEffect(() => {
@@ -194,8 +186,8 @@ export function InventoryPalette({
   const openEditor = (item: Item) => {
     setEditing(item.id);
     setNameDraft(item.name);
-    setWDraft(item.width ? String(+(item.width / UNITS_PER_FOOT).toFixed(2)) : '');
-    setHDraft(item.height ? String(+(item.height / UNITS_PER_FOOT).toFixed(2)) : '');
+    setWDraft(item.width ? formatLength(item.width, units) : '');
+    setHDraft(item.height ? formatLength(item.height, units) : '');
   };
 
   const commit = async (item: Item) => {
@@ -203,13 +195,19 @@ export function InventoryPalette({
     const name = nameDraft.trim();
     if (name && name !== item.name) patch.name = name;
 
-    const width = parseLength(wDraft);
-    const height = parseLength(hDraft);
-    if (width && height && (width !== item.width || height !== item.height)) {
+    const width = parseLength(wDraft, units);
+    const height = parseLength(hDraft, units);
+    if (
+      width != null &&
+      height != null &&
+      width > 0 &&
+      height > 0 &&
+      (width !== item.width || height !== item.height)
+    ) {
       patch.width = width;
       patch.height = height;
-    } else if ((wDraft.trim() || hDraft.trim()) && !(width && height)) {
-      onError('Enter sizes like 4, 4′ or 48″');
+    } else if ((wDraft.trim() || hDraft.trim()) && (width == null || height == null || width <= 0 || height <= 0)) {
+      onError(sizeHint(units));
       return;
     }
 
@@ -219,7 +217,11 @@ export function InventoryPalette({
     const reply = await api.inventoryUpdate(item.id, patch);
     if (reply.ok && reply.inventory) {
       onChanged();
-      onStatus(patch.name ? `Renamed to ${patch.name}` : `${item.name} is now ${feet(patch.width)} × ${feet(patch.height)}`);
+      onStatus(
+        patch.name
+          ? `Renamed to ${patch.name}`
+          : `${item.name} is now ${sizeLabel(patch.width, patch.height, units)}`,
+      );
     } else if (reply.reason) onError(reply.reason);
   };
 
@@ -234,8 +236,8 @@ export function InventoryPalette({
     if (reply.id) {
       setEditing(reply.id);
       setNameDraft(`${item.name} (copy)`);
-      setWDraft(item.width ? String(+(item.width / UNITS_PER_FOOT).toFixed(2)) : '');
-      setHDraft(item.height ? String(+(item.height / UNITS_PER_FOOT).toFixed(2)) : '');
+      setWDraft(item.width ? formatLength(item.width, units) : '');
+      setHDraft(item.height ? formatLength(item.height, units) : '');
     }
     onStatus('Made a variation — give it a name');
   };
@@ -276,6 +278,7 @@ export function InventoryPalette({
     <>
       {tracing && (
         <TraceDialog
+          units={units}
           onClose={() => setTracing(false)}
           onAdded={(name) => {
             onChanged();
@@ -386,11 +389,12 @@ export function InventoryPalette({
                 <input
                   className="gear-qty-input num"
                   value={wDraft}
-                  placeholder="w"
-                  aria-label={`Width for ${item.name} in feet`}
+                  placeholder={units === 'metric' ? 'w cm/m' : "w ' / \""}
+                  aria-label={`Width for ${item.name}`}
+                  title={sizeHint(units)}
                   onChange={(e) => setWDraft(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') commit(item);
+                    if (e.key === 'Enter') void commit(item);
                     if (e.key === 'Escape') setEditing(null);
                   }}
                 />
@@ -398,11 +402,12 @@ export function InventoryPalette({
                 <input
                   className="gear-qty-input num"
                   value={hDraft}
-                  placeholder="h"
-                  aria-label={`Height for ${item.name} in feet`}
+                  placeholder={units === 'metric' ? 'h cm/m' : "h ' / \""}
+                  aria-label={`Height for ${item.name}`}
+                  title={sizeHint(units)}
                   onChange={(e) => setHDraft(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') commit(item);
+                    if (e.key === 'Enter') void commit(item);
                     if (e.key === 'Escape') setEditing(null);
                   }}
                 />
@@ -417,23 +422,29 @@ export function InventoryPalette({
               </div>
             </li>
           ) : (
-            <li key={item.id} className="palette-row">
+            <li key={item.id} className={`palette-row${draggingId === item.id ? ' is-dragging' : ''}`}>
               <button
                 className="palette-place"
                 draggable={canPlace}
+                disabled={!canPlace}
                 onDragStart={(e) => {
                   e.dataTransfer.setData('application/x-groundplan-item', item.id);
+                  e.dataTransfer.setData('application/x-groundplan-label', item.name);
+                  e.dataTransfer.setData('text/plain', item.name);
                   e.dataTransfer.effectAllowed = 'copy';
+                  setDraggingId(item.id);
                 }}
+                onDragEnd={() => setDraggingId(null)}
                 title={
                   canPlace
                     ? `Drag ${item.name} onto the plan, or click to place it${
-                        item.width ? ` · ${feet(item.width)} × ${feet(item.height)}` : ''
+                        item.width ? ` · ${sizeLabel(item.width, item.height, units)}` : ''
                       }`
                     : 'Open an editable plan to place items'
                 }
                 onClick={() => canPlace && onPlace(item.id, item.name)}
               >
+                <span className="palette-drag-handle" aria-hidden>⠿</span>
                 <Preview
                 thumb={item.tracedIcon ? centredToThumb(item.tracedIcon) : thumbs[item.id]}
                 width={item.width}

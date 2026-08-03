@@ -1,30 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { traceImage, type TraceResult } from '../../catalog/trace.js';
+import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { IconFit, IconPlus } from './icons.js';
 
 const api = window.groundplan;
-const FOOT = 120;
 
 interface Props {
+  units: UnitSystem;
   onClose: () => void;
   onAdded: (name: string) => void;
   onError: (message: string) => void;
 }
-
-/** Accepts `4`, `4'`, `48"`, `4ft` — feet unless inches are marked. */
-function parseLength(text: string): number | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(''|'|"|in|ft)?$/i);
-  if (!match) return null;
-  const n = Number(match[1]);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const unit = (match[2] ?? '').toLowerCase();
-  return unit === '"' || unit === 'in' ? n * 10 : n * FOOT;
-}
-
-const feet = (units: number): string => `${(units / FOOT).toFixed(2)}′`;
 
 /**
  * Turning a picture into a plan outline.
@@ -38,7 +25,7 @@ const feet = (units: number): string => `${(units / FOOT).toFixed(2)}′`;
  * feet across something is, and an outline at the wrong scale is worse than no
  * outline because it looks right on screen and is wrong on the floor.
  */
-export function TraceDialog({ onClose, onAdded, onError }: Props) {
+export function TraceDialog({ units, onClose, onAdded, onError }: Props) {
   const [image, setImage] = useState<ImageData | null>(null);
   const [fileName, setFileName] = useState('');
   const [threshold, setThreshold] = useState(128);
@@ -86,8 +73,8 @@ export function TraceDialog({ onClose, onAdded, onError }: Props) {
       setResult(null);
       return;
     }
-    const width = parseLength(widthDraft);
-    const depth = parseLength(depthDraft);
+    const width = parseLength(widthDraft, units);
+    const depth = parseLength(depthDraft, units);
     setResult(
       traceImage(
         { data: image.data, width: image.width, height: image.height },
@@ -100,7 +87,7 @@ export function TraceDialog({ onClose, onAdded, onError }: Props) {
         },
       ),
     );
-  }, [image, threshold, smoothing, invert, widthDraft, depthDraft]);
+  }, [image, threshold, smoothing, invert, widthDraft, depthDraft, units]);
 
   // Draw the source with the traced outline over it, so the effect of a
   // threshold change is visible rather than guessed at.
@@ -168,8 +155,12 @@ export function TraceDialog({ onClose, onAdded, onError }: Props) {
       onError('Give the item a name first.');
       return;
     }
-    if (!parseLength(widthDraft) || !parseLength(depthDraft)) {
-      onError('Enter both dimensions, like 4 or 48″ — an outline needs a real size.');
+    if (!parseLength(widthDraft, units) || !parseLength(depthDraft, units)) {
+      onError(
+        units === 'metric'
+          ? 'Enter both dimensions, like 120cm or 1.2m — an outline needs a real size.'
+          : 'Enter both dimensions, like 4\' or 48" — an outline needs a real size.',
+      );
       return;
     }
 
@@ -272,18 +263,20 @@ export function TraceDialog({ onClose, onAdded, onError }: Props) {
                 />
               </div>
               <div className="field trace-size">
-                <label htmlFor="trace-w">Real size</label>
+                <label htmlFor="trace-w">
+                  Real size ({units === 'metric' ? 'cm / m' : 'ft / in'} — suffixes always work)
+                </label>
                 <div className="trace-size-row">
                   <input
                     id="trace-w"
                     value={widthDraft}
-                    placeholder="width"
+                    placeholder={units === 'metric' ? '120cm' : "4'"}
                     onChange={(e) => setWidthDraft(e.target.value)}
                   />
                   <span className="inv-x">×</span>
                   <input
                     value={depthDraft}
-                    placeholder="depth"
+                    placeholder={units === 'metric' ? '80cm' : "3'"}
                     onChange={(e) => setDepthDraft(e.target.value)}
                   />
                 </div>
@@ -294,8 +287,8 @@ export function TraceDialog({ onClose, onAdded, onError }: Props) {
               {result?.ok ? (
                 <>
                   Traced {result.rawPoints.toLocaleString()} points down to {result.points} ·{' '}
-                  {feet(result.width)} × {feet(result.height)}
-                  {!parseLength(widthDraft) || !parseLength(depthDraft) ? (
+                  {formatLength(result.width, units)} × {formatLength(result.height, units)}
+                  {!parseLength(widthDraft, units) || !parseLength(depthDraft, units) ? (
                     <> · <strong>enter both dimensions to set the real size</strong></>
                   ) : null}
                 </>

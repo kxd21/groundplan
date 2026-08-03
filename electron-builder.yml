@@ -12,6 +12,12 @@ files:
   - out/**/*
   - package.json
 
+# Fresh installs copy this into the private inventory the first time the app
+# launches with no inventory.json — placeable shapes, not an empty palette.
+extraResources:
+  - from: resources/starter-inventory
+    to: starter-inventory
+
 # The legacy Windows editor owned these extensions. Groundplan can open all of
 # them directly, so the desktop packages advertise the same complete set.
 fileAssociations:
@@ -74,6 +80,8 @@ portable:
   artifactName: ${productName}-Portable-${version}-win-${arch}.${ext}
 
 linux:
-  target:
-    - AppImage
   category: Graphics
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+  target:
+    - target: AppImage
+      arch: [x64]

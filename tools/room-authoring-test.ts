@@ -17,10 +17,15 @@ import {
   offsetWall,
   rectRoom,
   removeCorner,
+  roundAllCorners,
+  roundCorner,
   roomProblems,
+  setWallLength,
+  setWallRadius,
 } from '../src/format/room-edit.js';
 import { applyRoom } from '../src/format/room-render.js';
 import {
+  arcOf,
   deriveRoom,
   rectangularRoom,
   roomArea,
@@ -162,6 +167,39 @@ console.log('\nediting corners\n');
     { x: 0, y: 100 },
   ]), 0).ok);
 
+  const rounded = roundCorner(room, 0, 2 * F);
+  const roundedArc = rounded.room?.walls.find((candidate) => candidate.bulge);
+  const roundedRadius = roundedArc ? arcOf(roundedArc)?.radius ?? 0 : 0;
+  check('a sharp corner rounds into a fifth curved wall', rounded.ok && rounded.room!.walls.length === 5);
+  check(
+    'the rounded corner has the requested exact radius',
+    !!roundedArc && Math.abs(roundedRadius - 2 * F) < 1e-6,
+    `${roundedRadius}`,
+  );
+  check('rounding keeps the room outline closed', roomProblems(rounded.room!).length === 0);
+  const expectedRoundedArea = roomArea(room) - (2 * F) ** 2 * (1 - Math.PI / 4);
+  check(
+    'rounding removes only the square outside the quarter circle',
+    Math.abs(roomArea(rounded.room!) - expectedRoundedArea) < 1e-3,
+    `${roomArea(rounded.room!)} versus ${expectedRoundedArea}`,
+  );
+  check('a radius too large for its adjoining lines is refused', !roundCorner(room, 0, 100 * F).ok);
+
+  const roundedAll = roundAllCorners(room, 2 * F);
+  const allRoundedArcs = roundedAll.room?.walls.filter((candidate) => candidate.bulge) ?? [];
+  check('all corners can be rounded in one operation', roundedAll.ok && allRoundedArcs.length === 4);
+  check('rounding all four corners creates four arcs and four straight runs', roundedAll.room?.walls.length === 8);
+  check(
+    'every rounded corner uses the requested radius',
+    allRoundedArcs.every((segment) => Math.abs((arcOf(segment)?.radius ?? 0) - 2 * F) < 1e-6),
+  );
+  check('the fully rounded room remains closed', roomProblems(roundedAll.room!).length === 0);
+  const expectedAllRoundedArea = roomArea(room) - 4 * (2 * F) ** 2 * (1 - Math.PI / 4);
+  check(
+    'rounding every corner updates the floor area exactly',
+    Math.abs(roomArea(roundedAll.room!) - expectedAllRoundedArea) < 1e-3,
+  );
+
   const deeper = offsetWall(room, 1, 2 * F);
   check('a wall moves out by two feet', deeper.ok, deeper.reason);
   check('which adds 60 sq ft', sqft(deeper.room!) === 1200 + 60, `${sqft(deeper.room!)}`);
@@ -173,6 +211,31 @@ console.log('\nediting corners\n');
   const straightened = curveWall(bowed.room!, 0, 0);
   check('and straightened again', straightened.room!.walls[0].bulge === undefined);
   check('back to where it started', sqft(straightened.room!) === 1200);
+
+  const lengthened = setWallLength(room, 0, 50 * F);
+  check('a wall length can be set', lengthened.ok, lengthened.reason);
+  check(
+    'keeping the start corner fixed',
+    lengthened.ok &&
+      lengthened.room!.walls[0].start.x === room.walls[0].start.x &&
+      lengthened.room!.walls[0].start.y === room.walls[0].start.y,
+  );
+  check(
+    'and extending the end',
+    lengthened.ok && Math.abs(lengthened.room!.walls[0].end.x - room.walls[0].start.x - 50 * F) < 1e-6,
+  );
+  check('a curved wall refuses length edits', !setWallLength(bowed.room!, 0, 50 * F).ok);
+
+  const byRadius = setWallRadius(room, 0, 30 * F);
+  check('a wall can be curved by radius', byRadius.ok && !!byRadius.room!.walls[0].bulge, byRadius.reason);
+  const major = setWallRadius(room, 0, 30 * F, true);
+  check(
+    'major arc takes the other bulge sign or magnitude',
+    major.ok &&
+      major.room!.walls[0].bulge !== undefined &&
+      major.room!.walls[0].bulge !== byRadius.room!.walls[0].bulge,
+    major.reason,
+  );
 }
 
 {
@@ -188,7 +251,7 @@ console.log('\nediting corners\n');
 // ---------------------------------------------------------------------------
 console.log('\ndrawing a room into a plan\n');
 
-const FIXTURE = fixturePlanBuffer();
+const FIXTURE = fixturePlanBuffer({ walls: false });
 
 const wallCount = (doc: Parameters<typeof deriveRoom>[0]) =>
   [...walk(doc)].filter((n) => n.cls === 'RVSegmentLine' || n.cls === 'RVSegmentPoly').length;

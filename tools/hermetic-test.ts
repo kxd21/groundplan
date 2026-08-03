@@ -27,6 +27,10 @@ import {
 } from '../src/format/edit.js';
 import { loadBuffer, walk } from '../src/format/index.js';
 import { parseDimensions, placeGear } from '../src/format/place.js';
+import { importSymbol, listSymbols } from '../src/format/symbol.js';
+import { createBlankPlan } from '../src/format/blank.js';
+import { isLibrary, readLibrary } from '../src/format/library.js';
+import { GRADE, MIN_STROKE_POINTS, pointsToUnits, resolveStyle } from '../src/format/style.js';
 import { buildSchedule, entryKey, scheduleSummaryCsv, scheduleToCsv } from '../src/format/schedule.js';
 import { buildScene } from '../src/format/scene.js';
 import { addSeating } from '../src/format/seating.js';
@@ -508,6 +512,116 @@ async function main(): Promise<void> {
 
   // Indexing the final document must remain total after duplicate annotations.
   check('final document index contains unique object ids', indexDocument(reopened.loaded.document).byId.size > 0);
+
+  // --- importing a symbol between plans ----------------------------------
+  //
+  // The only coverage for this lived in tools/symbol-test.ts, which needs the
+  // production drive and so never runs in CI. Two bugs survived there: the
+  // import wrote the moved bounds into the bytes but left the node on the
+  // source file's rect, and it wrote the placement as `anchor + delta` rather
+  // than the destination, which lands a bit or two away in doubles. Both made
+  // the save gate refuse the plan afterwards, so both are checked here.
+  {
+    const donor = loadBuffer(fixturePlanBuffer(), 'donor.rv4').document;
+    const donorPlacement = placeGear(donor, indexDocument(donor), 'Import Probe', 40 * 120, 30 * 120, {
+      width: 4 * 120,
+      height: 2 * 120,
+    });
+    check('a donor plan can be given a shape to export', donorPlacement.ok, donorPlacement.reason);
+
+    const blank = createBlankPlan({ roomName: 'host', room: { width: 60 * 120, depth: 40 * 120 } });
+    check('a blank plan is available to import into', blank.ok && !!blank.file, blank.reason);
+    const host = loadBuffer(blank.file!, 'host.rv4').document;
+    const named = listSymbols(donor).find((s) => s.name === 'Import Probe');
+    check('and that shape is listed as an importable symbol', !!named);
+
+    // A coordinate whose delta does not round-trip cleanly through doubles.
+    const targetX = 12345.678901234567;
+    const targetY = -9876.543210987654;
+    const imported = importSymbol(host, indexDocument(host), donor, 'Import Probe', targetX, targetY);
+    check('it imports into another plan', imported.ok, imported.reason);
+
+    const brought = [...walk(host)].find(
+      (node) => node.cls === 'RVShape' && node.labels.includes('Import Probe'),
+    );
+    check('the imported shape is in the host', !!brought);
+    check(
+      'at exactly the point asked for, not a delta away from it',
+      brought?.points[0]?.x === targetX && brought?.points[0]?.y === targetY,
+      `${brought?.points[0]?.x}, ${brought?.points[0]?.y}`,
+    );
+    check(
+      'with its bounds rect moved with it',
+      !!brought && brought.bounds.left > 0 && brought.bounds.right > brought.bounds.left,
+      JSON.stringify(brought?.bounds),
+    );
+
+    const writable = verifyWritable(host);
+    check('and the plan can still be saved afterwards', writable.ok, writable.reason);
+  }
+
+  // --- the shape-library reader must not mistake a plan for a catalogue -----
+  //
+  // It recognises entries by shape rather than by a magic number, so the guard
+  // that matters is that ordinary plans yield nothing: a false positive would
+  // invent catalogue names out of whatever bytes followed an object.
+  {
+    const plan = loadBuffer(fixturePlanBuffer(), 'plan.rv4').document;
+    check('a plan is not read as a shape library', readLibrary(plan).length === 0);
+    check('and is not flagged as one', !isLibrary(plan));
+
+    const madeHere = createBlankPlan({ roomName: 'Test', room: { width: 30 * 120, depth: 20 * 120 } });
+    const synthetic = loadBuffer(madeHere.file!, 'synthetic.rv4').document;
+    check('nor is a plan this created', readLibrary(synthetic).length === 0);
+  }
+
+  // --- drafting styles are shared and scale-independent --------------------
+  {
+    const scene = reopened.scene ?? buildScene(reopened.loaded.document);
+    const styles = scene.primitives.map((p) => resolveStyle(p));
+    check('every primitive resolves a style', styles.length === scene.primitives.length);
+    check(
+      'and none of them prints thinner than the floor',
+      styles.every((st) => st.strokePoints >= MIN_STROKE_POINTS),
+      `${Math.min(...styles.map((st) => st.strokePoints))}pt`,
+    );
+
+    // A pen weight is a thickness on paper, so it must not change with scale.
+    // Stating it in drawing units — which is what the export used to do — made
+    // a wall 1.4pt at one scale and 0.45pt at another.
+    const printed = (points: number, ipf: number) => pointsToUnits(points, ipf) * (ipf / 120) * 72;
+    check(
+      'a pen weight prints the same at every scale',
+      Math.abs(printed(GRADE.heavy, 1 / 16) - GRADE.heavy) < 1e-6 &&
+        Math.abs(printed(GRADE.heavy, 1 / 4) - GRADE.heavy) < 1e-6,
+      `${printed(GRADE.heavy, 1 / 16).toFixed(3)} vs ${printed(GRADE.heavy, 1 / 4).toFixed(3)}`,
+    );
+
+    check(
+      'a wall is heavier than a chair',
+      GRADE.heavy > GRADE.light,
+    );
+
+    // A deck is a surface. This is the defect that started the audit: closed
+    // outlines belonging to staging were drawn hollow in both renderers.
+    const deck = {
+      id: 0, nodeId: 0, selectId: 0, type: 'polyline' as const,
+      pts: [0, 0, 100, 0, 100, 100, 0, 100, 0, 0],
+      color: 0, cls: 'RVSegmentPoly', layer: 'furniture' as const,
+      owner: 'Stage 42\' x 8\' x 32"',
+    };
+    check('a closed deck outline resolves a fill', !!resolveStyle(deck).fill);
+    check(
+      'and a taller deck fills darker than a lower one',
+      resolveStyle(deck).fill !== resolveStyle({ ...deck, owner: 'Riser 8\' x 42\' x 24"' }).fill,
+      `${resolveStyle(deck).fill} vs ${resolveStyle({ ...deck, owner: 'Riser 8\' x 42\' x 24"' }).fill}`,
+    );
+    check('a chair is not filled', !resolveStyle({ ...deck, owner: 'Chair 20.5W X 23.23D' }).fill);
+    check(
+      'an open run is not filled even on a deck',
+      !resolveStyle({ ...deck, pts: [0, 0, 100, 0, 100, 100] }).fill,
+    );
+  }
 
   console.log(`${checks - failures}/${checks} hermetic checks passed`);
   if (failures > 0) process.exitCode = 1;

@@ -23,6 +23,7 @@ import {
   cleanStaging,
   installAppUpdate,
   stageAppUpdate,
+  type StagedUpdate,
 } from '../update/app-update.js';
 import {
   applyUpdate,
@@ -40,6 +41,17 @@ import {
   readUsbSource,
   stageUsbUpdate,
 } from '../update/usb-update.js';
+import {
+  clearReminder,
+  formatReminderTime,
+  loadReminder,
+  msUntilReminder,
+  reminderAfterLater,
+  reminderAfterSchedule,
+  saveReminder,
+  scheduleOptions,
+  shouldOfferUpdate,
+} from '../update/reminder.js';
 import { loadBuffer } from '../format/index.js';
 import { findCatalogPath, loadCatalog, lookup, type Catalog } from '../format/catalog.js';
 import {
@@ -47,12 +59,13 @@ import {
   deleteNode,
   duplicateNode,
   recolorNode,
-  relabelNode,
+  renameNode,
   rotateNode,
   resizeNode,
   measureNode,
   flipNode,
   reorderChild,
+  scalePlanUniform,
 } from '../format/edit.js';
 import { arrangeMoves, type ArrangeBounds, type ArrangeMode } from '../format/arrange.js';
 import { addSeating, type SeatingRequest } from '../format/seating.js';
@@ -60,10 +73,16 @@ import {
   annotationCapabilities,
   createLabel,
   createDimension,
+  formatDistance,
+  setDimensionLengthAngle,
   type AnnotationCapabilities,
 } from '../format/annotate.js';
+import { type UnitSystem } from '../format/units.js';
+import { INSERT_TREE, isInsertLeaf, type InsertBranch, type InsertLeaf } from '../inventory/insert-catalog.js';
+import { walk } from '../format/rv.js';
 import { listSymbols, importSymbol } from '../format/symbol.js';
-import { placeGear, parseDimensions } from '../format/place.js';
+import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions } from '../format/place.js';
+import { isLibrary } from '../format/library.js';
 import { verifyWritable } from '../format/write.js';
 import { Session } from './session.js';
 import { canonicalPath, pathIdentity, samePath } from './paths.js';
@@ -79,6 +98,8 @@ import {
   updateGearItem,
   removeGearItem,
   restoreGearItem,
+  createBlankGearList,
+  cloneGearItem,
   type GearList,
   type GearTotals,
   type RemovedGearItem,
@@ -110,6 +131,8 @@ import {
   type Category,
 } from '../inventory/classify.js';
 import { loadInventoryWithStatus, saveInventory, inventoryPath } from '../inventory/store.js';
+import { exportInventoryPack, importInventoryPack } from '../inventory/share.js';
+import { seedStarterInventory } from '../inventory/seed.js';
 import { atomicWriteFile, atomicWriteJson } from './storage.js';
 import {
   copyShowForSaveAs,
@@ -127,25 +150,34 @@ import {
   type RecoveryEntry,
 } from './recovery.js';
 import { buildStableSchedule, setStableScheduleField } from './schedule-metadata.js';
-import type { UnitSystem } from '../format/units.js';
 import { createBlankPlan, ROOM_PRESETS } from '../format/blank.js';
 import { companionPathFor } from './companion-store.js';
 import {
+  addRoomCorner,
   addStage,
   applySeating as applySeatingModel,
+  avSummary,
   clearStage,
+  createCircularRoom,
+  createPolygonalRoom,
   createRectangularRoom,
   curveRoomWall,
   drawShape,
   dimensionTheRoom,
+  lengthenRoomWall,
+  moveRoomCorner,
   openPlanModel,
   planAllocation,
   planModelView,
   planReport,
   previewSeating,
+  removeRoomCorner,
   reshapeRoom,
+  roundAllRoomCorners,
+  roundRoomCorner,
   resetPlanModel,
   savePlanModel,
+  updateRoomMeta,
   type DrawTool,
   type ReportOptions,
   type SeatingRequestView,
@@ -276,6 +308,15 @@ export interface SelectionInfo {
   /** Centre of the object's bounds, in logical units. */
   x: number;
   y: number;
+  /** Present when the selection is a dimension line. */
+  dimension?: {
+    length: number;
+    angleDegrees: number;
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
 }
 
 /** The gear lists currently loaded, with their totals. */
@@ -298,6 +339,10 @@ export interface DirectoryEntry {
 let mainWindow: BrowserWindow | null = null;
 /** Allows a close to continue after the unsaved-work prompt has been accepted. */
 let closeConfirmed = false;
+/** Fires when a previously scheduled application update is due. */
+let scheduledUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+/** Prevents overlapping update prompts while one is already on screen. */
+let appUpdatePromptOpen = false;
 let rendererReady = false;
 let pendingOpenPath: string | null = null;
 export interface RecentFile {
@@ -643,6 +688,62 @@ async function persistInventory(): Promise<void> {
   await saveInventory(inventoryFile, inventory);
 }
 
+function stampForPack(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
+/** Folds every open gear list into the company inventory. */
+async function absorbOpenGearIntoInventory(): Promise<{ added: number; updated: number } | null> {
+  if (!gear) return null;
+
+  let added = 0;
+  let updated = 0;
+  for (const list of gear.lists) {
+    for (const department of list.departments) {
+      const incoming = [];
+      for (const item of walkItems({ ...list, departments: [department] })) {
+        if (item.note) continue;
+        const size = parseDimensions(item.description);
+        incoming.push({
+          name: item.description,
+          department: department.name,
+          quantity: item.quantity,
+          width: size.source === 'parsed' ? size.width : undefined,
+          height: size.source === 'parsed' ? size.height : undefined,
+          sizeSource: size.source === 'parsed' ? ('parsed' as const) : ('unknown' as const),
+        });
+      }
+      const summary = mergeItems(inventory, incoming, new Date(), {
+        id: list.jobNumber
+          ? `gear-job:${normaliseName(list.jobNumber)}`
+          : list.sourceFingerprint
+            ? `gear-source:${list.sourceFingerprint}`
+            : `gear-list:${list.id ?? list.sourcePath ?? list.title}`,
+        type: 'gear-pdf',
+        jobId: list.id ?? list.jobNumber,
+        label: list.title,
+        sourcePath: list.sourcePath,
+      });
+      added += summary.added;
+      updated += summary.updated;
+    }
+  }
+
+  await persistInventory();
+  return { added, updated };
+}
+
+async function maybeAutoAbsorbGear(): Promise<string | undefined> {
+  settings ??= await loadSettings(app.getPath('userData'));
+  if (!settings.inventory.autoAbsorbGear) return undefined;
+  const summary = await absorbOpenGearIntoInventory();
+  if (!summary) return undefined;
+  if (!summary.added && !summary.updated) return 'Company inventory already had these lines.';
+  return `Pushed to company inventory — ${summary.added} new, ${summary.updated} updated. Share an inventory pack so other computers get them.`;
+}
+
 /** The gear lists currently loaded, independent of the open plan. */
 let gear: {
   lists: GearList[];
@@ -887,6 +988,8 @@ const RESULT_CHANNELS = new Set([
   'inventory:harvest',
   'inventory:cancel-harvest',
   'inventory:import',
+  'inventory:export-pack',
+  'inventory:import-pack',
   'inventory:add',
   'inventory:update',
   'inventory:duplicate',
@@ -894,9 +997,12 @@ const RESULT_CHANNELS = new Set([
   'inventory:restore-last',
   'inventory:place',
   'gear:save',
+  'gear:new',
   'gear:update',
   'gear:restore-last',
   'gear:add',
+  'gear:duplicate',
+  'gear:add-department',
   'show:link-current',
   'plan:place-gear',
   'plan:rotate',
@@ -909,8 +1015,16 @@ const RESULT_CHANNELS = new Set([
   'export:dxf',
   'print:pdf',
   'plan:room-create',
+  'plan:room-create-circle',
+  'plan:room-create-polygon',
+  'plan:room-corner-move',
+  'plan:room-corner-add',
+  'plan:room-corner-remove',
+  'plan:room-corner-round',
+  'plan:room-corners-round-all',
   'plan:room-reshape',
   'plan:room-curve',
+  'plan:room-wall-length',
   'plan:room-dimension',
   'plan:seating-apply',
   'plan:stage-add',
@@ -1353,86 +1467,246 @@ async function confirmDiscard(kind: 'plan' | 'gear' | 'all'): Promise<boolean> {
   return true;
 }
 
-/**
- * Offers an application update, downloads it, and restarts into it.
- *
- * Uses the system dialog rather than a bespoke panel: an update prompt has to
- * work when the window is busy or a plan is mid-edit, and it is the one moment
- * where interrupting is the point.
- */
-async function runAppUpdate(interactive: boolean): Promise<void> {
-  const staging = join(app.getPath('userData'), 'updates');
-  await cleanStaging(staging);
-
-  const plan = await checkForAppUpdate({
-    currentVersion: app.getVersion(),
-    platform: process.platform,
-    arch: process.arch,
-  });
-
-  if (!plan.available) {
-    // A silent check that finds nothing says nothing; only a deliberate one
-    // deserves an answer.
-    if (interactive) {
-      await dialog.showMessageBox({
-        type: 'info',
-        message: plan.reason === 'the application is up to date' ? 'Groundplan is up to date' : 'No update available',
-        detail:
-          plan.reason === 'the application is up to date'
-            ? `You are running version ${plan.currentVersion}.`
-            : (plan.reason ?? 'Could not check for updates just now.'),
-        buttons: ['OK'],
-      });
-    }
-    return;
-  }
-
-  const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
-  const answer = await dialog.showMessageBox({
-    type: 'info',
-    message: `Groundplan ${plan.latestVersion} is available`,
-    detail: `${plan.notes ? `${plan.notes}\n\n` : ''}You are on ${plan.currentVersion}. Download size: ${size}.\n\nGroundplan will restart to finish installing.`,
-    buttons: ['Download and install', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (answer.response !== 0) return;
-
-  mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received: 0, total: plan.package?.bytes });
-
-  const staged = await stageAppUpdate(plan, staging, (received, total) => {
-    mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received, total });
-    if (total > 0) mainWindow?.setProgressBar(received / total);
-  });
-  mainWindow?.setProgressBar(-1);
-
-  if (!staged.ok) {
-    mainWindow?.webContents.send('app:update-progress', { phase: 'failed', message: staged.reason });
-    await dialog.showMessageBox({
-      type: 'error',
-      message: 'The update could not be downloaded',
-      detail: `${staged.reason ?? 'The download did not finish.'}\n\nGroundplan ${plan.currentVersion} is unchanged and still works.`,
-      buttons: ['OK'],
-    });
-    return;
-  }
-
+function appBundlePath(): string {
   // macOS replaces the .app bundle, so the path has to be the bundle rather
   // than the executable buried inside it. Windows hands off to the installer
   // and never reads this.
-  const bundlePath =
-    process.platform === 'darwin'
-      ? app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]*$/, '')
-      : app.getPath('exe');
+  return process.platform === 'darwin'
+    ? app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]*$/, '')
+    : app.getPath('exe');
+}
 
-  const installed = await installAppUpdate(staged, bundlePath, () => app.quit());
+function clearScheduledUpdateTimer(): void {
+  if (scheduledUpdateTimer) {
+    clearTimeout(scheduledUpdateTimer);
+    scheduledUpdateTimer = null;
+  }
+}
+
+/** Arms an in-session timer when the user scheduled an update for later today. */
+async function armScheduledUpdateTimer(latestVersion?: string): Promise<void> {
+  clearScheduledUpdateTimer();
+  const reminder = await loadReminder(app.getPath('userData'));
+  const version = latestVersion ?? reminder.version;
+  if (!version) return;
+  const wait = msUntilReminder(reminder, version);
+  if (wait == null) return;
+  // Cap at ~24 days — setTimeout is 32-bit; longer waits re-arm on next launch.
+  const delay = Math.min(wait, 2_000_000_000);
+  scheduledUpdateTimer = setTimeout(() => {
+    scheduledUpdateTimer = null;
+    void runAppUpdate(true);
+  }, delay);
+}
+
+/**
+ * Lets the user save open work before an update restarts the app.
+ *
+ * Returns false when they cancel. Clean sessions skip the question.
+ */
+async function confirmSaveBeforeUpdate(latestVersion: string): Promise<boolean> {
+  const dirtyPlan = !!session?.dirty;
+  const dirtyGear = !!gear?.dirty;
+  if (!dirtyPlan && !dirtyGear) return true;
+
+  const work =
+    dirtyPlan && dirtyGear
+      ? 'the open plan and gear list'
+      : dirtyPlan
+        ? `“${session?.loaded.name ?? 'the open plan'}”`
+        : 'the open gear list';
+
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    title: 'Save before updating',
+    message: `Save ${work} before updating to Groundplan ${latestVersion}?`,
+    detail:
+      'Groundplan will restart to finish installing. Saving keeps your latest edits; updating without saving discards them.',
+    buttons: ['Save and update', 'Update without saving', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  };
+  const response = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+
+  if (response.response === 2) return false;
+  if (response.response === 1) return true;
+
+  if (dirtyPlan) {
+    const saved = await savePlanDocument(false);
+    if (!saved.ok) {
+      if (!saved.cancelled) await showSaveFailure(saved);
+      return false;
+    }
+  }
+  if (dirtyGear) {
+    const saved = await saveGearDocument(false);
+    if (!saved.ok) {
+      if (!saved.cancelled) await showSaveFailure(saved);
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Follow-up dialog that picks when to ask about the update again. */
+async function chooseUpdateSchedule(latestVersion: string): Promise<boolean> {
+  const choices = scheduleOptions();
+  const labels = choices.map((choice) => choice.label);
+  const options: Electron.MessageBoxOptions = {
+    type: 'question',
+    title: 'Schedule update',
+    message: `When should Groundplan ask about version ${latestVersion}?`,
+    detail: 'You can still update sooner from Help → Check for Updates…',
+    buttons: [...labels, 'Cancel'],
+    defaultId: 0,
+    cancelId: labels.length,
+    noLink: true,
+  };
+  const response = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  if (response.response < 0 || response.response >= choices.length) return false;
+
+  const picked = choices[response.response];
+  await saveReminder(app.getPath('userData'), reminderAfterSchedule(latestVersion, picked.at));
+  await armScheduledUpdateTimer(latestVersion);
+
+  await dialog.showMessageBox({
+    type: 'info',
+    message: 'Update scheduled',
+    detail: `Groundplan will remind you about version ${latestVersion} around ${formatReminderTime(picked.at)}.`,
+    buttons: ['OK'],
+  });
+  return true;
+}
+
+/**
+ * Downloads (or uses a staged package) and installs, quitting only after the
+ * user has had a chance to save.
+ */
+async function installStagedAppUpdate(
+  staged: StagedUpdate,
+  currentVersion: string,
+): Promise<void> {
+  await clearReminder(app.getPath('userData'));
+  clearScheduledUpdateTimer();
+  closeConfirmed = true;
+  const installed = await installAppUpdate(staged, appBundlePath(), () => app.quit());
   if (!installed.ok) {
+    closeConfirmed = false;
     await dialog.showMessageBox({
       type: 'error',
       message: 'The update could not be installed',
-      detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${plan.currentVersion} is unchanged.`,
+      detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${currentVersion} is unchanged.`,
       buttons: ['OK'],
     });
+  }
+}
+
+/**
+ * Offers an application update, downloads it, and restarts into it.
+ *
+ * First open after a release (and every quiet launch check that is not snoozed)
+ * gets a clear choice: update now, later, or schedule a reminder. Work can be
+ * saved before the restart. Uses the system dialog so the prompt still appears
+ * while a plan is mid-edit.
+ */
+async function runAppUpdate(interactive: boolean): Promise<void> {
+  if (appUpdatePromptOpen) return;
+  appUpdatePromptOpen = true;
+  try {
+    const staging = join(app.getPath('userData'), 'updates');
+    await cleanStaging(staging);
+
+    const plan = await checkForAppUpdate({
+      currentVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    });
+
+    if (!plan.available) {
+      // A silent check that finds nothing says nothing; only a deliberate one
+      // deserves an answer.
+      if (interactive) {
+        await dialog.showMessageBox({
+          type: 'info',
+          message: plan.reason === 'the application is up to date' ? 'Groundplan is up to date' : 'No update available',
+          detail:
+            plan.reason === 'the application is up to date'
+              ? `You are running version ${plan.currentVersion}.`
+              : (plan.reason ?? 'Could not check for updates just now.'),
+          buttons: ['OK'],
+        });
+      }
+      return;
+    }
+
+    const latestVersion = plan.latestVersion ?? 'the new version';
+    const reminder = await loadReminder(app.getPath('userData'));
+    const offer = shouldOfferUpdate(reminder, latestVersion, new Date(), interactive);
+    if (!offer.offer) {
+      // Keep an in-session timer armed for a scheduled remind time.
+      if (offer.reason === 'scheduled') await armScheduledUpdateTimer(latestVersion);
+      return;
+    }
+
+    const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
+    const answer = await dialog.showMessageBox({
+      type: 'info',
+      title: 'Update available',
+      message: `Groundplan ${latestVersion} is available`,
+      detail:
+        `${plan.notes ? `${plan.notes}\n\n` : ''}` +
+        `You are on ${plan.currentVersion}. Download size: ${size}.\n\n` +
+        'Choose Update Now to install and restart, Update Later to be asked again tomorrow, or Schedule… to pick a time.',
+      buttons: ['Update Now', 'Update Later', 'Schedule…'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+
+    if (answer.response === 1) {
+      await saveReminder(app.getPath('userData'), reminderAfterLater(latestVersion));
+      clearScheduledUpdateTimer();
+      return;
+    }
+    if (answer.response === 2) {
+      await chooseUpdateSchedule(latestVersion);
+      return;
+    }
+    if (answer.response !== 0) return;
+
+    if (!(await confirmSaveBeforeUpdate(latestVersion))) return;
+
+    mainWindow?.webContents.send('app:update-progress', {
+      phase: 'downloading',
+      received: 0,
+      total: plan.package?.bytes,
+    });
+
+    const staged = await stageAppUpdate(plan, staging, (received, total) => {
+      mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received, total });
+      if (total > 0) mainWindow?.setProgressBar(received / total);
+    });
+    mainWindow?.setProgressBar(-1);
+
+    if (!staged.ok) {
+      mainWindow?.webContents.send('app:update-progress', { phase: 'failed', message: staged.reason });
+      await dialog.showMessageBox({
+        type: 'error',
+        message: 'The update could not be downloaded',
+        detail: `${staged.reason ?? 'The download did not finish.'}\n\nGroundplan ${plan.currentVersion} is unchanged and still works.`,
+        buttons: ['OK'],
+      });
+      return;
+    }
+
+    await installStagedAppUpdate(staged, plan.currentVersion);
+  } finally {
+    appUpdatePromptOpen = false;
   }
 }
 
@@ -1624,10 +1898,11 @@ async function runUsbUpdate(): Promise<void> {
     return;
   }
 
+  const latestVersion = plan.latestVersion ?? 'the new version';
   const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
   const answer = await dialog.showMessageBox({
     type: 'info',
-    message: `Install Groundplan ${plan.latestVersion} from this drive?`,
+    message: `Install Groundplan ${latestVersion} from this drive?`,
     detail:
       `${plan.notes ? `${plan.notes}\n\n` : ''}You are on ${plan.currentVersion}. ${size} will be copied off the drive ` +
       `and checked against its signature before anything is replaced.\n\nGroundplan will restart to finish installing.`,
@@ -1636,6 +1911,8 @@ async function runUsbUpdate(): Promise<void> {
     cancelId: 1,
   });
   if (answer.response !== 0) return;
+
+  if (!(await confirmSaveBeforeUpdate(latestVersion))) return;
 
   const staging = join(app.getPath('userData'), 'updates');
   await cleanStaging(staging);
@@ -1655,20 +1932,7 @@ async function runUsbUpdate(): Promise<void> {
     return;
   }
 
-  const bundlePath =
-    process.platform === 'darwin'
-      ? app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]*$/, '')
-      : app.getPath('exe');
-
-  const installed = await installAppUpdate(staged, bundlePath, () => app.quit());
-  if (!installed.ok) {
-    await dialog.showMessageBox({
-      type: 'error',
-      message: 'The update could not be installed',
-      detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${plan.currentVersion} is unchanged.`,
-      buttons: ['OK'],
-    });
-  }
+  await installStagedAppUpdate(staged, plan.currentVersion);
 }
 
 function createWindow(): void {
@@ -1781,6 +2045,21 @@ function createWindow(): void {
   } else {
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
   }
+}
+
+function insertMenuFromTree(nodes: Array<InsertBranch | InsertLeaf>): MenuItemConstructorOptions[] {
+  return nodes.map((node) => {
+    if (isInsertLeaf(node)) {
+      return {
+        label: node.label,
+        click: () => mainWindow?.webContents.send('menu:insert-leaf', node.id),
+      };
+    }
+    return {
+      label: node.label,
+      submenu: insertMenuFromTree(node.children),
+    };
+  });
 }
 
 function buildMenu(): void {
@@ -1903,6 +2182,27 @@ function buildMenu(): void {
           label: 'Select All',
           accelerator: 'CmdOrCtrl+A',
           click: () => mainWindow?.webContents.send('menu:select-all'),
+        },
+      ],
+    },
+    {
+      label: '&Insert',
+      submenu: [
+        {
+          label: 'Browse Insert Catalog…',
+          accelerator: 'CmdOrCtrl+I',
+          click: () => mainWindow?.webContents.send('menu:insert'),
+        },
+        { type: 'separator' },
+        ...insertMenuFromTree(INSERT_TREE),
+        { type: 'separator' },
+        {
+          label: 'Shape Editor Wizard…',
+          click: () => mainWindow?.webContents.send('menu:shape-wizard'),
+        },
+        {
+          label: 'Build a Stage…',
+          click: () => mainWindow?.webContents.send('menu:build-stage'),
         },
       ],
     },
@@ -2208,7 +2508,7 @@ app.whenReady().then(async () => {
     applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
       if (!node) return { ok: false, reason: 'object no longer exists' };
-      return relabelNode(s.loaded.document, node, text);
+      return renameNode(s.loaded.document, node, text);
     }),
   );
 
@@ -2236,43 +2536,38 @@ app.whenReady().then(async () => {
 
   /** Folds the gear lists currently open into the inventory. */
   handle('inventory:absorb-gear', async () => {
-    if (!gear) return { ok: false, reason: 'no gear list is open' };
+    const summary = await absorbOpenGearIntoInventory();
+    if (!summary) return { ok: false, reason: 'no gear list is open' };
+    return { ok: true, ...summary, inventory: inventoryState() };
+  });
 
-    let added = 0;
-    let updated = 0;
-    for (const list of gear.lists) {
-      for (const department of list.departments) {
-        const incoming = [];
-        for (const item of walkItems({ ...list, departments: [department] })) {
-          if (item.note) continue;
-          const size = parseDimensions(item.description);
-          incoming.push({
-            name: item.description,
-            department: department.name,
-            quantity: item.quantity,
-            width: size.source === 'parsed' ? size.width : undefined,
-            height: size.source === 'parsed' ? size.height : undefined,
-            sizeSource: size.source === 'parsed' ? ('parsed' as const) : ('unknown' as const),
-          });
-        }
-        const summary = mergeItems(inventory, incoming, new Date(), {
-          id: list.jobNumber
-            ? `gear-job:${normaliseName(list.jobNumber)}`
-            : list.sourceFingerprint
-              ? `gear-source:${list.sourceFingerprint}`
-              : `gear-list:${list.id ?? list.sourcePath ?? list.title}`,
-          type: 'gear-pdf',
-          jobId: list.id ?? list.jobNumber,
-          label: list.title,
-          sourcePath: list.sourcePath,
-        });
-        added += summary.added;
-        updated += summary.updated;
-      }
-    }
+  /** Writes the company inventory to a folder other machines can import. */
+  handle('inventory:export-pack', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Export inventory pack for other computers',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Export here',
+    });
+    if (result.canceled || !result.filePaths[0]) return { ok: false, cancelled: true };
+    const parent = grantDirectory(result.filePaths[0]);
+    const destination = join(parent, `Groundplan-inventory-${stampForPack()}`);
+    const exported = await exportInventoryPack(inventoryFile, inventory, destination);
+    return exported;
+  });
 
-    await persistInventory();
-    return { ok: true, added, updated, inventory: inventoryState() };
+  /** Merges an inventory pack from USB / shared folder into this install. */
+  handle('inventory:import-pack', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Import inventory pack',
+      properties: ['openDirectory'],
+      buttonLabel: 'Import from here',
+    });
+    if (result.canceled || !result.filePaths[0]) return { ok: false, cancelled: true };
+    const source = grantDirectory(result.filePaths[0]);
+    const imported = await importInventoryPack(source, inventoryFile, inventory);
+    if (!imported.ok) return imported;
+    inventoryNotice = `Imported inventory pack — ${imported.added} new, ${imported.updated} updated.`;
+    return { ...imported, inventory: inventoryState() };
   });
 
   /** Imports straight from a gear-list PDF or a CSV, without opening it first. */
@@ -2618,7 +2913,15 @@ app.whenReady().then(async () => {
     'inventory:add-traced',
     async (
       _event,
-      payload: { name: string; width: number; height: number; paths: Array<{ points: number[]; closed: boolean }> },
+      payload: {
+        name: string;
+        width: number;
+        height: number;
+        paths: Array<{ points: number[]; closed: boolean }>;
+        category?: string;
+        notes?: string;
+        department?: string;
+      },
     ) => {
       const name = payload?.name?.trim();
       if (!name) return { ok: false, reason: 'the item needs a name' };
@@ -2644,12 +2947,23 @@ app.whenReady().then(async () => {
       }
 
       mergeItems(inventory, [
-        { name, width: payload.width, height: payload.height, sizeSource: 'user' },
+        {
+          name,
+          width: payload.width,
+          height: payload.height,
+          sizeSource: 'user',
+          department: payload.department?.trim() || undefined,
+          notes: payload.notes?.trim() || undefined,
+        },
       ]);
       const created = inventory.items.find((i) => normaliseName(i.name) === normaliseName(name));
       if (created) {
-        created.category = classify(name).category;
+        const forced = payload.category?.trim();
+        created.category =
+          forced && forced in CATEGORY_LABELS ? (forced as keyof typeof CATEGORY_LABELS) : classify(name).category;
         created.tracedIcon = { paths: payload.paths, width: payload.width, height: payload.height };
+        if (payload.notes?.trim()) created.notes = payload.notes.trim();
+        if (payload.department?.trim()) created.department = payload.department.trim();
       }
 
       await persistInventory();
@@ -2710,13 +3024,38 @@ app.whenReady().then(async () => {
         }
       }
       const from = source;
-      if (!from) return placeAsBox();
+      if (!from) {
+        // Prefer the item's own traced silhouette over a generic box when the
+        // harvested symbol file is missing.
+        if (item.tracedIcon?.paths?.length) {
+          return applyEdit((s) =>
+            placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+          );
+        }
+        return placeAsBox();
+      }
       // A matched item borrows a shape drawn under a different name — the gear
       // list says "Panasonic PT-RZ21KU", the drawing says "LCD Projector".
       const lookFor = item.symbolName ?? item.name;
+      // A shape library holds definitions — an `RVChair`, an `RVAVItem` — not
+      // placements. Copying one across brings its drawing but not its identity:
+      // it lands as an `RVChair`, so the plan cannot name it, count it, or list
+      // it in the inventory. Rebuilding it as a placement is what makes an item
+      // put down from the palette the same kind of object as everything else on
+      // the drawing.
+      if (isLibrary(from)) {
+        const built = applyEdit((s) => placeFromLibrary(s.loaded.document, from, lookFor, x, y));
+        if (built.ok) return built;
+      }
       const imported = applyEdit((s) => importSymbol(s.loaded.document, s.index, from, lookFor, x, y));
       // Fall through to a drawn box only if the symbol could not be brought in.
       if (imported.ok) return imported;
+    }
+
+    if (item.tracedIcon?.paths?.length) {
+      return applyEdit((s) =>
+        placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+      );
     }
 
     return placeAsBox();
@@ -2741,6 +3080,8 @@ app.whenReady().then(async () => {
     lastRemovedGear = null;
     activeGearRecoveryId = null;
     scheduleGearRecovery();
+    const absorbed = await maybeAutoAbsorbGear();
+    if (absorbed) gear.notice = absorbed;
     return gearState();
   });
 
@@ -2751,6 +3092,18 @@ app.whenReady().then(async () => {
     await enforceFileSize(source, MAX_IMPORT_BYTES);
     const lists = await importGearPdf(new Uint8Array(await readFile(source)), source);
     gear = { lists, dirty: true };
+    lastRemovedGear = null;
+    activeGearRecoveryId = null;
+    scheduleGearRecovery();
+    const absorbed = await maybeAutoAbsorbGear();
+    if (absorbed) gear.notice = absorbed;
+    return gearState();
+  });
+
+  handle('gear:new', async () => {
+    if (gearSaving) throw new Error('wait for the current gear-list save to finish');
+    if (!(await confirmDiscard('gear'))) return null;
+    gear = { lists: [createBlankGearList()], dirty: true };
     lastRemovedGear = null;
     activeGearRecoveryId = null;
     scheduleGearRecovery();
@@ -2901,15 +3254,23 @@ app.whenReady().then(async () => {
 
   handle(
     'gear:add',
-    (_event, listIndex: number, departmentId: string, parentId: string | null, description: string) => {
+    (
+      _event,
+      listIndex: number,
+      departmentId: string,
+      parentId: string | null,
+      description: string,
+      quantity = 1,
+    ) => {
       const list = gear?.lists[listIndex];
       if (!list || !gear) return { ok: false, reason: 'no gear list is open' };
       const department = list.departments.find((d) => d.id === departmentId);
       if (!department) return { ok: false, reason: 'department no longer exists' };
 
+      const qty = Number.isInteger(quantity) && quantity >= 0 ? quantity : 1;
       const item = {
         id: nextId(),
-        quantity: 1,
+        quantity: qty,
         description: description.trim() || 'New item',
         children: [],
       };
@@ -2928,6 +3289,37 @@ app.whenReady().then(async () => {
       return { ok: true, gear: gearState(), createdId: item.id };
     },
   );
+
+  handle('gear:duplicate', (_event, listIndex: number, itemId: string) => {
+    const list = gear?.lists[listIndex];
+    if (!list || !gear) return { ok: false, reason: 'no gear list is open' };
+    const located = locateGearItem(list, itemId);
+    if (!located) return { ok: false, reason: 'item no longer exists' };
+    const copy = cloneGearItem(located.item, `${located.item.description} (copy)`);
+    located.siblings.splice(located.index + 1, 0, copy);
+    list.revision = (Number.isSafeInteger(list.revision) ? list.revision! : 0) + 1;
+    gear.dirty = true;
+    lastRemovedGear = null;
+    scheduleGearRecovery();
+    return { ok: true, gear: gearState(), createdId: copy.id };
+  });
+
+  handle('gear:add-department', (_event, listIndex: number, name: string) => {
+    const list = gear?.lists[listIndex];
+    if (!list || !gear) return { ok: false, reason: 'no gear list is open' };
+    const trimmed = name.trim();
+    if (!trimmed) return { ok: false, reason: 'enter a department name' };
+    if (list.departments.some((d) => normaliseName(d.name) === normaliseName(trimmed))) {
+      return { ok: false, reason: 'that department already exists' };
+    }
+    const department = { id: nextId('dept'), name: trimmed, items: [] };
+    list.departments.push(department);
+    list.revision = (Number.isSafeInteger(list.revision) ? list.revision! : 0) + 1;
+    gear.dirty = true;
+    lastRemovedGear = null;
+    scheduleGearRecovery();
+    return { ok: true, gear: gearState(), createdId: department.id };
+  });
 
   handle('plan:place-gear', (_event, description: string, x: number, y: number) =>
     applyEdit((s) => placeGear(s.loaded.document, s.index, description, x, y)),
@@ -3009,6 +3401,34 @@ app.whenReady().then(async () => {
     applyEdit((s) => createRectangularRoom(s, width, height, unitSystem())),
   );
 
+  handle('plan:room-create-circle', (_event, diameter: number) =>
+    applyEdit((s) => createCircularRoom(s, diameter, unitSystem())),
+  );
+
+  handle('plan:room-create-polygon', (_event, points: Array<{ x: number; y: number }>) =>
+    applyEdit((s) => createPolygonalRoom(s, points, unitSystem())),
+  );
+
+  handle('plan:room-corner-move', (_event, index: number, x: number, y: number) =>
+    applyEdit((s) => moveRoomCorner(s, index, x, y, unitSystem())),
+  );
+
+  handle('plan:room-corner-add', (_event, wallIndex: number) =>
+    applyEdit((s) => addRoomCorner(s, wallIndex, unitSystem())),
+  );
+
+  handle('plan:room-corner-remove', (_event, index: number) =>
+    applyEdit((s) => removeRoomCorner(s, index, unitSystem())),
+  );
+
+  handle('plan:room-corner-round', (_event, index: number, radius: number) =>
+    applyEdit((s) => roundRoomCorner(s, index, radius, unitSystem())),
+  );
+
+  handle('plan:room-corners-round-all', (_event, radius: number) =>
+    applyEdit((s) => roundAllRoomCorners(s, radius, unitSystem())),
+  );
+
   handle('plan:room-reshape', (
     _event,
     op: 'union' | 'difference',
@@ -3018,11 +3438,35 @@ app.whenReady().then(async () => {
     height: number,
   ) => applyEdit((s) => reshapeRoom(s, op, x, y, width, height, unitSystem())));
 
-  handle('plan:room-curve', (_event, wallIndex: number, radius: number) =>
-    applyEdit((s) => curveRoomWall(s, wallIndex, radius, unitSystem())),
+  handle('plan:room-curve', (_event, wallIndex: number, radius: number, major = false) =>
+    applyEdit((s) => curveRoomWall(s, wallIndex, radius, unitSystem(), major === true)),
+  );
+
+  handle('plan:room-wall-length', (_event, wallIndex: number, length: number) =>
+    applyEdit((s) => lengthenRoomWall(s, wallIndex, length, unitSystem())),
   );
 
   handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
+
+  handle('plan:room-meta', async (_event, patch: { name?: string; ceilingHeight?: number }) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const result = updateRoomMeta(session, patch ?? {}, unitSystem());
+    if (!result.ok) return result;
+    // Companion-only: persist immediately so name/ceiling survive quit without a
+    // plan-body edit marking the session dirty.
+    try {
+      await savePlanModel(session.path, session.body());
+      grantPath(companionPathFor(session.path));
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'the room details could not be saved',
+      };
+    }
+    return { ok: true, note: 'Room details saved' };
+  });
+
+  handle('plan:av-summary', () => (session ? avSummary(session, unitSystem()) : null), null);
 
   /** Solves without drawing, so the panel can show the count as it is tuned. */
   handle(
@@ -3095,19 +3539,32 @@ app.whenReady().then(async () => {
    * companion, recent files, the round-trip gate — working exactly as it does
    * for a plan that was opened.
    */
-  handle('file:new', async (_event, options: { name?: string; width?: number; depth?: number }) => {
+  handle(
+    'file:new',
+    async (
+      _event,
+      options: {
+        name?: string;
+        width?: number;
+        depth?: number;
+        identity?: { date?: string; venue?: string; event?: string; contact?: string };
+      },
+    ) => {
     const width = Number(options?.width) || 0;
     const depth = Number(options?.depth) || 0;
+    const roomName =
+      typeof options?.name === 'string' && options.name.trim() ? options.name.trim() : undefined;
 
     const built = createBlankPlan({
       room: width > 0 && depth > 0 ? { width, depth } : undefined,
-      roomName: typeof options?.name === 'string' && options.name.trim() ? options.name.trim() : undefined,
+      roomName,
+      identity: options?.identity,
     });
     if (!built.ok || !built.file) return { ok: false, reason: built.reason };
 
-    const suggested = `${(options?.name ?? 'Untitled plan').trim() || 'Untitled plan'}.rv4`;
+    const suggested = `${roomName || 'Untitled plan'}.rv4`;
     const target = await dialog.showSaveDialog(mainWindow!, {
-      title: 'New plan',
+      title: 'Save new plan',
       defaultPath: suggested,
       filters: [{ name: 'Room Viewer plan', extensions: ['rv4'] }],
     });
@@ -3311,20 +3768,95 @@ app.whenReady().then(async () => {
     if (!node || !session) return null;
     const name = node.labels.find((s) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(s));
     const measured = measureNode(node);
-    return {
+    const info: SelectionInfo = {
       nodeId,
       cls: node.cls,
       name,
       text: node.cls === 'RVLabel' ? name : undefined,
       color: session.scene.primitives.find((primitive) => primitive.selectId === nodeId)?.color ?? node.color,
       canDelete: !session.index.shared.has(node),
-      canRelabel: node.cls === 'RVLabel' && node.fields.textAt != null,
+      canRelabel:
+        (node.cls === 'RVLabel' && node.fields.textAt != null) || node.fields.nameAt != null,
       widthUnits: measured.width,
       heightUnits: measured.height,
       x: (node.bounds.left + node.bounds.right) / 2,
       y: (node.bounds.top + node.bounds.bottom) / 2,
     };
+    if (node.cls === 'RVDimensionLine' && node.points.length >= 2) {
+      const a = node.points[0]!;
+      const b = node.points[1]!;
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      info.dimension = {
+        length,
+        angleDegrees: (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI,
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+      };
+    }
+    return info;
   });
+
+  handle(
+    'edit:dimension-props',
+    (_event, nodeId: number, length: number, angleDegrees: number) =>
+      applyEdit((s) => {
+        const node = s.index.byId.get(nodeId);
+        if (!node) return { ok: false, reason: 'that object is gone' };
+        const oldA = node.points[0];
+        const oldB = node.points[1];
+        if (!oldA || !oldB) return { ok: false, reason: 'the dimension line has no writable geometry' };
+        const oldMidX = (oldA.x + oldB.x) / 2;
+        const oldMidY = (oldA.y + oldB.y) / 2;
+
+        const geometry = setDimensionLengthAngle(s.loaded.document, node, length, angleDegrees);
+        if (!geometry.ok) return geometry;
+
+        const newA = node.points[0]!;
+        const newB = node.points[1]!;
+        const newMidX = (newA.x + newB.x) / 2;
+        const newMidY = (newA.y + newB.y) / 2;
+        const text = formatDistance(length, unitSystem());
+
+        // Prefer the label that was beside the old midpoint — large length
+        // changes move the new midpoint too far for a naive search.
+        let best: (typeof node) | null = null;
+        let bestDist = Infinity;
+        for (const candidate of walk(s.loaded.document)) {
+          if (candidate.cls !== 'RVLabel') continue;
+          const cx = (candidate.bounds.left + candidate.bounds.right) / 2;
+          const cy = (candidate.bounds.top + candidate.bounds.bottom) / 2;
+          const dist = Math.hypot(cx - oldMidX, cy - oldMidY);
+          if (dist < bestDist) {
+            best = candidate;
+            bestDist = dist;
+          }
+        }
+        if (best && bestDist < 720) {
+          renameNode(s.loaded.document, best, text);
+          const cx = (best.bounds.left + best.bounds.right) / 2;
+          const cy = (best.bounds.top + best.bounds.bottom) / 2;
+          moveNode(s.loaded.document, best, newMidX - cx, newMidY - cy);
+        }
+        return { ok: true };
+      }),
+  );
+
+  handle('edit:scale-to-dimension', (_event, nodeId: number, knownLength: number) =>
+    applyEdit((s) => {
+      const node = s.index.byId.get(nodeId);
+      if (!node || node.cls !== 'RVDimensionLine' || node.points.length < 2) {
+        return { ok: false, reason: 'select a dimension line first' };
+      }
+      const a = node.points[0]!;
+      const b = node.points[1]!;
+      const measured = Math.hypot(b.x - a.x, b.y - a.y);
+      if (!(measured > 0)) return { ok: false, reason: 'that dimension has no length' };
+      if (!(knownLength > 0)) return { ok: false, reason: 'enter the known real length' };
+      return scalePlanUniform(s.loaded.document, knownLength / measured);
+    }),
+  );
 
   // --- saving -------------------------------------------------------------
 
@@ -3560,11 +4092,30 @@ app.whenReady().then(async () => {
   if (loadedInventory.migration?.changed) {
     inventoryMessages.push('Updated the Equipment Library to the current safe format.');
   }
+
+  // First launch (or an empty unused library from an older build): fill the
+  // private inventory from the bundled starter pack so the palette already has
+  // placeable shapes. Libraries with any import history are left alone.
+  const starter = await seedStarterInventory({
+    inventoryFile,
+    inventory,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  });
+  if (starter.seeded) {
+    inventoryMessages.push(
+      `Loaded ${starter.items} starter equipment items with shapes ready to place.`,
+    );
+  } else if (!starter.ok && inventory.items.length === 0) {
+    inventoryMessages.push(starter.reason ?? 'The starter equipment pack could not be loaded.');
+  }
+
   inventoryNotice = inventoryMessages.length ? inventoryMessages.join(' ') : undefined;
   // Inventories saved before categories existed get them filled in on load.
   const filledCategories = ensureCategories(inventory);
   if (
     filledCategories > 0 ||
+    starter.seeded ||
     (loadedInventory.migration?.changed && !loadedInventory.warnings.some((message) => message.includes('could not be read')))
   ) {
     await persistInventory();
@@ -3583,10 +4134,13 @@ app.whenReady().then(async () => {
 
   // Quiet check a little after launch — late enough not to compete with opening
   // a plan, and it says nothing unless there is an update. Off if asked.
+  // A previously scheduled reminder is also re-armed here so it still fires if
+  // the app was quit and reopened before the chosen time.
   setTimeout(() => {
     void (async () => {
       settings ??= await loadSettings(app.getPath('userData'));
       if (settings.app.checkOnLaunch) await runAppUpdate(false);
+      else await armScheduledUpdateTimer();
       await runCatalogUpdate(false);
     })();
   }, 8000);

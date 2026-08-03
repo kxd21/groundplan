@@ -12,16 +12,9 @@
 
 import { addRoot, appendChild, type EditResult } from './edit.js';
 import type { DimensionDrawing } from './dimension.js';
-import { walk, type Point, type RVDocument, type RVNode } from './rv.js';
+import { planBody } from './plan-skeleton.js';
+import { type Point, type RVDocument, type RVNode } from './rv.js';
 import { createLabel, createSegment } from './synthesize.js';
-
-function host(doc: RVDocument): RVNode | null {
-  for (const node of walk(doc)) {
-    if (node.fields.childCountAt == null) continue;
-    if (node.cls === 'RVRoomDef' || node.cls === 'RVRoom') return node;
-  }
-  return null;
-}
 
 /** Splits a polyline into the class that can carry it. */
 function classOf(points: Point[]): 'RVDimensionLine' | 'RVSegmentPoly' {
@@ -60,7 +53,7 @@ export function renderDimension(doc: RVDocument, drawing: DimensionDrawing): Dim
   }
   built.push(label.node);
 
-  const container = host(doc);
+  const container = planBody(doc);
   const created: number[] = [];
   for (const node of built) {
     const added = container ? appendChild(doc, container, node) : addRoot(doc, node);

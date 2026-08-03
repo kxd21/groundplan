@@ -169,6 +169,11 @@ export interface IncomingItem {
   sizeSource?: SizeSource;
   symbolPath?: string;
   symbolName?: string;
+  mappedBy?: 'auto' | 'user';
+  mapReason?: string;
+  notes?: string;
+  tracedIcon?: InventoryItem['tracedIcon'];
+  symbolAsset?: InventorySymbolAsset;
 }
 
 function shortHash(value: string): string {
@@ -284,6 +289,11 @@ export function mergeItems(
         category: classify(name).category,
         symbolPath: item.symbolPath,
         symbolName: item.symbolName,
+        symbolAsset: item.symbolAsset,
+        mappedBy: item.mappedBy,
+        mapReason: item.mapReason,
+        notes: item.notes,
+        tracedIcon: item.tracedIcon,
         timesSeen: 0,
         legacyTimesSeen: provenanceId ? 0 : 1,
         provenanceIds: provenanceId ? [provenanceId] : [],
@@ -314,8 +324,25 @@ export function mergeItems(
       existing.symbolPath = item.symbolPath;
       changed = true;
     }
+    if (item.symbolAsset && item.symbolAsset.hash !== existing.symbolAsset?.hash) {
+      existing.symbolAsset = item.symbolAsset;
+      changed = true;
+    }
     if (item.symbolName && item.symbolName !== existing.symbolName) {
       existing.symbolName = item.symbolName;
+      changed = true;
+    }
+    if (item.tracedIcon && !existing.tracedIcon) {
+      existing.tracedIcon = item.tracedIcon;
+      changed = true;
+    }
+    if (item.mappedBy && !existing.mappedBy) {
+      existing.mappedBy = item.mappedBy;
+      existing.mapReason = item.mapReason;
+      changed = true;
+    }
+    if (item.notes && !existing.notes) {
+      existing.notes = item.notes;
       changed = true;
     }
     if (existing.sizeSource !== 'user' && item.width && item.height) {

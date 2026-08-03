@@ -207,7 +207,7 @@
       }
       @media (min-width: 720px) {
         .platforms {
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1fr 1fr 1fr;
         }
       }
       .platform {
@@ -259,7 +259,7 @@
       <section class="hero" aria-label="Download Groundplan">
         <h1 class="brand">Groundplan</h1>
         <p class="lede">
-          Open and edit your existing event floor plans on Mac and Windows — no Windows VM, no
+          Open and edit your existing event floor plans on Mac, Windows, and Linux — no Windows VM, no
           legacy software.
         </p>
 
@@ -278,7 +278,7 @@
           <p class="meta">
             JavaScript is off — open
             <a href="https://github.com/kxd21/groundplan/releases/latest">GitHub Releases</a>
-            and pick the installer for your Mac or Windows PC.
+            and pick the installer for your Mac, Windows PC, or Linux machine.
           </p>
         </noscript>
         <p class="status" id="status" role="status"></p>
@@ -316,6 +316,22 @@
             </div>
             <div class="links" id="win-links"></div>
           </div>
+
+          <div class="platform" id="linux-panel">
+            <h3>Linux</h3>
+            <ol>
+              <li>Download the <code>.AppImage</code>.</li>
+              <li>
+                Make it executable (<code>chmod +x …</code>) and run it from a terminal or file
+                manager.
+              </li>
+            </ol>
+            <div class="callout">
+              <strong>FUSE.</strong> Some distros need FUSE for AppImages. If it will not start,
+              check your distro’s AppImage docs or extract with <code>--appimage-extract</code>.
+            </div>
+            <div class="links" id="linux-links"></div>
+          </div>
         </div>
       </section>
 
@@ -349,6 +365,7 @@
         const status = document.getElementById('status');
         const macLinks = document.getElementById('mac-links');
         const winLinks = document.getElementById('win-links');
+        const linuxLinks = document.getElementById('linux-links');
         document.getElementById('all-releases').href = RELEASES;
 
         function detect() {
@@ -356,11 +373,12 @@
           const platform = navigator.platform || '';
           const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua);
           const isWin = /Win/i.test(platform) || /Windows/i.test(ua);
+          const isLinux = !isMac && !isWin && (/Linux/i.test(platform) || /Linux/i.test(ua));
           // 'arm' | 'x64' | 'unknown'. Deliberately not read from the UA string on
           // Mac: every Mac browser, Apple silicon included, reports "Intel Mac OS
           // X", so trusting it hands M-series users the Intel build.
           const arch = /\b(arm64|aarch64)\b/i.test(ua) ? 'arm' : 'unknown';
-          return { isMac, isWin, arch, platform, ua };
+          return { isMac, isWin, isLinux, arch, platform, ua };
         }
 
         /** Apple silicon reports "Apple M…"; Intel Macs report "Intel Iris…". */
@@ -442,12 +460,21 @@
             const res = await fetch(API, {
               headers: { Accept: 'application/vnd.github+json' },
             });
-            if (!res.ok) throw new Error('release lookup failed (' + res.status + ')');
+            if (!res.ok) {
+              const rateLimited = res.status === 403 || res.status === 429;
+              throw new Error(
+                rateLimited
+                  ? 'GitHub rate-limited this page (' + res.status + ')'
+                  : 'release lookup failed (' + res.status + ')',
+              );
+            }
             release = await res.json();
           } catch (err) {
             status.className = 'status error';
-            status.textContent =
-              'Could not reach GitHub for the latest build. Use All downloads, or try again shortly.';
+            const msg = err && err.message ? String(err.message) : '';
+            status.textContent = /rate-limited|403|429/i.test(msg)
+              ? 'GitHub briefly limited requests from this network. Use All downloads, or refresh in a minute.'
+              : 'Could not reach GitHub for the latest build. Use All downloads, or try again shortly.';
             setPrimary(null, null, 'Latest release page on GitHub.');
             return;
           }
@@ -468,11 +495,16 @@
             (n) => n.endsWith('.exe') && !n.includes('portable'),
           ]);
           const winPortable = pickAsset(assets, [(n) => n.includes('portable') && n.endsWith('.exe')]);
+          const linuxApp = pickAsset(assets, [
+            (n) => n.includes('linux') && n.endsWith('.AppImage'),
+            (n) => n.endsWith('.AppImage'),
+          ]);
 
           link(macLinks, macArm, 'Apple silicon · DMG');
           link(macLinks, macIntel, 'Intel · DMG');
           link(winLinks, winSetup, 'Windows Setup');
           link(winLinks, winPortable, 'Windows Portable (no admin)');
+          link(linuxLinks, linuxApp, 'Linux · AppImage (x64)');
 
           const verLabel = version ? 'Groundplan ' + version : 'Groundplan';
 
@@ -504,13 +536,23 @@
                 ((winSetup || winPortable) && (winSetup || winPortable).name) +
                 '. Need no admin? Use the portable build below.',
             );
+          } else if (info.isLinux) {
+            setPrimary(
+              linuxApp,
+              'Download for Linux',
+              '<strong>' +
+                verLabel +
+                '</strong> · ' +
+                (linuxApp ? linuxApp.name : 'AppImage') +
+                '. Make it executable (<code>chmod +x</code>), then run it.',
+            );
           } else {
             setPrimary(
               null,
               null,
               '<strong>' +
                 verLabel +
-                '</strong> is available for Mac and Windows. Pick the installer for your computer below or on the release page.',
+                '</strong> is available for Mac, Windows, and Linux. Pick the installer for your computer below or on the release page.',
             );
           }
 

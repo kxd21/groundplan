@@ -17,6 +17,7 @@
  */
 
 import { walk, UNITS_PER_FOOT, type RVDocument, type RVNode } from './rv.js';
+import { TRAILER_EVENT, TRAILER_VENUE } from './trailer.js';
 import type { Extent } from './index.js';
 
 export type PrimitiveType = 'line' | 'polyline' | 'polygon' | 'bezier' | 'text' | 'dimension';
@@ -216,7 +217,16 @@ export function buildScene(doc: RVDocument): Scene {
     }
   }
 
-  const title = doc.trailerStrings[0] ?? doc.roots[0]?.labels.find((s) => s.length > 6);
+  // The plan's own name, from the named slots of the document trailer. This
+  // used to take `trailerStrings[0]`, which was never anything: the last wall
+  // segment's span swallowed the trailer, so the array was empty for every file
+  // in the corpus and the title always came from the fallback. Now that the
+  // trailer is decoded, slot 0 is the *date* — "March 2023" is not a title — so
+  // the event is asked for first, then the venue.
+  const title =
+    doc.trailerStrings[TRAILER_EVENT] ||
+    doc.trailerStrings[TRAILER_VENUE] ||
+    doc.roots[0]?.labels.find((s) => s.length > 6);
 
   return {
     primitives,

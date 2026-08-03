@@ -62,6 +62,7 @@ const api = {
     name?: string;
     width?: number;
     depth?: number;
+    identity?: { date?: string; venue?: string; event?: string; contact?: string };
   }): Promise<{ ok: boolean; cancelled?: boolean; reason?: string; doc?: OpenResult }> =>
     ipcRenderer.invoke('file:new', options),
   roomPresets: (): Promise<Array<{ label: string; width: number; depth: number }>> =>
@@ -220,6 +221,13 @@ const api = {
       startNodeId,
       endNodeId,
     ),
+  setDimensionProps: (
+    nodeId: number,
+    length: number,
+    angleDegrees: number,
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:dimension-props', nodeId, length, angleDegrees),
+  scaleToDimension: (nodeId: number, knownLength: number): Promise<EditReply> =>
+    ipcRenderer.invoke('edit:scale-to-dimension', nodeId, knownLength),
   addSeating: (request: unknown): Promise<EditReply & { placed?: number }> =>
     ipcRenderer.invoke('plan:add-seating', request),
   previewGear: (description: string): Promise<{ width: number; height: number; source: string }> =>
@@ -235,6 +243,20 @@ const api = {
   planModel: (): Promise<PlanModelView | null> => ipcRenderer.invoke('plan:model'),
   roomCreate: (width: number, height: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-create', width, height),
+  roomCreateCircle: (diameter: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-create-circle', diameter),
+  roomCreatePolygon: (points: Array<{ x: number; y: number }>): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-create-polygon', points),
+  roomCornerMove: (index: number, x: number, y: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-move', index, x, y),
+  roomCornerAdd: (wallIndex: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-add', wallIndex),
+  roomCornerRemove: (index: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-remove', index),
+  roomCornerRound: (index: number, radius: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-round', index, radius),
+  roomCornersRoundAll: (radius: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corners-round-all', radius),
   roomReshape: (
     op: 'union' | 'difference',
     x: number,
@@ -243,9 +265,26 @@ const api = {
     height: number,
   ): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-reshape', op, x, y, width, height),
-  roomCurve: (wallIndex: number, radius: number): Promise<EditReply & { note?: string }> =>
-    ipcRenderer.invoke('plan:room-curve', wallIndex, radius),
+  roomCurve: (wallIndex: number, radius: number, major?: boolean): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-curve', wallIndex, radius, major === true),
+  roomWallLength: (wallIndex: number, length: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-wall-length', wallIndex, length),
   roomDimension: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:room-dimension'),
+  roomMeta: (patch: {
+    name?: string;
+    ceilingHeight?: number;
+  }): Promise<{ ok: boolean; reason?: string; note?: string }> => ipcRenderer.invoke('plan:room-meta', patch),
+  avSummary: (): Promise<{
+    screens: number;
+    seatsGraded: number;
+    clear: number;
+    blocked: number;
+    tooFar: number;
+    tooClose: number;
+    offAxis: number;
+    notes: string[];
+    recommendWidthText: string;
+  } | null> => ipcRenderer.invoke('plan:av-summary'),
 
   seatingPreview: (request: SeatingRequestView): Promise<SeatingPreview | null> =>
     ipcRenderer.invoke('plan:seating-preview', request),
@@ -310,6 +349,24 @@ const api = {
     ipcRenderer.invoke('inventory:import'),
   inventoryAbsorbGear: (): Promise<{ ok: boolean; reason?: string; added?: number; updated?: number; inventory?: InventoryState }> =>
     ipcRenderer.invoke('inventory:absorb-gear'),
+  inventoryExportPack: (): Promise<{
+    ok: boolean;
+    reason?: string;
+    cancelled?: boolean;
+    path?: string;
+    items?: number;
+    assets?: number;
+  }> => ipcRenderer.invoke('inventory:export-pack'),
+  inventoryImportPack: (): Promise<{
+    ok: boolean;
+    reason?: string;
+    cancelled?: boolean;
+    added?: number;
+    updated?: number;
+    assets?: number;
+    items?: number;
+    inventory?: InventoryState;
+  }> => ipcRenderer.invoke('inventory:import-pack'),
   inventoryAdd: (name: string, department?: string): Promise<{ ok: boolean; reason?: string; inventory?: InventoryState }> =>
     ipcRenderer.invoke('inventory:add', name, department),
   inventoryUpdate: (
@@ -331,6 +388,9 @@ const api = {
     width: number;
     height: number;
     paths: Array<{ points: number[]; closed: boolean }>;
+    category?: string;
+    notes?: string;
+    department?: string;
   }): Promise<{ ok: boolean; reason?: string; id?: string; inventory?: InventoryState }> =>
     ipcRenderer.invoke('inventory:add-traced', payload),
   inventoryRemove: (id: string): Promise<{
@@ -390,6 +450,7 @@ const api = {
 
   gearImport: (): Promise<GearState | null> => ipcRenderer.invoke('gear:import'),
   gearOpen: (): Promise<GearState | null> => ipcRenderer.invoke('gear:open'),
+  gearNew: (): Promise<GearState | null> => ipcRenderer.invoke('gear:new'),
   gearImportPath: (path: string): Promise<GearState | null> => ipcRenderer.invoke('gear:import-path', path),
   gearOpenPath: (path: string): Promise<GearState | null> => ipcRenderer.invoke('gear:open-path', path),
   gearSave: (saveAs: boolean): Promise<{ ok: boolean; reason?: string; cancelled?: boolean; path?: string; gear?: GearState }> =>
@@ -418,8 +479,19 @@ const api = {
     departmentId: string,
     parentId: string | null,
     description: string,
+    quantity?: number,
   ): Promise<{ ok: boolean; reason?: string; gear?: GearState; createdId?: string }> =>
-    ipcRenderer.invoke('gear:add', listIndex, departmentId, parentId, description),
+    ipcRenderer.invoke('gear:add', listIndex, departmentId, parentId, description, quantity ?? 1),
+  gearDuplicate: (
+    listIndex: number,
+    itemId: string,
+  ): Promise<{ ok: boolean; reason?: string; gear?: GearState; createdId?: string }> =>
+    ipcRenderer.invoke('gear:duplicate', listIndex, itemId),
+  gearAddDepartment: (
+    listIndex: number,
+    name: string,
+  ): Promise<{ ok: boolean; reason?: string; gear?: GearState; createdId?: string }> =>
+    ipcRenderer.invoke('gear:add-department', listIndex, name),
 
   onMenu: (handler: (command: string, arg?: string) => void): (() => void) => {
     const channels = [
@@ -437,6 +509,10 @@ const api = {
       'menu:print',
       'menu:undo',
       'menu:redo',
+      'menu:insert',
+      'menu:insert-leaf',
+      'menu:shape-wizard',
+      'menu:build-stage',
     ];
     const listeners = channels.map((channel) => {
       const listener = (_event: IpcRendererEvent, arg?: string) => handler(channel, arg);

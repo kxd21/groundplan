@@ -165,6 +165,28 @@ export function toCsv(list: GearList): string {
  * imports. The old implementation used a module counter, so opening a saved
  * list and adding an item could reuse an existing ID.
  */
+/** An empty working list with one department ready for typing. */
+export function createBlankGearList(title = 'New gear list'): GearList {
+  return {
+    id: nextId('list'),
+    revision: 1,
+    title,
+    departments: [{ id: nextId('dept'), name: 'General', items: [] }],
+  };
+}
+
+/** Deep-clones one line (and its package children) under a fresh id. */
+export function cloneGearItem(item: GearItem, description?: string): GearItem {
+  return {
+    id: nextId(),
+    quantity: item.quantity,
+    description: (description ?? item.description).trim() || item.description,
+    note: item.note,
+    checked: false,
+    children: item.children.map((child) => cloneGearItem(child)),
+  };
+}
+
 export function nextId(prefix = 'g'): string {
   return `${prefix}_${globalThis.crypto.randomUUID()}`;
 }
