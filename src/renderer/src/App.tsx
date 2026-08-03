@@ -41,6 +41,7 @@ import {
   IconSendBack,
 } from './icons.js';
 import type { Layer, Scene } from '../../format/scene.js';
+import { selectableIds } from './selection.js';
 import RoomPanel from './RoomPanel.js';
 import NewPlanDialog from './NewPlanDialog.js';
 import type { GearList, GearTotals } from '../../gear/model.js';
@@ -902,7 +903,7 @@ export function App() {
       if (reply.ok && reply.doc) {
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          setSelectedIds(selectableIds(reply.created, (reply.doc as Doc).scene));
           setSelection(null);
         }
         const placedCount = (reply as { placed?: number }).placed;
@@ -932,7 +933,7 @@ export function App() {
         setDoc(reply.doc);
         setError(null);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          setSelectedIds(selectableIds(reply.created, reply.doc.scene));
           setSelection(null);
         }
       } else if (reply.reason) {
@@ -1053,7 +1054,7 @@ export function App() {
       if (reply.ok && reply.doc) {
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          setSelectedIds(selectableIds(reply.created, (reply.doc as Doc).scene));
           setSelection(null);
         }
         showStatus(
