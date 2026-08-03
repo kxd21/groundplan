@@ -1,12 +1,38 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import { formatLength, parseLength } from '../../format/units.js';
 import { PlanCanvas } from './PlanCanvas.js';
 import { GearView, GearSummary } from './GearView.js';
+import { GearPalette } from './GearPalette.js';
 import { InventoryView, type InventoryState } from './InventoryView.js';
 import { InventoryPalette } from './InventoryPalette.js';
 import { SettingsDialog } from './SettingsDialog.js';
 import { toSvg } from './svg.js';
+import {
+  DIMENSION,
+  HAND,
+  MEASURE,
+  SELECT,
+  banner as toolBanner,
+  drawChoice,
+  escapeAlsoClearsSelection,
+  isPressed,
+  labelChoice,
+  opensProperties,
+  pointerSpec,
+  type PendingEffect,
+} from './tool/machine.js';
+import { runEffect } from './tool/effects.js';
+import { useTool } from './tool/use-tool.js';
 import {
   IconDuplicate,
   IconEdit,
@@ -21,6 +47,7 @@ import {
   IconRuler,
   IconMagnet,
   IconGrid,
+  IconLayers,
   IconPrint,
   IconSave,
   IconSearch,
@@ -54,6 +81,12 @@ import {
 } from './icons.js';
 import type { Layer, Scene } from '../../format/scene.js';
 import RoomPanel from './RoomPanel.js';
+import { countFurniture } from './furniture-counts.js';
+import ObjectPalette from './ObjectPalette.js';
+import InsertPicker from './InsertPicker.js';
+import ShapeEditorWizard from './ShapeEditorWizard.js';
+import BuildStageDialog from './BuildStageDialog.js';
+import { flattenInsertLeaves, matchInsertItem, type InsertGroupId } from '../../inventory/insert-catalog.js';
 import NewPlanDialog from './NewPlanDialog.js';
 import type { GearList, GearTotals } from '../../gear/model.js';
 import type { GroundplanApi } from '../../preload/index.js';
@@ -111,6 +144,14 @@ interface Selection {
   heightUnits: number;
   x: number;
   y: number;
+  dimension?: {
+    length: number;
+    angleDegrees: number;
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
 }
 
 interface FileEntry {
@@ -126,6 +167,7 @@ type RecoveryEntry = Awaited<ReturnType<GroundplanApi['recoveryList']>>[number];
 type PlanFolderState = Awaited<ReturnType<GroundplanApi['planFoldersList']>>;
 type Workspace = 'plan' | 'gear' | 'inventory';
 type PlanRailSource = 'recent' | 'collections' | 'folder' | 'equipment';
+type EquipmentSource = 'inventory' | 'gear';
 type InspectorTab = 'properties' | 'room' | 'create' | 'layers';
 
 /** One foot in logical units — the arrow-key nudge and duplicate offset. */
@@ -220,37 +262,48 @@ export function App() {
   const [bulkDeleteWarning, setBulkDeleteWarning] = useState(25);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [toolbarTooltip, setToolbarTooltip] = useState<{
+    text: string;
+    left: number;
+    top: number;
+  } | null>(null);
+  const [insertOpen, setInsertOpen] = useState(false);
+  const [insertGroup, setInsertGroup] = useState<InsertGroupId | null>(null);
+  const [shapeWizardOpen, setShapeWizardOpen] = useState(false);
+  const [buildStageOpen, setBuildStageOpen] = useState(false);
+  const [dimLengthDraft, setDimLengthDraft] = useState('');
+  const [dimAngleDraft, setDimAngleDraft] = useState('');
+  const [dimScaleDraft, setDimScaleDraft] = useState('');
+  const [armedInventoryId, setArmedInventoryId] = useState<string | null>(null);
   const [rotationDraft, setRotationDraft] = useState('15');
   const [colorDraft, setColorDraft] = useState('#20252b');
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(0.05);
   const [view, setView] = useState<Workspace>('plan');
   const [planRailSource, setPlanRailSource] = useState<PlanRailSource>('recent');
+  const [equipmentSource, setEquipmentSource] = useState<EquipmentSource>('inventory');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('properties');
   const [inventory, setInventory] = useState<InventoryState | null>(null);
   const [libQuery, setLibQuery] = useState('');
   const [invQuery, setInvQuery] = useState('');
-  /** Two clicked points make a measurement; the first is held here. */
-  const [measureFrom, setMeasureFrom] = useState<{ x: number; y: number; nodeId?: number } | null>(null);
-  const [measurement, setMeasurement] = useState<{
-    from: { x: number; y: number; nodeId?: number };
-    to: { x: number; y: number; nodeId?: number };
-  } | null>(null);
-  const [measuring, setMeasuring] = useState(false);
-  const [dimensioning, setDimensioning] = useState(false);
   /**
-   * The draw tool in hand, or null for the pointer.
+   * What the pointer will do with its next click. One value, and only one.
    *
-   * Picking the two corners is the same interaction as a dimension, so it runs
-   * through the same handler; only what gets created at the end differs.
+   * This is the whole of the tool state: gear, inventory, labels and seating
+   * waiting to be stamped; measure, dimension and the draw tools waiting for
+   * their two clicks; the held start point; the Hand tool; the temporary
+   * readout. Eleven `useState` cells plus two refs used to live here, and
+   * `PlanCanvas` kept two more of its own. See `tool/machine.ts` for why that
+   * shape kept producing bugs and what replaced it.
    */
-  const [drawTool, setDrawTool] = useState<'line' | 'rect' | 'ellipse' | null>(null);
-  const [drawFrom, setDrawFrom] = useState<{ x: number; y: number } | null>(null);
-  const [dimensionFrom, setDimensionFrom] = useState<{
-    x: number;
-    y: number;
-    nodeId?: number;
-  } | null>(null);
+  const { state: tool, ref: toolRef, dispatch: dispatchTool } = useTool({
+    open: !!doc,
+    editable: !!doc?.editable,
+  });
+  const pointerMode = useMemo(() => pointerSpec(tool), [tool]);
+  const toolBannerState = useMemo(() => toolBanner(tool), [tool]);
+  const armedGearDescription =
+    tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'gear' ? tool.tool.stamp.description : null;
   const [annotationDraft, setAnnotationDraft] = useState('');
   const annotationInputRef = useRef<HTMLTextAreaElement | null>(null);
   /** Snap step in logical units; 0 is off. Object alignment always applies. */
@@ -290,10 +343,6 @@ export function App() {
     setInventoryUndoNotice(null);
     setInventoryVersion((v) => v + 1);
   }, []);
-  /** A inventory item armed for placement, kept apart from gear-line arming. */
-  const [armedItem, setArmedItem] = useState<{ id: string; name: string } | null>(null);
-  /** A seating layout waiting to be dropped. */
-  const [armedSeating, setArmedSeating] = useState<Record<string, unknown> | null>(null);
   const [seatKind, setSeatKind] = useState<'round' | 'theatre' | 'schoolroom'>('round');
   const [seatTable, setSeatTable] = useState('');
   const [seatChair, setSeatChair] = useState('');
@@ -309,9 +358,6 @@ export function App() {
   } | null>(null);
   const [gearIndex, setGearIndex] = useState(0);
   const [gearQuery, setGearQuery] = useState('');
-  /** A gear line waiting to be dropped onto the plan. */
-  const [armed, setArmed] = useState<string | null>(null);
-  const [armedAnnotation, setArmedAnnotation] = useState<{ kind: 'label'; text: string } | null>(null);
   const statusTimer = useRef<number | null>(null);
   const errorTimer = useRef<number | null>(null);
 
@@ -322,6 +368,52 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('groundplan:inspector-open', String(inspectorOpen));
   }, [inspectorOpen]);
+
+  const showToolbarTooltipFor = useCallback((target: EventTarget | null) => {
+    const control = target instanceof Element ? target.closest<HTMLElement>('[data-tooltip]') : null;
+    const text = control?.dataset.tooltip?.trim();
+    if (!control || !text) {
+      setToolbarTooltip(null);
+      return;
+    }
+    const bounds = control.getBoundingClientRect();
+    const toolbarBottom = control.closest('.toolbar')?.getBoundingClientRect().bottom ?? bounds.bottom;
+    setToolbarTooltip({
+      text,
+      left: Math.max(130, Math.min(window.innerWidth - 130, bounds.left + bounds.width / 2)),
+      top: Math.min(window.innerHeight - 46, toolbarBottom + 8),
+    });
+  }, []);
+
+  const handleToolbarPointerOver = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => showToolbarTooltipFor(event.target),
+    [showToolbarTooltipFor],
+  );
+
+  const handleToolbarPointerOut = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const from = event.target instanceof Element ? event.target.closest('[data-tooltip]') : null;
+      const to = event.relatedTarget instanceof Element ? event.relatedTarget.closest('[data-tooltip]') : null;
+      if (from === to) return;
+      if (to) showToolbarTooltipFor(to);
+      else setToolbarTooltip(null);
+    },
+    [showToolbarTooltipFor],
+  );
+
+  const handleToolbarFocus = useCallback(
+    (event: ReactFocusEvent<HTMLElement>) => showToolbarTooltipFor(event.target),
+    [showToolbarTooltipFor],
+  );
+
+  const handleToolbarBlur = useCallback(
+    (event: ReactFocusEvent<HTMLElement>) => {
+      const next = event.relatedTarget instanceof Element ? event.relatedTarget.closest('[data-tooltip]') : null;
+      if (next) showToolbarTooltipFor(next);
+      else setToolbarTooltip(null);
+    },
+    [showToolbarTooltipFor],
+  );
 
   useEffect(() => {
     const active =
@@ -372,18 +464,14 @@ export function App() {
     setInspectorTab('properties');
     setSelectedIds([]);
     setSelection(null);
-    setArmed(null);
-    setArmedItem(null);
-    setArmedSeating(null);
-    setArmedAnnotation(null);
-    setMeasuring(false);
-    setMeasureFrom(null);
-    setMeasurement(null);
-    setDimensioning(false);
-    setDimensionFrom(null);
+    // One dispatch puts everything down. The old block cleared four armed cells
+    // and the two measure/dimension pairs but never `drawTool`/`drawFrom`, so
+    // opening a different plan left a draw tool in hand holding a half-consumed
+    // start point against a document that no longer existed.
+    dispatchTool({ type: 'reset' });
     setPrintOpen(false);
     setFitToken((t) => t + 1);
-  }, []);
+  }, [dispatchTool]);
 
   const loadGeneration = useRef(0);
   const load = useCallback(
@@ -456,7 +544,7 @@ export function App() {
 
   const exportSvg = useCallback(async () => {
     if (!doc) return;
-    const svg = toSvg(doc.scene, visible);
+    const svg = toSvg(doc.scene, visible, printScale);
     const saved = await api.exportSvg(doc.name.replace(/\.[^.]+$/, '') + '.svg', svg);
     if (saved) {
       setStatus(`Exported ${saved.split(/[\\/]/).pop()}`);
@@ -697,28 +785,50 @@ export function App() {
     }
   }, [notify, showStatus]);
 
+
+  const applyToolEffect = useCallback(
+    async (effect: PendingEffect | null, refusal?: string) => {
+      if (refusal) {
+        notify(refusal);
+        return;
+      }
+      if (!effect) return;
+      if (effect.do === 'showReadout') {
+        dispatchTool({ type: 'settled', epoch: effect.epoch, ok: true });
+        return;
+      }
+      const result = await runEffect(effect, api);
+      if (result.ok && result.doc) {
+        setDoc(result.doc as Doc);
+        setError(null);
+        if (result.created?.length) {
+          setSelectedIds(result.created);
+          setSelection(null);
+        }
+        if (result.status) showStatus(result.status);
+      } else if (result.reason) {
+        notify(result.reason);
+      }
+      dispatchTool({ type: 'settled', epoch: effect.epoch, ok: result.ok });
+    },
+    [dispatchTool, notify, showStatus],
+  );
+
   const cancelPlacement = useCallback(() => {
-    setArmed(null);
-    setArmedItem(null);
-    setArmedSeating(null);
-    setArmedAnnotation(null);
-  }, []);
+    dispatchTool({ type: 'pick', choice: SELECT });
+  }, [dispatchTool]);
 
   const showWorkspace = useCallback(
     (next: Workspace) => {
       if (next !== 'plan') {
-        cancelPlacement();
-        setMeasuring(false);
-        setMeasureFrom(null);
-        setMeasurement(null);
-        setDimensioning(false);
-        setDimensionFrom(null);
+        dispatchTool({ type: 'reset' });
         setPrintOpen(false);
       }
       setView(next);
     },
-    [cancelPlacement],
+    [dispatchTool],
   );
+
 
   const openRecovery = useCallback(
     async (entry: RecoveryEntry) => {
@@ -773,76 +883,100 @@ export function App() {
     [notify, refreshRecoveries, showStatus],
   );
 
-  const armGear = useCallback((description: string) => {
-    setArmedItem(null);
-    setArmedSeating(null);
-    setArmedAnnotation(null);
-    setMeasuring(false);
-    setMeasureFrom(null);
-    setDimensioning(false);
-    setDimensionFrom(null);
-    setArmed(description);
-  }, []);
+  const armGear = useCallback(
+    (description: string) => {
+      setArmedInventoryId(null);
+      const { refusal } = dispatchTool({
+        type: 'pick',
+        choice: { kind: 'stamp', stamp: { what: 'gear', description } },
+      });
+      if (refusal) notify(refusal);
+    },
+    [dispatchTool, notify],
+  );
 
-  const armInventory = useCallback((id: string, name: string) => {
-    setArmedItem({ id, name });
-    setArmedSeating(null);
-    setArmedAnnotation(null);
-    setMeasuring(false);
-    setMeasureFrom(null);
-    setDimensioning(false);
-    setDimensionFrom(null);
-    setArmed(name);
-  }, []);
+  const armInventory = useCallback(
+    (id: string, name: string) => {
+      setArmedInventoryId(id);
+      const { refusal } = dispatchTool({
+        type: 'pick',
+        choice: { kind: 'stamp', stamp: { what: 'inventory', id, name } },
+      });
+      if (refusal) notify(refusal);
+    },
+    [dispatchTool, notify],
+  );
+
+  const inventoryRows = useMemo(
+    () =>
+      (inventory?.items ?? []).map((item) => ({
+        id: item.id,
+        name: item.name,
+        category: item.category ?? null,
+      })),
+    [inventory?.items],
+  );
+
+  const stageOrigin = useMemo(() => {
+    const extent = doc?.scene.roomExtent;
+    if (!extent) return { x: 0, y: 0 };
+    return { x: (extent.minX + extent.maxX) / 2, y: extent.minY };
+  }, [doc?.scene.roomExtent]);
+
+  const armInsertLeaf = useCallback(
+    (leafId: string) => {
+      const leaf = flattenInsertLeaves().find((row) => row.id === leafId);
+      if (!leaf) {
+        notify('That Insert item is unknown');
+        return;
+      }
+      const match = matchInsertItem(leaf, inventoryRows);
+      if (!match) {
+        notify(`Nothing in inventory matches “${leaf.label}”`);
+        return;
+      }
+      armInventory(match.id, match.name);
+      showStatus(`Armed ${match.name}`);
+    },
+    [armInventory, inventoryRows, notify, showStatus],
+  );
+
+  const armLabelText = useCallback(
+    (text: string) => {
+      const { refusal } = dispatchTool({ type: 'pick', choice: labelChoice(text) });
+      if (refusal) notify(refusal);
+    },
+    [dispatchTool, notify],
+  );
 
   const armLabel = useCallback(() => {
-    if (!doc?.annotationCapabilities?.label) {
-      notify('This plan has no compatible label template. Existing labels can still be edited.');
-      return;
-    }
     const text = annotationDraft.trim();
     if (!text) {
       notify('Enter label text first.');
       annotationInputRef.current?.focus();
       return;
     }
-    setArmedItem(null);
-    setArmedSeating(null);
-    setArmedAnnotation({ kind: 'label', text });
-    setMeasuring(false);
-    setMeasureFrom(null);
-    setDimensioning(false);
-    setDimensionFrom(null);
-    setArmed(`label “${text}”`);
-  }, [annotationDraft, doc?.annotationCapabilities?.label, notify]);
+    armLabelText(text);
+  }, [annotationDraft, armLabelText, notify]);
+
+  const editAnnotationDraft = useCallback(
+    (next: string) => {
+      setAnnotationDraft(next);
+      const { refusal } = dispatchTool({ type: 'retext', text: next });
+      if (refusal) notify(refusal);
+    },
+    [dispatchTool, notify],
+  );
 
   const toggleMeasure = useCallback(() => {
-    cancelPlacement();
-    setDimensioning(false);
-    setDimensionFrom(null);
-    setMeasuring((active) => {
-      if (active) {
-        setMeasureFrom(null);
-        setMeasurement(null);
-      }
-      return !active;
-    });
-  }, [cancelPlacement]);
+    const { refusal } = dispatchTool({ type: 'toggle', choice: MEASURE });
+    if (refusal) notify(refusal);
+  }, [dispatchTool, notify]);
 
   const toggleDimension = useCallback(() => {
-    if (!doc?.annotationCapabilities?.dimension) {
-      notify('This plan has no compatible dimension templates. Temporary Measure is still available.');
-      return;
-    }
-    cancelPlacement();
-    setMeasuring(false);
-    setMeasureFrom(null);
-    setMeasurement(null);
-    setDimensioning((active) => {
-      if (active) setDimensionFrom(null);
-      return !active;
-    });
-  }, [cancelPlacement, doc?.annotationCapabilities?.dimension, notify]);
+    const { refusal } = dispatchTool({ type: 'toggle', choice: DIMENSION });
+    if (refusal) notify(refusal);
+  }, [dispatchTool, notify]);
 
   const toggleGrid = useCallback(() => {
     setShowGrid((current) => {
@@ -935,54 +1069,6 @@ export function App() {
     [notify, showStatus],
   );
 
-  const placeArmed = useCallback(
-    async (x: number, y: number) => {
-      if (!armed) return;
-      const reply = armedAnnotation
-        ? await api.addLabel(armedAnnotation.text, x, y)
-        : armedSeating
-        ? ((await api.addSeating({ ...armedSeating, x, y })) as {
-            ok: boolean;
-            reason?: string;
-            doc?: Doc;
-            method?: string;
-            placed?: number;
-            created?: number[];
-          })
-        : armedItem
-          ? ((await api.inventoryPlace(armedItem.id, x, y)) as {
-              ok: boolean;
-              reason?: string;
-              doc?: Doc;
-              method?: string;
-              created?: number[];
-            })
-          : await api.placeGear(armed, x, y);
-      if (reply.ok && reply.doc) {
-        setDoc(reply.doc as Doc);
-        if (reply.created?.length) {
-          setSelectedIds(reply.created);
-          setSelection(null);
-        }
-        const placedCount = (reply as { placed?: number }).placed;
-        const method = (reply as { method?: string }).method;
-        showStatus(
-          armedAnnotation
-            ? `Added ${armedAnnotation.text}`
-            : placedCount
-              ? `Placed ${placedCount} items`
-              : method === 'matched'
-                ? `Placed ${armed} from the plan's own shapes`
-                : `Placed ${armed} as a sized box`,
-        );
-      } else if (reply.reason) {
-        notify(reply.reason);
-      }
-      cancelPlacement();
-    },
-    [armed, armedAnnotation, armedItem, armedSeating, cancelPlacement, notify, showStatus],
-  );
-
   // --- editing ------------------------------------------------------------
 
   const applied = useCallback(
@@ -1003,25 +1089,21 @@ export function App() {
 
   /** Turns the temporary two-point readout into real plan annotation. */
   const keepMeasurement = useCallback(async () => {
-    if (!measurement || !doc?.editable) return;
-    if (!doc.annotationCapabilities?.dimension) {
-      notify('This plan cannot store a persistent dimension. The temporary measurement remains on screen.');
-      return;
-    }
+    const readout = toolRef.current.readout;
+    if (!readout || !doc?.editable) return;
     const reply = await api.addDimension(
-      measurement.from.x,
-      measurement.from.y,
-      measurement.to.x,
-      measurement.to.y,
-      measurement.from.nodeId,
-      measurement.to.nodeId,
+      readout.from.x,
+      readout.from.y,
+      readout.to.x,
+      readout.to.y,
+      readout.from.nodeId,
+      readout.to.nodeId,
     );
     applied(reply);
     if (!reply.ok) return;
-    setMeasurement(null);
-    setMeasureFrom(null);
+    dispatchTool({ type: 'pick', choice: MEASURE });
     showStatus(reply.text ? `Saved ${reply.text} as a dimension` : 'Saved dimension on the plan');
-  }, [measurement, doc?.editable, doc?.annotationCapabilities?.dimension, applied, notify, showStatus]);
+  }, [doc?.editable, applied, showStatus, dispatchTool, toolRef]);
 
   /**
    * Hands the drawing to CAD as reusable symbols.
@@ -1067,7 +1149,7 @@ export function App() {
     if (!doc) return;
     const extent = doc.scene.roomExtent ?? doc.scene.extent;
     const reply = await api.printPdf({
-      svg: toSvg(doc.scene, visible),
+      svg: toSvg(doc.scene, visible, printScale),
       title: doc.scene.title ?? doc.name.replace(/\.[^.]+$/, ''),
       subtitle: gear?.lists[gearIndex]?.jobNumber
         ? `Job ${gear.lists[gearIndex].jobNumber}`
@@ -1110,6 +1192,8 @@ export function App() {
         created?: number[];
       };
       if (reply.ok && reply.doc) {
+        dispatchTool({ type: 'pick', choice: SELECT });
+        setArmedInventoryId(null);
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
           setSelectedIds(reply.created);
@@ -1122,7 +1206,39 @@ export function App() {
         );
       } else if (reply.reason) notify(reply.reason);
     },
-    [doc, notify, showStatus],
+    [dispatchTool, doc, notify, showStatus],
+  );
+
+  /** Places one gear-list line at the drop point without arming repeat placement. */
+  const dropGear = useCallback(
+    async (description: string, x: number, y: number) => {
+      if (!doc?.editable) {
+        notify('This plan is read-only, so gear cannot be placed on it.');
+        return;
+      }
+      const reply = (await api.placeGear(description, x, y)) as {
+        ok: boolean;
+        reason?: string;
+        doc?: Doc;
+        method?: string;
+        created?: number[];
+      };
+      if (reply.ok && reply.doc) {
+        dispatchTool({ type: 'pick', choice: SELECT });
+        setArmedInventoryId(null);
+        setDoc(reply.doc as Doc);
+        if (reply.created?.length) {
+          setSelectedIds(reply.created);
+          setSelection(null);
+        }
+        showStatus(
+          reply.method === 'matched'
+            ? `Placed ${description} from the plan's own shapes`
+            : `Placed ${description} as a sized box`,
+        );
+      } else if (reply.reason) notify(reply.reason);
+    },
+    [dispatchTool, doc, notify, showStatus],
   );
 
   const moveSelection = useCallback(
@@ -1304,6 +1420,16 @@ export function App() {
             : { x: '', y: '' },
         );
         if (info?.color != null) setColorDraft(colorRefToHex(info.color));
+        const dim = (info as Selection | null)?.dimension;
+        if (dim) {
+          setDimLengthDraft(formatLength(dim.length, unitSystem));
+          setDimAngleDraft(String(Math.round(dim.angleDegrees * 10) / 10));
+          setDimScaleDraft(formatLength(dim.length, unitSystem));
+        } else {
+          setDimLengthDraft('');
+          setDimAngleDraft('');
+          setDimScaleDraft('');
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -1312,8 +1438,14 @@ export function App() {
   }, [selectedId, doc, unitSystem]);
 
   useEffect(() => {
-    if (selectedIds.length > 0) setInspectorTab('properties');
-  }, [selectedIds]);
+    // Clicking an object asks to see its properties. A placement selecting
+    // what it just created does not: the panel being placed from is the one
+    // in use, and pulling it away mid-run took the label field out from under
+    // whatever was being typed into it.
+    if (opensProperties(selectedIds.length, tool)) {
+      setInspectorTab('properties');
+    }
+  }, [selectedIds, tool]);
 
   const commitSelectionSize = useCallback(async () => {
     if (!selection || !doc?.editable) return;
@@ -1392,8 +1524,28 @@ export function App() {
       else if (command === 'menu:save' && view === 'plan') void save(false);
       else if (command === 'menu:save-as' && view === 'gear') void saveGear(true);
       else if (command === 'menu:save-as' && view === 'plan') void save(true);
+      else if (command === 'menu:insert') {
+        setInsertGroup(null);
+        setInsertOpen(true);
+      } else if (command === 'menu:insert-leaf' && arg) armInsertLeaf(arg);
+      else if (command === 'menu:shape-wizard') setShapeWizardOpen(true);
+      else if (command === 'menu:build-stage') setBuildStageOpen(true);
     });
-  }, [openFile, openFolder, exportSvg, exportDxf, openAnyPath, save, saveGear, view, doc, undo, redo, selectAll]);
+  }, [
+    openFile,
+    openFolder,
+    exportSvg,
+    exportDxf,
+    openAnyPath,
+    save,
+    saveGear,
+    view,
+    doc,
+    undo,
+    redo,
+    selectAll,
+    armInsertLeaf,
+  ]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1447,7 +1599,7 @@ export function App() {
         void duplicateSelection();
         return;
       }
-      if (e.key === 'Enter' && measuring && measurement) {
+      if (e.key === 'Enter' && toolRef.current.readout) {
         e.preventDefault();
         void keepMeasurement();
         return;
@@ -1481,10 +1633,6 @@ export function App() {
       }
       if (e.key.toLowerCase() === 't' && !mod && doc?.editable) {
         e.preventDefault();
-        if (!doc.annotationCapabilities?.label) {
-          notify('This plan has no compatible label template. Existing labels can still be edited.');
-          return;
-        }
         setInspectorOpen(true);
         setInspectorTab('create');
         window.setTimeout(() => annotationInputRef.current?.focus(), 0);
@@ -1495,27 +1643,8 @@ export function App() {
           setPrintOpen(false);
           return;
         }
-        if (drawTool) {
-          // First Escape abandons the shape in progress, second puts the tool
-          // down — so a mis-clicked corner does not cost you the tool.
-          if (drawFrom) setDrawFrom(null);
-          else setDrawTool(null);
-          return;
-        }
-        if (dimensioning) {
-          setDimensioning(false);
-          setDimensionFrom(null);
-          return;
-        }
-        if (measuring) {
-          setMeasuring(false);
-          setMeasureFrom(null);
-          setMeasurement(null);
-          return;
-        }
-        if (armed) {
-          cancelPlacement();
-        } else setSelectedIds([]);
+        dispatchTool({ type: 'escape' });
+        if (escapeAlsoClearsSelection(toolRef.current)) setSelectedIds([]);
         return;
       }
 
@@ -1555,12 +1684,6 @@ export function App() {
     deleteSelection,
     moveSelection,
     rotateSelection,
-    armed,
-    measuring,
-    measurement,
-    dimensioning,
-    drawTool,
-    drawFrom,
     printOpen,
     newPlanOpen,
     settingsOpen,
@@ -1575,6 +1698,8 @@ export function App() {
     view,
     doc,
     notify,
+    dispatchTool,
+    toolRef,
   ]);
 
   const filtered = useMemo(() => {
@@ -1622,23 +1747,102 @@ export function App() {
     });
   };
 
+  const setAllLayersVisible = useCallback((show: boolean) => {
+    setVisible(show ? new Set(LAYERS.map((layer) => layer.id)) : new Set());
+  }, []);
+
+  const layerCounts = useMemo(() => {
+    const idsByLayer = new Map<Layer, Set<number>>(LAYERS.map((layer) => [layer.id, new Set()]));
+    for (const primitive of doc?.scene.primitives ?? []) {
+      idsByLayer.get(primitive.layer)?.add(primitive.selectId);
+    }
+    return new Map(LAYERS.map((layer) => [layer.id, idsByLayer.get(layer.id)?.size ?? 0]));
+  }, [doc?.scene.primitives]);
+
+  const selectLayer = useCallback(
+    (id: Layer) => {
+      if (!doc) return;
+      const ids = [
+        ...new Set(
+          doc.scene.primitives
+            .filter((primitive) => primitive.layer === id)
+            .map((primitive) => primitive.selectId),
+        ),
+      ];
+      if (!ids.length) {
+        notify(`There are no ${LAYERS.find((layer) => layer.id === id)?.label.toLowerCase() ?? id} objects to select.`);
+        return;
+      }
+      setVisible((current) => new Set(current).add(id));
+      dispatchTool({ type: 'pick', choice: SELECT });
+      setSelectedIds(ids);
+      setInspectorOpen(true);
+      setInspectorTab('properties');
+      showStatus(`Selected ${ids.length.toLocaleString()} object${ids.length === 1 ? '' : 's'} on the layer`);
+    },
+    [dispatchTool, doc, notify, showStatus],
+  );
+
   const extent = doc?.scene.roomExtent ?? doc?.scene.extent ?? null;
   const inventoryTotal = doc?.scene.inventory.reduce((sum, i) => sum + i.count, 0) ?? 0;
+  const furnitureCounts = useMemo(
+    () => countFurniture(doc?.scene.inventory ?? []),
+    [doc?.scene.inventory],
+  );
+  const [seatingClearances, setSeatingClearances] = useState<{
+    front: number;
+    side: number;
+    wing: number;
+    rear: number;
+    centreAisle: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!doc || view !== 'plan') {
+      setSeatingClearances(null);
+      return;
+    }
+    let cancelled = false;
+    void api.planModel().then((model) => {
+      if (cancelled) return;
+      const c = model?.seatingStatus?.clearances;
+      setSeatingClearances(
+        c
+          ? {
+              front: c.front,
+              side: c.side,
+              wing: c.wing,
+              rear: c.rear,
+              centreAisle: c.centreAisle,
+            }
+          : null,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc?.revision, doc?.path, view]);
   const singleIsAnnotation = !!selection && /dimension|text|label/i.test(selection.cls);
   const canTransformSelection = selectedIds.length > 1 || (!!selection && !singleIsAnnotation);
   const canResizeSelection =
     !!selection && !singleIsAnnotation && selection.widthUnits > 0 && selection.heightUnits > 0;
   /** Absolute X/Y is single-selection only — multi-select keeps stale drafts otherwise. */
   const canPositionSelection = !!selection && selectedIds.length === 1 && !singleIsAnnotation;
-  const canCreateLabel = !!doc?.editable && !!doc.annotationCapabilities?.label;
-  const canCreateDimension = !!doc?.editable && !!doc.annotationCapabilities?.dimension;
-  const annotationCapabilityHint =
+  /**
+   * Annotation is available in every editable plan.
+   *
+   * `annotationCapabilities` used to gate these buttons, back when a label or a
+   * dimension could only be made by cloning one the file already contained. It
+   * no longer means that: anything without a template is synthesized, so the
+   * flags report whether new annotation will *match the sheet's styling*. Left
+   * as a gate they made the tools permanently unusable in any plan drawn from
+   * scratch — a blank plan has neither template, so the first label and every
+   * dimension were refused, and the dimension tool could never unlock itself.
+   */
+  const canCreateLabel = !!doc?.editable;
+  const canCreateDimension = !!doc?.editable;
+  const annotationStyleHint =
     doc && (!doc.annotationCapabilities?.label || !doc.annotationCapabilities?.dimension)
-      ? !doc.annotationCapabilities?.label && !doc.annotationCapabilities?.dimension
-        ? 'This plan has no compatible label or dimension templates. Temporary Measure still works, and existing annotations remain editable.'
-        : !doc.annotationCapabilities?.label
-          ? 'This plan has no compatible label template. Dimensions remain available.'
-          : 'This plan has no compatible dimension templates. Temporary Measure still works.'
+      ? 'This plan has no annotation to copy styling from, so new labels and dimensions use the default font and pen.'
       : null;
   const shortcut = (key: string, shift = false) =>
     api.platform === 'darwin' ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
@@ -1661,6 +1865,43 @@ export function App() {
           }}
         />
       )}
+
+      <InsertPicker
+        open={insertOpen}
+        items={inventoryRows}
+        initialGroup={insertGroup}
+        onClose={() => setInsertOpen(false)}
+        onPick={(id, name) => {
+          armInventory(id, name);
+          showStatus(`Armed ${name}`);
+        }}
+      />
+
+      <ShapeEditorWizard
+        open={shapeWizardOpen}
+        units={unitSystem}
+        onClose={() => setShapeWizardOpen(false)}
+        onCreated={(id, name) => {
+          void inventoryChanged();
+          armInventory(id, name);
+        }}
+        onError={notify}
+        onStatus={showStatus}
+      />
+
+      <BuildStageDialog
+        open={buildStageOpen}
+        units={unitSystem}
+        origin={stageOrigin}
+        disabled={!doc?.editable}
+        onClose={() => setBuildStageOpen(false)}
+        onBuilt={(next) => {
+          if (next) setDoc(next as Doc);
+          setInspectorTab('room');
+        }}
+        onError={notify}
+        onStatus={showStatus}
+      />
 
       {settingsOpen && (
         <SettingsDialog
@@ -1852,152 +2093,209 @@ export function App() {
           </div>
         </div>
       )}
-      <header className="toolbar">
-        <div className="brand">
-          <Mark />
-          <span>Groundplan</span>
+      <header
+        className="toolbar"
+        onPointerOver={handleToolbarPointerOver}
+        onPointerOut={handleToolbarPointerOut}
+        onFocusCapture={handleToolbarFocus}
+        onBlurCapture={handleToolbarBlur}
+      >
+        <div className="ribbon-titlebar">
+          <div className="brand">
+            <Mark />
+            <span>Groundplan</span>
+          </div>
+
+          <div className="seg tabs workspace-tabs" role="tablist" aria-label="Workspace">
+            <button
+              role="tab"
+              data-tooltip="Plan workspace"
+              aria-selected={view === 'plan'}
+              className={view === 'plan' ? 'active' : ''}
+              onClick={() => showWorkspace('plan')}
+            >
+              Plan
+            </button>
+            <button
+              role="tab"
+              data-tooltip="Gear workspace"
+              aria-selected={view === 'gear'}
+              className={view === 'gear' ? 'active' : ''}
+              onClick={() => showWorkspace('gear')}
+            >
+              Gear
+              {gear && <span className="num">{gear.totals[gearIndex]?.pieces ?? 0}</span>}
+            </button>
+            <button
+              role="tab"
+              data-tooltip="Inventory workspace"
+              aria-selected={view === 'inventory'}
+              className={view === 'inventory' ? 'active' : ''}
+              onClick={() => showWorkspace('inventory')}
+            >
+              Inventory
+              {inventory && inventory.total > 0 && <span className="num">{inventory.total}</span>}
+            </button>
+          </div>
+
+          <div className="ribbon-title-actions">
+            {view === 'gear' && gear && (
+              <div className="doc-title">
+                {gear.dirty && <span className="dot" title="Unsaved changes" />}
+                <strong>{gear.lists[gearIndex]?.title.replace(/^\d{8}-\d{2}_/, '') ?? 'Gear list'}</strong>
+              </div>
+            )}
+            {view === 'plan' && doc && (
+              <div className="doc-title">
+                {doc.dirty && <span className="dot" title="Unsaved changes" />}
+                <strong>{doc.name}</strong>
+                {!doc.editable && (
+                  <span className="badge" title="This file does not reproduce byte for byte, so it cannot be saved">
+                    <IconLock />
+                    Read-only
+                  </span>
+                )}
+              </div>
+            )}
+
+            {view === 'inventory' ? (
+              <span className="autosave-label" role="status">Changes save automatically</span>
+            ) : (
+              <button
+                className="btn-primary"
+                onClick={() => (view === 'gear' ? saveGear(false) : save(false))}
+                disabled={view === 'gear' ? !gear?.dirty : !doc?.editable || !doc?.dirty}
+                data-tooltip={`Save ${view === 'gear' ? 'gear list' : 'plan'} (${shortcut('S')})`}
+              >
+                <IconSave />
+                Save
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="seg">
+        <div className="ribbon-panel">
+        <div className="seg ribbon-group file-controls" aria-label="File">
           <button
-            className="icon-btn"
+            className="icon-btn ribbon-action"
             onClick={() => setNewPlanOpen(true)}
             disabled={busy}
-            title={`New plan (${shortcut('N')})`}
+            data-tooltip={`New plan (${shortcut('N')})`}
             aria-label="New plan"
           >
             <IconPlus />
+            <span>New</span>
           </button>
           <button
-            className="icon-btn"
+            className="icon-btn ribbon-action"
             onClick={openFile}
             disabled={busy}
-            title={`Open plan (${shortcut('O')})`}
+            data-tooltip={`Open plan (${shortcut('O')})`}
             aria-label="Open plan"
           >
             <IconFile />
+            <span>Open</span>
           </button>
           <button
-            className="icon-btn"
+            className="icon-btn ribbon-action"
             onClick={openFolder}
             disabled={busy}
-            title={`Open folder (${shortcut('O', true)})`}
+            data-tooltip={`Open folder (${shortcut('O', true)})`}
             aria-label="Open plan folder"
           >
             <IconFolder />
+            <span>Browse</span>
           </button>
         </div>
 
-        <div className="seg panel-toggles">
+        <div className="seg ribbon-group panel-toggles" aria-label="Panels">
           <button
-            className={`icon-btn${railOpen ? ' is-on' : ''}`}
+            className={`icon-btn ribbon-action${railOpen ? ' is-on' : ''}`}
             onClick={() => setRailOpen((open) => !open)}
-            title={`${railOpen ? 'Hide' : 'Show'} browser (${shortcut('B')})`}
+            data-tooltip={`${railOpen ? 'Hide' : 'Show'} browser (${shortcut('B')})`}
             aria-pressed={railOpen}
             aria-label={`${railOpen ? 'Hide' : 'Show'} browser`}
           >
             <IconSidebarLeft />
+            <span>Browser</span>
           </button>
           <button
-            className={`icon-btn${inspectorOpen ? ' is-on' : ''}`}
+            className={`icon-btn ribbon-action${inspectorOpen ? ' is-on' : ''}`}
             onClick={() => setInspectorOpen((open) => !open)}
-            title={`${inspectorOpen ? 'Hide' : 'Show'} inspector (${shortcut('B', true)})`}
+            data-tooltip={`${inspectorOpen ? 'Hide' : 'Show'} inspector (${shortcut('B', true)})`}
             aria-pressed={inspectorOpen}
             aria-label={`${inspectorOpen ? 'Hide' : 'Show'} inspector`}
           >
             <IconSidebarRight />
-          </button>
-        </div>
-
-        <div className="seg tabs workspace-tabs" role="tablist" aria-label="Workspace">
-          <button
-            role="tab"
-            aria-selected={view === 'plan'}
-            className={view === 'plan' ? 'active' : ''}
-            onClick={() => showWorkspace('plan')}
-          >
-            Plan
-          </button>
-          <button
-            role="tab"
-            aria-selected={view === 'gear'}
-            className={view === 'gear' ? 'active' : ''}
-            onClick={() => showWorkspace('gear')}
-          >
-            Gear
-            {gear && <span className="num">{gear.totals[gearIndex]?.pieces ?? 0}</span>}
-          </button>
-          <button
-            role="tab"
-            aria-selected={view === 'inventory'}
-            className={view === 'inventory' ? 'active' : ''}
-            onClick={() => showWorkspace('inventory')}
-          >
-            Inventory
-            {inventory && inventory.total > 0 && <span className="num">{inventory.total}</span>}
+            <span>Inspector</span>
           </button>
         </div>
 
         {view === 'plan' && (
           <>
-            <div className="seg" aria-label="Plan history">
+            <div className="seg ribbon-group history-controls" aria-label="Plan history">
               <button
-                className="icon-btn"
+                className="icon-btn ribbon-action"
                 onClick={undo}
                 disabled={!doc?.canUndo}
-                title={`Undo (${shortcut('Z')})`}
+                data-tooltip={`Undo (${shortcut('Z')})`}
                 aria-label="Undo plan edit"
               >
                 <IconUndo />
+                <span>Undo</span>
               </button>
               <button
-                className="icon-btn"
+                className="icon-btn ribbon-action"
                 onClick={redo}
                 disabled={!doc?.canRedo}
-                title={`Redo (${shortcut('Z', true)})`}
+                data-tooltip={`Redo (${shortcut('Z', true)})`}
                 aria-label="Redo plan edit"
               >
                 <IconRedo />
+                <span>Redo</span>
               </button>
             </div>
 
-            <div className="seg plan-view-controls" aria-label="Plan view controls">
+            <div className="seg ribbon-group plan-view-controls" aria-label="Plan view controls">
               <button
-                className="icon-btn"
+                className="icon-btn ribbon-action"
                 onClick={() => setFitToken((t) => t + 1)}
                 disabled={!doc}
-                title={`Zoom to fit (${shortcut('0')})`}
+                data-tooltip={`Zoom to fit (${shortcut('0')})`}
                 aria-label="Zoom plan to fit"
               >
                 <IconFit />
+                <span>Fit</span>
               </button>
               <button
-                className="icon-btn"
+                className="icon-btn ribbon-action"
                 onClick={() => setPaper((p) => !p)}
                 disabled={!doc}
-                title={paper ? 'Switch to dark sheet' : 'Switch to paper sheet'}
+                data-tooltip={paper ? 'Switch to dark sheet' : 'Switch to paper sheet'}
                 aria-label={paper ? 'Use dark plan sheet' : 'Use light plan sheet'}
               >
                 {paper ? <IconMoon /> : <IconSun />}
+                <span>Theme</span>
               </button>
               <button
-                className={`icon-btn${showGrid ? ' is-on' : ''}`}
+                className={`icon-btn ribbon-action${showGrid ? ' is-on' : ''}`}
                 onClick={() => void toggleGrid()}
                 disabled={!doc}
-                title={showGrid ? 'Hide grid (G)' : 'Show grid (G)'}
+                data-tooltip={showGrid ? 'Hide grid (G)' : 'Show grid (G)'}
                 aria-label={showGrid ? 'Hide grid' : 'Show grid'}
                 aria-pressed={showGrid}
               >
                 <IconGrid />
+                <span>Grid</span>
               </button>
             </div>
 
-            <div className="seg plan-snap-controls" aria-label="Snap">
+            <div className="seg ribbon-group plan-snap-controls" aria-label="Snap">
               <button
-                className={`icon-btn${snapStep ? ' is-on' : ''}`}
+                className={`icon-btn ribbon-action${snapStep ? ' is-on' : ''}`}
                 onClick={() => toggleSnap()}
                 disabled={!doc}
-                title={
+                data-tooltip={
                   snapStep
                     ? 'Snapping on — grid and object alignment (S)'
                     : 'Snapping off (S)'
@@ -2006,13 +2304,14 @@ export function App() {
                 aria-pressed={!!snapStep}
               >
                 <IconMagnet />
+                <span>Snap</span>
               </button>
               <select
                 className="toolbar-select"
                 value={SNAP_STEPS.some(([value]) => value === snapStep) ? snapStep : snapStep || 0}
                 onChange={(e) => commitSnapStep(Number(e.target.value))}
                 disabled={!doc}
-                title="Snap step"
+                data-tooltip="Snap spacing"
                 aria-label="Snap step"
               >
                 {SNAP_STEPS.map(([value, label]) => (
@@ -2026,51 +2325,46 @@ export function App() {
               </select>
             </div>
 
-            <div className="seg plan-tool-controls" aria-label="Plan drawing tools">
+            <div className="seg ribbon-group plan-tool-controls" aria-label="Plan drawing tools">
               <button
-                className={`tool-button${measuring ? ' is-on' : ''}`}
+                className={`tool-button${isPressed(tool, MEASURE) ? ' is-on' : ''}`}
                 onClick={toggleMeasure}
                 disabled={!doc}
-                title="Temporary measurement (M). It is not saved unless you choose Save dimension."
-                aria-pressed={measuring}
+                data-tooltip="Measure a temporary distance (M)"
+                aria-pressed={isPressed(tool, MEASURE)}
               >
                 <IconRuler />
                 <span>Measure</span>
               </button>
               <button
-                className={`tool-button${dimensioning ? ' is-on' : ''}`}
+                className={`tool-button${isPressed(tool, DIMENSION) ? ' is-on' : ''}`}
                 onClick={toggleDimension}
                 disabled={!canCreateDimension}
-                title={
+                data-tooltip={
                   canCreateDimension
                     ? 'Saved dimension (D). Draws a persistent annotation on the plan.'
                     : doc
-                      ? 'Unavailable: this plan has no compatible dimension templates. Use Measure for a temporary distance.'
+                      ? 'This plan is read-only. Use Measure for a temporary distance.'
                       : 'Open an editable plan to draw a saved dimension.'
                 }
-                aria-pressed={dimensioning}
+                aria-pressed={isPressed(tool, DIMENSION)}
               >
                 <IconRuler />
                 <span>Dimension</span>
               </button>
             </div>
 
-            <div className="seg draw-tools" aria-label="Draw">
+            <div className="seg ribbon-group draw-tools" aria-label="Draw">
               <button
-                className={`icon-btn${!drawTool && !armed && !measuring && !dimensioning ? ' is-on' : ''}`}
-                onClick={() => {
-                  setDrawTool(null);
-                  setDrawFrom(null);
-                  setMeasuring(false);
-                  setDimensioning(false);
-                  cancelPlacement();
-                }}
+                className={`icon-btn ribbon-action${isPressed(tool, SELECT) ? ' is-on' : ''}`}
+                onClick={() => dispatchTool({ type: 'pick', choice: SELECT })}
                 disabled={!doc}
-                title="Select (Esc)"
+                data-tooltip="Select and move shapes (Esc)"
                 aria-label="Select tool"
-                aria-pressed={!drawTool && !armed && !measuring && !dimensioning}
+                aria-pressed={isPressed(tool, SELECT)}
               >
                 <IconPointer />
+                <span>Select</span>
               </button>
               {(
                 [
@@ -2078,51 +2372,73 @@ export function App() {
                   ['rect', 'Rectangle', IconDrawRect],
                   ['ellipse', 'Ellipse', IconDrawEllipse],
                 ] as const
-              ).map(([tool, label, Icon]) => (
+              ).map(([shape, label, Icon]) => (
                 <button
-                  key={tool}
-                  className={`icon-btn${drawTool === tool ? ' is-on' : ''}`}
+                  key={shape}
+                  className={`icon-btn ribbon-action${isPressed(tool, drawChoice(shape)) ? ' is-on' : ''}`}
                   onClick={() => {
-                    setDrawFrom(null);
-                    setDrawTool((current) => (current === tool ? null : tool));
-                    setMeasuring(false);
-                    setDimensioning(false);
-                    setArmed(null);
+                    const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
+                    if (refusal) notify(refusal);
                   }}
                   disabled={!doc?.editable}
-                  title={
+                  data-tooltip={
                     doc?.editable
                       ? `Draw a ${label.toLowerCase()} — click two corners, Esc to cancel`
                       : 'Open an editable plan to draw'
                   }
                   aria-label={`Draw ${label.toLowerCase()}`}
-                  aria-pressed={drawTool === tool}
+                  aria-pressed={isPressed(tool, drawChoice(shape))}
                 >
                   <Icon />
+                  <span>{label}</span>
                 </button>
               ))}
               <button
-                className={`icon-btn${armedAnnotation ? ' is-on' : ''}`}
+                className={`icon-btn ribbon-action${isPressed(tool, labelChoice(annotationDraft.trim() || ' ')) ? ' is-on' : ''}`}
                 onClick={() => {
                   setInspectorTab('create');
                   setInspectorOpen(true);
-                  annotationInputRef.current?.focus();
+                  window.setTimeout(() => annotationInputRef.current?.focus(), 0);
                 }}
                 disabled={!doc?.editable}
-                title="Text label (T)"
+                data-tooltip="Place a text label (T)"
                 aria-label="Text label"
-                aria-pressed={!!armedAnnotation}
+                aria-pressed={isPressed(tool, labelChoice(annotationDraft.trim() || ' '))}
               >
                 <IconText />
+                <span>Text</span>
               </button>
             </div>
 
-            <div className="seg object-tools" aria-label="Arrange">
+            <div className="ribbon-quickbar">
+            <div className="seg object-tools" aria-label="Arrange and transform">
+              <button
+                className="icon-btn"
+                onClick={selectAll}
+                disabled={!doc}
+                data-tooltip={`Select all visible shapes (${shortcut('A')})`}
+                aria-label="Select all visible shapes"
+              >
+                <IconPointer />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => {
+                  setInspectorOpen(true);
+                  setInspectorTab('properties');
+                }}
+                disabled={!doc}
+                data-tooltip="Open shape properties"
+                aria-label="Open shape properties"
+              >
+                <IconEdit />
+              </button>
+              <span className="seg-divider" aria-hidden />
               <button
                 className="icon-btn"
                 onClick={() => void rotateSelection(-90)}
                 disabled={!doc?.editable || !selectedIds.length}
-                title="Rotate 90° anticlockwise"
+                data-tooltip="Rotate left 90° ([)"
                 aria-label="Rotate anticlockwise"
               >
                 <IconRotateLeft />
@@ -2131,7 +2447,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void rotateSelection(90)}
                 disabled={!doc?.editable || !selectedIds.length}
-                title="Rotate 90° clockwise"
+                data-tooltip="Rotate right 90° (])"
                 aria-label="Rotate clockwise"
               >
                 <IconRotateRight />
@@ -2140,7 +2456,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void flipSelection('horizontal')}
                 disabled={!doc?.editable || !selectedIds.length}
-                title="Flip horizontal"
+                data-tooltip="Flip shapes horizontally"
                 aria-label="Flip horizontal"
               >
                 <IconFlipHorizontal />
@@ -2149,7 +2465,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void flipSelection('vertical')}
                 disabled={!doc?.editable || !selectedIds.length}
-                title="Flip vertical"
+                data-tooltip="Flip shapes vertically"
                 aria-label="Flip vertical"
               >
                 <IconFlipVertical />
@@ -2159,7 +2475,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('align-left')}
                 disabled={!doc?.editable || selectedIds.length < 2}
-                title="Align left"
+                data-tooltip="Align selected shapes left"
                 aria-label="Align left"
               >
                 <IconAlignLeft />
@@ -2168,7 +2484,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('align-center')}
                 disabled={!doc?.editable || selectedIds.length < 2}
-                title="Align centre"
+                data-tooltip="Align selected shapes to horizontal centre"
                 aria-label="Align centre"
               >
                 <IconAlignCenter />
@@ -2177,7 +2493,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('align-right')}
                 disabled={!doc?.editable || selectedIds.length < 2}
-                title="Align right"
+                data-tooltip="Align selected shapes right"
                 aria-label="Align right"
               >
                 <IconAlignRight />
@@ -2186,7 +2502,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('align-top')}
                 disabled={!doc?.editable || selectedIds.length < 2}
-                title="Align top"
+                data-tooltip="Align selected shapes to top"
                 aria-label="Align top"
               >
                 <IconAlignTop />
@@ -2195,7 +2511,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('align-middle')}
                 disabled={!doc?.editable || selectedIds.length < 2}
-                title="Align middle"
+                data-tooltip="Align selected shapes to vertical middle"
                 aria-label="Align middle"
               >
                 <IconAlignMiddle />
@@ -2204,7 +2520,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('align-bottom')}
                 disabled={!doc?.editable || selectedIds.length < 2}
-                title="Align bottom"
+                data-tooltip="Align selected shapes to bottom"
                 aria-label="Align bottom"
               >
                 <IconAlignBottom />
@@ -2213,7 +2529,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('distribute-horizontal')}
                 disabled={!doc?.editable || selectedIds.length < 3}
-                title="Distribute horizontally"
+                data-tooltip="Distribute three or more shapes horizontally"
                 aria-label="Distribute horizontally"
               >
                 <IconDistributeHorizontal />
@@ -2222,7 +2538,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void arrangeSelection('distribute-vertical')}
                 disabled={!doc?.editable || selectedIds.length < 3}
-                title="Distribute vertically"
+                data-tooltip="Distribute three or more shapes vertically"
                 aria-label="Distribute vertically"
               >
                 <IconDistributeVertical />
@@ -2232,7 +2548,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void reorderSelection('bring-to-front')}
                 disabled={!doc?.editable || !selectedIds.length}
-                title="Bring to front"
+                data-tooltip="Bring selected shapes to front"
                 aria-label="Bring to front"
               >
                 <IconBringFront />
@@ -2241,7 +2557,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void reorderSelection('send-to-back')}
                 disabled={!doc?.editable || !selectedIds.length}
-                title="Send to back"
+                data-tooltip="Send selected shapes to back"
                 aria-label="Send to back"
               >
                 <IconSendBack />
@@ -2250,7 +2566,7 @@ export function App() {
                 className="icon-btn"
                 onClick={duplicateSelection}
                 disabled={!doc?.editable || !selectedIds.length}
-                title={`Duplicate (${shortcut('D')})`}
+                data-tooltip={`Duplicate selected shapes (${shortcut('D')})`}
                 aria-label="Duplicate"
               >
                 <IconDuplicate />
@@ -2259,7 +2575,7 @@ export function App() {
                 className="icon-btn"
                 onClick={deleteSelection}
                 disabled={!doc?.editable || !selectedIds.length}
-                title="Delete (Backspace)"
+                data-tooltip="Delete selected shapes (Backspace)"
                 aria-label="Delete"
               >
                 <IconTrash />
@@ -2271,7 +2587,7 @@ export function App() {
                 className={`icon-btn${printOpen ? ' is-on' : ''}`}
                 onClick={() => setPrintOpen((v) => !v)}
                 disabled={!doc}
-                title={`Print to PDF (${shortcut('P')})`}
+                data-tooltip={`Print plan to PDF (${shortcut('P')})`}
                 aria-label="Print plan to PDF"
               >
                 <IconPrint />
@@ -2280,7 +2596,7 @@ export function App() {
                 className="icon-btn"
                 onClick={exportSvg}
                 disabled={!doc}
-                title={`Export SVG (${shortcut('E')})`}
+                data-tooltip={`Export plan as SVG (${shortcut('E')})`}
                 aria-label="Export plan as SVG"
               >
                 <IconExport />
@@ -2289,59 +2605,90 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void exportDxf()}
                 disabled={!doc}
-                title="Export DXF for CAD"
+                data-tooltip="Export visible layers as DXF for CAD"
                 aria-label="Export plan as DXF"
               >
                 <IconFile />
               </button>
             </div>
+            <div className="seg layer-tools" aria-label="Layer visibility">
+              <button
+                className={`icon-btn layer-overview${visible.size === LAYERS.length ? ' is-on' : ''}`}
+                onClick={() => setAllLayersVisible(visible.size !== LAYERS.length)}
+                disabled={!doc}
+                data-tooltip={visible.size === LAYERS.length ? 'Hide all layers' : 'Show all layers'}
+                aria-label={visible.size === LAYERS.length ? 'Hide all layers' : 'Show all layers'}
+                aria-pressed={visible.size === LAYERS.length}
+              >
+                <IconLayers />
+                <span className="layer-count">{visible.size}/{LAYERS.length}</span>
+              </button>
+              {LAYERS.map((layer) => (
+                <button
+                  key={layer.id}
+                  className={`icon-btn layer-toggle${visible.has(layer.id) ? ' is-on' : ''}`}
+                  onClick={() => toggleLayer(layer.id)}
+                  disabled={!doc}
+                  data-tooltip={`${visible.has(layer.id) ? 'Hide' : 'Show'} ${layer.label} layer · ${layerCounts.get(layer.id) ?? 0} objects`}
+                  aria-label={`${visible.has(layer.id) ? 'Hide' : 'Show'} ${layer.label} layer`}
+                  aria-pressed={visible.has(layer.id)}
+                >
+                  <span className="layer-dot" style={{ background: layer.tint }} />
+                </button>
+              ))}
+            </div>
+            <div className="spacer" />
+            <label className="ribbon-check">
+              <input
+                type="checkbox"
+                checked={showGrid}
+                disabled={!doc}
+                onChange={() => void toggleGrid()}
+              />
+              Show grid
+            </label>
+            <button
+              className="ribbon-advanced"
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              data-tooltip="Open advanced drawing settings"
+            >
+              Advanced…
+            </button>
+            </div>
           </>
         )}
 
-        <div className="seg" aria-label="Help">
+        <div className="seg ribbon-group utility-controls" aria-label="Help and settings">
           <button
-            className="icon-btn"
+            className="icon-btn ribbon-action"
+            onClick={() => setSettingsOpen(true)}
+            data-tooltip="Open settings"
+            aria-label="Settings"
+          >
+            <IconEdit />
+            <span>Settings</span>
+          </button>
+          <button
+            className="icon-btn ribbon-action"
             onClick={() => setShortcutsOpen(true)}
-            title="Keyboard shortcuts (?)"
+            data-tooltip="Show keyboard shortcuts (?)"
             aria-label="Keyboard shortcuts"
           >
             <IconHelp />
+            <span>Help</span>
           </button>
         </div>
 
-        <div className="spacer" />
-
-        {view === 'gear' && gear && (
-          <div className="doc-title">
-            {gear.dirty && <span className="dot" title="Unsaved changes" />}
-            <strong>{gear.lists[gearIndex]?.title.replace(/^\d{8}-\d{2}_/, '') ?? 'Gear list'}</strong>
-          </div>
-        )}
-        {view === 'plan' && doc && (
-          <div className="doc-title">
-            {doc.dirty && <span className="dot" title="Unsaved changes" />}
-            <strong>{doc.name}</strong>
-            {!doc.editable && (
-              <span className="badge" title="This file does not reproduce byte for byte, so it cannot be saved">
-                <IconLock />
-                Read-only
-              </span>
-            )}
-          </div>
-        )}
-
-        {view === 'inventory' ? (
-          <span className="autosave-label" role="status">Changes save automatically</span>
-        ) : (
-          <button
-            className="btn-primary"
-            onClick={() => (view === 'gear' ? saveGear(false) : save(false))}
-            disabled={view === 'gear' ? !gear?.dirty : !doc?.editable || !doc?.dirty}
-            title={`Save ${view === 'gear' ? 'gear list' : 'plan'} (${shortcut('S')})`}
+        </div>
+        {toolbarTooltip && (
+          <div
+            className="toolbar-tooltip"
+            role="tooltip"
+            style={{ left: toolbarTooltip.left, top: toolbarTooltip.top }}
           >
-            <IconSave />
-            Save
-          </button>
+            {toolbarTooltip.text}
+          </div>
         )}
       </header>
 
@@ -2790,22 +3137,62 @@ export function App() {
                   </button>
                 </div>
               ) : planRailSource === 'equipment' ? (
-                <InventoryPalette
-                  inventory={inventory}
-                  query={paletteQuery}
-                  onQuery={setPaletteQuery}
-                  category={paletteCategory}
-                  onCategory={setPaletteCategory}
-                  units={unitSystem}
-                  canPlace={!!doc?.editable}
-                  onPlace={(id, name) => {
-                    armInventory(id, name);
-                  }}
-                  onChanged={inventoryChanged}
-                  onRemoved={(name) => setInventoryUndoNotice(`Removed “${name}” from inventory`)}
-                  onError={notify}
-                  onStatus={showStatus}
-                />
+                <div className="equipment-panel">
+                  <div className="equipment-source-tabs" role="tablist" aria-label="Equipment source">
+                    <button
+                      type="button"
+                      role="tab"
+                      className={equipmentSource === 'inventory' ? 'active' : ''}
+                      aria-selected={equipmentSource === 'inventory'}
+                      onClick={() => setEquipmentSource('inventory')}
+                    >
+                      Inventory
+                      <span className="num">{inventory?.total ?? 0}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      className={equipmentSource === 'gear' ? 'active' : ''}
+                      aria-selected={equipmentSource === 'gear'}
+                      onClick={() => setEquipmentSource('gear')}
+                    >
+                      Gear list
+                      {gear && <span className="num">{gear.totals[gearIndex]?.pieces ?? 0}</span>}
+                    </button>
+                  </div>
+                  <div className="equipment-gesture-hint" role="note">
+                    <span><strong>Drag</strong> to place once</span>
+                    <span><strong>Click</strong> for repeat placement</span>
+                    <span><kbd>Esc</kbd> cancels</span>
+                  </div>
+                  {equipmentSource === 'inventory' ? (
+                    <InventoryPalette
+                      inventory={inventory}
+                      query={paletteQuery}
+                      onQuery={setPaletteQuery}
+                      category={paletteCategory}
+                      onCategory={setPaletteCategory}
+                      units={unitSystem}
+                      canPlace={!!doc?.editable}
+                      onPlace={(id, name) => armInventory(id, name)}
+                      onChanged={inventoryChanged}
+                      onRemoved={(name) => setInventoryUndoNotice(`Removed “${name}” from inventory`)}
+                      onError={notify}
+                      onStatus={showStatus}
+                    />
+                  ) : (
+                    <GearPalette
+                      lists={gear?.lists ?? []}
+                      activeIndex={gearIndex}
+                      query={gearQuery}
+                      onQuery={setGearQuery}
+                      canPlace={!!doc?.editable}
+                      armedDescription={armedGearDescription}
+                      onPlace={armGear}
+                      onManage={() => showWorkspace('gear')}
+                    />
+                  )}
+                </div>
               ) : (
                 <>
                   {recoveries.length > 0 && (
@@ -2906,6 +3293,9 @@ export function App() {
               canPlace={!!doc?.editable}
               onPlace={(id, name) => {
                 armInventory(id, name);
+                setPlanRailSource('equipment');
+                setEquipmentSource('inventory');
+                setRailOpen(true);
                 setView('plan');
               }}
               onError={notify}
@@ -2927,6 +3317,9 @@ export function App() {
                 onInventoryChanged={inventoryChanged}
                 onPlace={(description) => {
                   armGear(description);
+                  setPlanRailSource('equipment');
+                  setEquipmentSource('gear');
+                  setRailOpen(true);
                   setView('plan');
                 }}
               />
@@ -2955,7 +3348,20 @@ export function App() {
               </div>
             )
           ) : doc ? (
-            <PlanCanvas
+            <div className="canvas-with-palette">
+              {(!railOpen || planRailSource !== 'equipment') && (
+                <ObjectPalette
+                  items={inventoryRows}
+                  armedId={armedInventoryId}
+                  disabled={!doc.editable}
+                  onArm={armInventory}
+                  onBrowse={(group) => {
+                    setInsertGroup(group);
+                    setInsertOpen(true);
+                  }}
+                />
+              )}
+              <PlanCanvas
               scene={doc.scene}
               visibleLayers={visible}
               paper={paper}
@@ -2967,59 +3373,23 @@ export function App() {
               editable={doc.editable}
               onCursor={setCursor}
               onZoom={setZoom}
-              armed={armed}
-              onPlaceAt={placeArmed}
               onDropItem={dropItem}
+              onDropGear={dropGear}
               snapStep={snapStep}
               units={unitSystem}
-              measuring={measuring}
-              measureFrom={measureFrom}
-              measurement={measurement}
-              dimensioning={dimensioning || drawTool !== null}
-              dimensionFrom={drawTool ? drawFrom : dimensionFrom}
-              drawTool={drawTool}
-              onMeasurePoint={async (p) => {
-                if (drawTool) {
-                  if (!drawFrom) {
-                    setDrawFrom({ x: p.x, y: p.y });
-                    return;
-                  }
-                  const reply = await api.draw(drawTool, drawFrom.x, drawFrom.y, p.x, p.y);
-                  applied(reply);
-                  if (reply.ok) showStatus(`Drew a ${drawTool === 'rect' ? 'rectangle' : drawTool}`);
-                  // The tool stays in hand, the way a drawing app works: one
-                  // click of the button, several shapes.
-                  setDrawFrom(null);
-                  return;
-                }
-                if (dimensioning) {
-                  if (!dimensionFrom) {
-                    setDimensionFrom(p);
-                    return;
-                  }
-                  const reply = await api.addDimension(
-                    dimensionFrom.x,
-                    dimensionFrom.y,
-                    p.x,
-                    p.y,
-                    dimensionFrom.nodeId,
-                    p.nodeId,
-                  );
-                  applied(reply);
-                  if (reply.ok) showStatus('Added dimension');
-                  setDimensionFrom(null);
-                  setDimensioning(false);
-                  return;
-                }
-                if (!measureFrom) {
-                  setMeasureFrom(p);
-                  setMeasurement(null);
-                } else {
-                  setMeasurement({ from: measureFrom, to: p });
-                  setMeasureFrom(null);
-                }
+              pointerMode={pointerMode}
+              spanFrom={tool.tool.kind === 'span' ? tool.tool.from : null}
+              readout={tool.readout}
+              onCanvasClick={(at) => {
+                const { effect, refusal } = dispatchTool({ type: 'click', at });
+                void applyToolEffect(effect, refusal);
+              }}
+              onToggleHand={() => {
+                const { refusal } = dispatchTool({ type: 'toggle', choice: HAND });
+                if (refusal) notify(refusal);
               }}
             />
+            </div>
           ) : (
             <div className="placeholder">
               <Mark size={34} className="placeholder-mark" />
@@ -3114,55 +3484,42 @@ export function App() {
               </p>
             </div>
           )}
-          {(measuring || dimensioning) && (
+          {toolBannerState && (
             <div className="arming" role="status" aria-live="polite">
-              <span className={`tool-state-badge ${dimensioning ? 'is-persistent' : 'is-temporary'}`}>
-                {dimensioning ? 'Saved dimension' : 'Temporary measure'}
-              </span>
-              <span>
-                {dimensioning
-                  ? dimensionFrom
-                    ? 'Click the dimension end point'
-                    : 'Click the dimension start point'
-                  : measureFrom
-                    ? 'Click the second point'
-                    : measurement
-                      ? 'Review the distance, save it, or click to start another'
-                      : 'Click the first point to measure from'}
-              </span>
-              {measuring && measurement && (
-                <button
-                  className="btn-primary"
-                  onClick={keepMeasurement}
-                  disabled={!canCreateDimension}
-                  title={
-                    canCreateDimension
-                      ? 'Keep this distance as an object-linked plan dimension'
-                      : 'This plan has no compatible dimension templates'
-                  }
+              {toolBannerState.badge && (
+                <span
+                  className={`tool-state-badge ${
+                    toolBannerState.badge.tone === 'temporary' ? 'is-temporary' : 'is-persistent'
+                  }`}
                 >
-                  Save dimension
-                </button>
+                  {toolBannerState.badge.text}
+                </span>
               )}
-              <button
-                onClick={() => {
-                  setMeasuring(false);
-                  setMeasureFrom(null);
-                  setMeasurement(null);
-                  setDimensioning(false);
-                  setDimensionFrom(null);
-                }}
-              >
-                Done
-              </button>
-            </div>
-          )}
-          {armed && (
-            <div className="arming">
               <span>
-                Click the plan to place <strong>{armed}</strong>
+                {toolBannerState.message}
+                {toolBannerState.emphasis && <strong>{toolBannerState.emphasis}</strong>}
               </span>
-              <button onClick={cancelPlacement}>Cancel</button>
+              {toolBannerState.actions.map((action) =>
+                action.id === 'save-dimension' ? (
+                  <button
+                    key={action.id}
+                    className="btn-primary"
+                    onClick={() => void keepMeasurement()}
+                    disabled={!canCreateDimension}
+                    title={
+                      canCreateDimension
+                        ? 'Keep this distance as an object-linked plan dimension'
+                        : 'This plan is read-only'
+                    }
+                  >
+                    {action.label}
+                  </button>
+                ) : (
+                  <button key={action.id} onClick={() => dispatchTool({ type: 'pick', choice: SELECT })}>
+                    {action.label}
+                  </button>
+                ),
+              )}
             </div>
           )}
           {busy && <div className="toast" role="status">{busyMessage ?? 'Working…'}</div>}
@@ -3313,23 +3670,82 @@ export function App() {
             )
           ) : doc ? (
             <>
-              <nav className="inspector-tabs" aria-label="Plan inspector">
-                {([
-                  ['properties', 'Properties'],
-                  ['room', 'Room'],
-                  ['create', 'Create'],
-                  ['layers', 'Layers'],
-                ] as const).map(([id, label]) => (
+              <div className="inspector-chrome">
+                <header className="inspector-heading">
+                  <span className="inspector-heading-icon" aria-hidden>
+                    <IconSidebarRight size={16} />
+                  </span>
+                  <span className="inspector-heading-copy">
+                    <small>Inspector</small>
+                    <strong title={doc.name}>{doc.name.replace(/\.[^.]+$/, '') || 'Untitled plan'}</strong>
+                  </span>
+                  <span className={`inspector-access${doc.editable ? '' : ' is-readonly'}`}>
+                    {doc.editable ? 'Editable' : 'Read only'}
+                  </span>
+                </header>
+
+                <nav className="inspector-tabs" aria-label="Plan inspector">
+                  {([
+                    { id: 'properties', label: 'Properties', icon: <IconEdit size={14} /> },
+                    { id: 'room', label: 'Room', icon: <IconDrawRect size={14} /> },
+                    { id: 'create', label: 'Create', icon: <IconPlus size={14} /> },
+                    { id: 'layers', label: 'Layers', icon: <IconLayers size={14} /> },
+                  ] as const).map(({ id, label, icon }) => (
                   <button
                     key={id}
                     className={inspectorTab === id ? 'active' : ''}
                     onClick={() => setInspectorTab(id)}
                     aria-current={inspectorTab === id ? 'page' : undefined}
                   >
-                    {label}
+                    <span className="inspector-tab-icon" aria-hidden>{icon}</span>
+                    <span>{label}</span>
                   </button>
                 ))}
-              </nav>
+                </nav>
+
+                <div
+                  className={`inspector-context${tool.tool.kind !== 'select' ? ' is-tool-active' : ''}`}
+                  aria-live="polite"
+                >
+                  <span className="inspector-context-marker" aria-hidden />
+                  <span className="inspector-context-copy">
+                    <strong>
+                      {tool.tool.kind === 'stamp'
+                        ? 'Placement active'
+                        : tool.tool.kind === 'span'
+                          ? 'Drawing tool active'
+                          : tool.tool.kind === 'hand'
+                            ? 'Hand tool active'
+                            : selectedIds.length
+                              ? `${selectedIds.length.toLocaleString()} selected`
+                              : 'Nothing selected'}
+                    </strong>
+                    <small>
+                      {tool.tool.kind === 'stamp'
+                        ? toolBannerState?.emphasis ?? 'Click the plan to place'
+                        : tool.tool.kind === 'span'
+                          ? toolBannerState?.message ?? 'Follow the prompt over the plan'
+                          : tool.tool.kind === 'hand'
+                            ? 'Drag the plan to pan · press H to finish'
+                            : selectedIds.length
+                              ? selection?.name ?? selection?.cls.replace(/^RV/, '') ?? 'Use the controls below to edit the selection'
+                              : 'Select a shape on the plan to edit it here'}
+                    </small>
+                  </span>
+                  {(tool.tool.kind !== 'select' || selectedIds.length > 0) && (
+                    <button
+                      type="button"
+                      className="link-btn"
+                      onClick={() => {
+                        dispatchTool({ type: 'pick', choice: SELECT });
+                        if (tool.tool.kind === 'select') setSelectedIds([]);
+                      }}
+                    >
+                      {tool.tool.kind === 'select' ? 'Clear' : 'Done'}
+                    </button>
+                  )}
+                </div>
+              </div>
 
               {inspectorTab === 'properties' && (
                 <>
@@ -3538,6 +3954,90 @@ export function App() {
                         </dd>
                       </div>
                     </dl>
+
+                    {selection.dimension && (
+                      <div className="section" style={{ padding: 0, marginBottom: 12 }}>
+                        <div className="section-title">
+                          <span>Dimension</span>
+                        </div>
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="dim-length">Length</label>
+                            <input
+                              id="dim-length"
+                              value={dimLengthDraft}
+                              disabled={!doc.editable}
+                              onChange={(e) => setDimLengthDraft(e.target.value)}
+                            />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="dim-angle">Angle °</label>
+                            <input
+                              id="dim-angle"
+                              value={dimAngleDraft}
+                              disabled={!doc.editable}
+                              onChange={(e) => setDimAngleDraft(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div className="actions-row">
+                          <button
+                            type="button"
+                            disabled={!doc.editable}
+                            onClick={async () => {
+                              const length = parseLength(dimLengthDraft, unitSystem);
+                              const angle = Number(dimAngleDraft);
+                              if (!(length && length > 0) || !Number.isFinite(angle)) {
+                                notify('Enter a length and angle');
+                                return;
+                              }
+                              applied(
+                                (await api.setDimensionProps(selection.nodeId, length, angle)) as {
+                                  ok: boolean;
+                                  reason?: string;
+                                  doc?: Doc;
+                                },
+                              );
+                            }}
+                          >
+                            Apply length / angle
+                          </button>
+                        </div>
+                        <div className="field">
+                          <label htmlFor="dim-scale">Scale drawing to dimension</label>
+                          <input
+                            id="dim-scale"
+                            value={dimScaleDraft}
+                            disabled={!doc.editable}
+                            onChange={(e) => setDimScaleDraft(e.target.value)}
+                            placeholder="Known real length"
+                          />
+                        </div>
+                        <div className="actions-row">
+                          <button
+                            type="button"
+                            disabled={!doc.editable}
+                            title="Uniformly scale the whole plan so this dimension matches the known length"
+                            onClick={async () => {
+                              const known = parseLength(dimScaleDraft, unitSystem);
+                              if (!(known && known > 0)) {
+                                notify('Enter the known real length');
+                                return;
+                              }
+                              applied(
+                                (await api.scaleToDimension(selection.nodeId, known)) as {
+                                  ok: boolean;
+                                  reason?: string;
+                                  doc?: Doc;
+                                },
+                              );
+                            }}
+                          >
+                            Scale drawing to dimension
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {selection.canRelabel && (
                       <div className="field">
@@ -3780,7 +4280,7 @@ export function App() {
                     rows={3}
                     value={annotationDraft}
                     placeholder="Stage, screen, room note…"
-                    onChange={(e) => setAnnotationDraft(e.target.value)}
+                    onChange={(e) => editAnnotationDraft(e.target.value)}
                     disabled={!canCreateLabel}
                     onKeyDown={(e) => {
                       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -3790,10 +4290,10 @@ export function App() {
                     }}
                   />
                 </div>
-                {annotationCapabilityHint && (
+                {annotationStyleHint && (
                   <div className="notice annotation-capability-notice" role="status">
                     <IconWarning size={14} />
-                    <span>{annotationCapabilityHint}</span>
+                    <span>{annotationStyleHint}</span>
                   </div>
                 )}
                 <div className="actions-row">
@@ -3801,22 +4301,20 @@ export function App() {
                     onClick={armLabel}
                     disabled={!canCreateLabel || !annotationDraft.trim()}
                     title={
-                      canCreateLabel
-                        ? 'Place this label on the plan'
-                        : 'Unavailable: this plan has no compatible label template'
+                      canCreateLabel ? 'Place this label on the plan' : 'This plan is read-only'
                     }
                   >
                     <IconPlus size={14} />
                     Place label
                   </button>
                   <button
-                    className={dimensioning ? 'is-on' : ''}
+                    className={isPressed(tool, DIMENSION) ? 'is-on' : ''}
                     onClick={toggleDimension}
                     disabled={!canCreateDimension}
                     title={
                       canCreateDimension
                         ? 'Draw an object-linked dimension (D)'
-                        : 'Unavailable: this plan has no compatible dimension templates'
+                        : 'This plan is read-only'
                     }
                   >
                     <IconRuler size={14} />
@@ -3832,7 +4330,8 @@ export function App() {
                     </>
                   ) : (
                     <>
-                      Use <kbd>M</kbd> for a temporary distance. This plan cannot store new dimensions.
+                      Use <kbd>M</kbd> for a temporary distance. This plan is read-only, so nothing can be saved
+                      onto it.
                     </>
                   )}{' '}
                   {canCreateLabel ? (
@@ -3840,7 +4339,7 @@ export function App() {
                       Press <kbd>T</kbd> to place a label.
                     </>
                   ) : (
-                    'New labels are unavailable in this plan.'
+                    'Open an editable plan to add labels.'
                   )}
                 </p>
               </div>
@@ -3951,25 +4450,29 @@ export function App() {
                   style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}
                   disabled={!doc.editable || !seatChair || (seatKind !== 'theatre' && !seatTable)}
                   onClick={() => {
-                    cancelPlacement();
-                    setMeasuring(false);
-                    setMeasureFrom(null);
-                    setMeasurement(null);
-                    setDimensioning(false);
-                    setDimensionFrom(null);
-                    setArmedSeating({
-                      kind: seatKind,
-                      chair: seatChair,
-                      table: seatTable || undefined,
-                      seats: seatCount,
-                      rows: seatRows,
-                      perRow: seatPerRow,
-                    });
-                    setArmed(
+                    const description =
                       seatKind === 'round'
                         ? `${seatTable} with ${seatCount} seats`
-                        : `${seatRows} × ${seatPerRow} ${seatKind}`,
-                    );
+                        : `${seatRows} × ${seatPerRow} ${seatKind}`;
+                    const { refusal } = dispatchTool({
+                      type: 'pick',
+                      choice: {
+                        kind: 'stamp',
+                        stamp: {
+                          what: 'seating',
+                          description,
+                          request: {
+                            kind: seatKind,
+                            chair: seatChair,
+                            table: seatTable || undefined,
+                            seats: seatCount,
+                            rows: seatRows,
+                            perRow: seatPerRow,
+                          },
+                        },
+                      },
+                    });
+                    if (refusal) notify(refusal);
                   }}
                 >
                   <IconPlus size={14} />
@@ -3989,6 +4492,16 @@ export function App() {
               <div className="section">
                 <div className="section-title">
                   <span>Layers</span>
+                  <span className="layer-summary">{visible.size}/{LAYERS.length} shown</span>
+                </div>
+                <div className="layer-bulk-actions" aria-label="Layer visibility controls">
+                  <button type="button" onClick={() => setAllLayersVisible(true)} disabled={!doc}>
+                    <IconLayers size={14} />
+                    Show all
+                  </button>
+                  <button type="button" onClick={() => setAllLayersVisible(false)} disabled={!doc || visible.size === 0}>
+                    Hide all
+                  </button>
                 </div>
                 <ul className="layers">
                   {LAYERS.map((l) => (
@@ -3998,6 +4511,16 @@ export function App() {
                         <span className="swatch" style={{ background: l.tint }} />
                         <span>{l.label}</span>
                       </label>
+                      <button
+                        type="button"
+                        className="layer-select"
+                        onClick={() => selectLayer(l.id)}
+                        disabled={!doc || (layerCounts.get(l.id) ?? 0) === 0}
+                        title={`Select every object on the ${l.label.toLowerCase()} layer`}
+                      >
+                        Select
+                        <span className="num">{layerCounts.get(l.id) ?? 0}</span>
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -4078,11 +4601,20 @@ export function App() {
               )}
             </>
           ) : (
-            <div className="section">
-              <div className="section-title">
-                <span>No plan open</span>
+            <div className="inspector-empty">
+              <span className="inspector-empty-icon" aria-hidden>
+                <IconSidebarRight size={22} />
+              </span>
+              <div>
+                <small>Inspector</small>
+                <strong>Ready when your plan is</strong>
               </div>
-              <p className="hint">Details, layers and the item inventory appear here once a plan is open.</p>
+              <p>Open or create a plan to edit selections, room settings, drawing tools, and layers here.</p>
+              <ul>
+                <li>Select an object to see exact controls</li>
+                <li>Choose a tool to see its active state</li>
+                <li>Manage visibility from Layers</li>
+              </ul>
             </div>
           )}
         </aside>
@@ -4097,6 +4629,26 @@ export function App() {
               : `${inventory?.total ?? 0} equipment items · saved automatically`}
         </span>
         <div className="spacer" />
+        {view === 'plan' && doc && (
+          <>
+            <span className="num">
+              Chairs: {furnitureCounts.chairs} · Tables: {furnitureCounts.tables}
+            </span>
+            <span className="status-sep" />
+          </>
+        )}
+        {view === 'plan' && seatingClearances && (
+          <>
+            <span className="num" title="Clearances from the last seating preview or place">
+              Aisle C {formatLength(seatingClearances.centreAisle, unitSystem)} · S{' '}
+              {formatLength(seatingClearances.side, unitSystem)} · W{' '}
+              {formatLength(seatingClearances.wing, unitSystem)} · F{' '}
+              {formatLength(seatingClearances.front, unitSystem)} · R{' '}
+              {formatLength(seatingClearances.rear, unitSystem)}
+            </span>
+            <span className="status-sep" />
+          </>
+        )}
         {view === 'plan' && cursor && (
           <>
             <span className="num">

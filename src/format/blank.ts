@@ -6,52 +6,30 @@
  * contained, so a file with nothing in it was a file nothing could be done to —
  * which is why Groundplan could only ever open a plan somebody else had drawn.
  *
- * A blank plan is a real Room Viewer document: an OLE compound file with the
- * archive in its `Contents` stream, holding an `RVRoomDef`, an `RVWalls`
- * container, and optionally a room. It opens in Room Viewer like any other
- * file, and it passes the same round-trip gate every other plan has to pass
- * before it can be saved.
+ * What a plan *is* lives in `plan-skeleton.ts`, which measured it off the
+ * corpus. This file is what remains once that knowledge moved out: the room
+ * sizes the new-plan dialog offers, the validation on the one people type, and
+ * the two gates a new file has to pass before anybody is handed it.
  */
 
 import CFB from 'cfb';
 
-import { addRoot, appendChild } from './edit.js';
-import { rectangularRoom } from './room.js';
+import { createPlanDocument, setRoomRect, verifyPlanShape, wallExtent } from './plan-skeleton.js';
+import { roomFromPolygon } from './room.js';
 import { applyRoom } from './room-render.js';
-import { UNITS_PER_FOOT, type RVDocument } from './rv.js';
-import { createContainer } from './synthesize.js';
-import { serializeArchive, verifyWritable } from './write.js';
+import { parseArchive, UNITS_PER_FOOT } from './rv.js';
+import { verifyWritable } from './write.js';
 
-/**
- * `COleDocument` writes three DWORDs before the archive proper. The reader
- * searches past them for the first tag, so a file without them would still
- * open — they are here because the point of a new plan is that it should be
- * indistinguishable from an old one.
- */
-const OLE_PREAMBLE_BYTES = 12;
-
-/** An empty document, ready to have objects added to it. */
-function emptyDocument(): RVDocument {
-  return {
-    roots: [],
-    parts: [],
-    warnings: [],
-    bytesConsumed: 0,
-    bytesTotal: 0,
-    trailerStrings: [],
-    // Nothing is read from a source, because there is no source: every object a
-    // blank plan contains carries its own bytes.
-    source: Buffer.alloc(0),
-    archiveStart: 0,
-    nextId: 1,
-  };
-}
+/** The largest room this format's coordinates hold, in feet. */
+const MAX_ROOM_FEET = 2000;
 
 export interface BlankPlanOptions {
   /** Draw a rectangular room, in logical units. Omit for an empty sheet. */
   room?: { width: number; depth: number };
-  /** Name for the room. */
+  /** Name for the room. Stored where Room Viewer reads it, not just alongside. */
   roomName?: string;
+  /** Date, venue, event and contact, written into the document trailer. */
+  identity?: { date?: string; venue?: string; event?: string; contact?: string };
 }
 
 export interface BlankPlanResult {
@@ -62,45 +40,85 @@ export interface BlankPlanResult {
 }
 
 /**
+ * The four walls of a rectangular room, wound the way Room Viewer winds them.
+ *
+ * Centred on the origin, and starting at the bottom-left corner going right:
+ * 236 of 246 corpus plans centre the wall extent on the origin in both axes,
+ * and 234 of 246 wind the four segments bottom, right, top, left. Neither fact
+ * changes what the room *is*, but a new plan may as well be the same shape as
+ * an old one — that is the entire point of this subsystem.
+ */
+function rectangularWalls(width: number, depth: number, name: string) {
+  const hw = width / 2;
+  const hd = depth / 2;
+  return roomFromPolygon(
+    [
+      { x: -hw, y: hd },
+      { x: hw, y: hd },
+      { x: hw, y: -hd },
+      { x: -hw, y: -hd },
+    ],
+    name,
+  );
+}
+
+/**
  * Builds a new plan.
  *
- * Verified before it is returned: the document is written, read back, and
- * required to reproduce itself exactly. Handing somebody a new plan they cannot
- * save would be a cruel thing to do, and the check costs a millisecond.
+ * Verified twice before it is returned, because the two checks answer different
+ * questions and the project only ever had the first:
+ *
+ *   - `verifyWritable` asks whether the document reproduces itself — written,
+ *     reparsed, re-serialized byte for byte, same census, no new warnings. That
+ *     is a property of our parser.
+ *   - `verifyPlanShape` asks whether it is a Room Viewer plan — the five
+ *     containers in the corpus order, one schema per class and the right one,
+ *     the measured container list header, the measured preamble, a readable
+ *     document trailer. That is a property of the format.
+ *
+ * Both run against the *reparsed* bytes, and those bytes are what gets packed.
+ * Nothing is appended after verification: the old code verified the document and
+ * then concatenated twelve zero bytes in front of it, so the only bytes that
+ * reached disk unchecked were the only ones that were wrong.
  */
 export function createBlankPlan(options: BlankPlanOptions = {}): BlankPlanResult {
-  const doc = emptyDocument();
-
-  // Every Room Viewer plan is rooted in a room definition; it is what the app
-  // hangs walls, furniture and annotation off.
-  const roomDef = createContainer(doc, { cls: 'RVRoomDef' });
-  if (!roomDef.ok || !roomDef.node) return { ok: false, reason: roomDef.reason };
-  if (!addRoot(doc, roomDef.node).ok) return { ok: false, reason: 'the room definition could not be added' };
-
-  // A wall container, so the first room drawn has somewhere to go that reads
-  // back as walls rather than as furniture.
-  const walls = createContainer(doc, { cls: 'RVWalls' });
-  if (!walls.ok || !walls.node) return { ok: false, reason: walls.reason };
-  if (!appendChild(doc, roomDef.node, walls.node).ok) {
-    return { ok: false, reason: 'the wall container could not be added' };
-  }
-
   if (options.room) {
     const { width, depth } = options.room;
     if (!(width > 0) || !(depth > 0)) return { ok: false, reason: 'a room needs a width and a depth' };
-    if (width > 2000 * UNITS_PER_FOOT || depth > 2000 * UNITS_PER_FOOT) {
+    if (width > MAX_ROOM_FEET * UNITS_PER_FOOT || depth > MAX_ROOM_FEET * UNITS_PER_FOOT) {
       return { ok: false, reason: 'that is larger than any room this format holds' };
     }
-    const drawn = applyRoom(doc, rectangularRoom(width, depth, options.roomName ?? 'Room'));
+  }
+
+  const roomName = options.roomName ?? 'Room';
+  const built = createPlanDocument({
+    identity: options.identity,
+    defaults: { roomName },
+  });
+  if (!built.ok || !built.doc) return { ok: false, reason: built.reason };
+  const doc = built.doc;
+
+  if (options.room) {
+    const drawn = applyRoom(doc, rectangularWalls(options.room.width, options.room.depth, roomName));
     if (!drawn.ok) return { ok: false, reason: drawn.reason };
+    const extent = wallExtent(doc);
+    if (extent) {
+      const sized = setRoomRect(doc, extent);
+      if (!sized.ok) return { ok: false, reason: sized.reason };
+    }
   }
 
   const verdict = verifyWritable(doc);
-  if (!verdict.ok) return { ok: false, reason: verdict.reason };
+  if (!verdict.ok || !verdict.bytes) return { ok: false, reason: verdict.reason };
 
-  const body = Buffer.concat([Buffer.alloc(OLE_PREAMBLE_BYTES), serializeArchive(doc)]);
+  // The shape gate runs on the bytes as the parser reads them back, not on the
+  // document we meant to build. Anything the two disagree about is exactly the
+  // class of defect this exists to catch.
+  const shape = verifyPlanShape(parseArchive(verdict.bytes, doc.archiveStart));
+  if (!shape.ok) return { ok: false, reason: `the plan is not shaped like a Room Viewer plan: ${shape.reason}` };
+
   const compound = CFB.utils.cfb_new();
-  CFB.utils.cfb_add(compound, 'Contents', body);
+  CFB.utils.cfb_add(compound, 'Contents', verdict.bytes);
 
   return { ok: true, file: Buffer.from(CFB.write(compound, { type: 'buffer' }) as Uint8Array) };
 }

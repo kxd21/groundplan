@@ -8,7 +8,13 @@
 import { loadBuffer, walk, UNITS_PER_FOOT } from '../src/format/index.js';
 import { packContainer, verifyWritable } from '../src/format/write.js';
 import { indexDocument } from '../src/format/edit.js';
-import { createDimension, createLabel, formatDistance } from '../src/format/annotate.js';
+import {
+  annotationCapabilities,
+  createDimension,
+  createLabel,
+  formatDistance,
+} from '../src/format/annotate.js';
+import { createBlankPlan } from '../src/format/blank.js';
 import {
   alignedDimension,
   angleDimension,
@@ -203,6 +209,59 @@ console.log('\ndrawing dimensions into a plan\n');
   const texts = [...walk(reread)].filter((n) => n.cls === 'RVLabel').flatMap((n) => n.labels);
   check('the synthesized text reads back', texts.includes('Built from nothing'), texts.join(' | '));
   check('with a font name beside it', texts.includes('Arial'), texts.join(' | '));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nannotating a plan drawn from scratch\n');
+
+{
+  // `annotationCapabilities` reports whether new annotation will match the
+  // sheet's existing styling — not whether it can be made at all. A plan built
+  // from nothing has neither template, and both must still work: the renderer
+  // once read these flags as permission, which left the label and dimension
+  // tools permanently disabled in every plan drawn from scratch.
+  const blank = createBlankPlan({ room: { width: 120 * F, depth: 80 * F }, roomName: 'Main' });
+  check('a blank plan is built', blank.ok, blank.reason);
+  const doc = loadBuffer(blank.file!, 'blank.rv4').document;
+
+  const caps = annotationCapabilities(doc);
+  check('it reports no styling to copy', !caps.label && !caps.dimension);
+
+  let labelFailure = '';
+  let dimensionFailure = '';
+  for (let i = 0; i < 43 && !labelFailure; i++) {
+    const made = createLabel(
+      doc,
+      indexDocument(doc),
+      `Label ${i + 1}`,
+      (i % 10) * 5 * F,
+      Math.floor(i / 10) * 5 * F,
+    );
+    const verdict = verifyWritable(doc);
+    if (!made.ok || !verdict.ok) labelFailure = `#${i + 1}: ${made.reason ?? verdict.reason}`;
+  }
+  check('forty-three labels in a row all land', !labelFailure, labelFailure);
+
+  for (let i = 0; i < 43 && !dimensionFailure; i++) {
+    const x = (i % 10) * 6 * F;
+    const y = 100 * F + Math.floor(i / 10) * 6 * F;
+    const made = createDimension(doc, indexDocument(doc), x, y, x + 12 * F, y);
+    const verdict = verifyWritable(doc);
+    if (!made.ok || !verdict.ok) dimensionFailure = `#${i + 1}: ${made.reason ?? verdict.reason}`;
+  }
+  check('and so do forty-three dimensions', !dimensionFailure, dimensionFailure);
+
+  check(
+    'the lines are all there',
+    countClass(doc, 'RVDimensionLine') === 43,
+    String(countClass(doc, 'RVDimensionLine')),
+  );
+  // 43 placed labels, plus the measurement text each dimension carries.
+  check(
+    'with a label apiece beside them',
+    countClass(doc, 'RVLabel') === 86,
+    String(countClass(doc, 'RVLabel')),
+  );
 }
 
 console.log(`\n${passed}/${passed + failed} checks passed`);

@@ -19,7 +19,14 @@
  */
 
 import { allocate, summariseAllocation, type Allocation } from '../format/allocation.js';
-import { checkSightlines, summariseSightlines, type Screen, type SightlineSummary } from '../format/av.js';
+import {
+  checkSightlines,
+  recommendImageWidth,
+  screensFromItems,
+  summariseSightlines,
+  type Screen,
+  type SightlineSummary,
+} from '../format/av.js';
 import type { CompanionDocument } from '../format/companion.js';
 import { createCompanion } from '../format/companion.js';
 import { resolveInstances, SpecLibrary, type PlacedItem } from '../format/definition.js';
@@ -43,6 +50,7 @@ import { combineRooms, curveWall, rectRoom, roomProblems, setWallLength, setWall
 import { applyRoom } from '../format/room-render.js';
 import {
   createSeatingPlan,
+  solveOptimum,
   solveSeating,
   STYLE_DEFAULTS,
   type SeatingPlan,
@@ -59,8 +67,9 @@ import {
   type StageBuild,
 } from '../format/stage.js';
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
-import { walk, UNITS_PER_FOOT, type RVDocument } from '../format/rv.js';
+import { UNITS_PER_FOOT, type RVDocument } from '../format/rv.js';
 import { addRoot, appendChild, indexDocument } from '../format/edit.js';
+import { planBody } from '../format/plan-skeleton.js';
 import { createSegment, createShape } from '../format/synthesize.js';
 import { companionPathFor, loadCompanion, saveCompanion } from './companion-store.js';
 import type { Session } from './session.js';
@@ -87,6 +96,18 @@ interface PlanModelState {
   derivedSource: 'walls' | 'region' | 'extent' | 'none';
   /** Objects the last seating render created. */
   seatingIds: number[];
+  /** Clearances from the last seating preview/apply, for the status bar. */
+  lastClearances: {
+    front: number;
+    side: number;
+    wing: number;
+    rear: number;
+    centreAisle: number;
+    perimeter: number;
+    aisle: number;
+    frontWall: number;
+  } | null;
+  lastSeatCounts: { chairs: number; tables: number } | null;
   /** The stage as last built, for the report. */
   stage: StageBuild | null;
 }
@@ -98,6 +119,8 @@ const EMPTY: PlanModelState = {
   derivedSource: 'none',
   rendered: null,
   seatingIds: [],
+  lastClearances: null,
+  lastSeatCounts: null,
   stage: null,
 };
 
@@ -121,6 +144,8 @@ export async function openPlanModel(planPath: string, doc: RVDocument, units: Un
     // which amounts to the same thing.
     rendered: loaded.companion.rooms[0] ?? null,
     seatingIds: [],
+    lastClearances: null,
+    lastSeatCounts: null,
     stage: null,
   };
 }
@@ -156,6 +181,80 @@ function setRoom(doc: RVDocument, room: RoomModel, units: UnitSystem): void {
   state.derived = false;
 }
 
+/** Renames the room and/or sets ceiling height on the companion model. */
+export function updateRoomMeta(
+  session: Session,
+  patch: { name?: string; ceilingHeight?: number },
+  units: UnitSystem,
+): ModelEdit {
+  const doc = session.loaded.document;
+  const room = currentRoom(doc);
+  if (!room) return { ok: false, reason: 'there is no room to update yet' };
+  const next: RoomModel = { ...room };
+  if (typeof patch.name === 'string' && patch.name.trim()) next.name = patch.name.trim();
+  if (patch.ceilingHeight != null) {
+    next.ceilingHeight = patch.ceilingHeight > 0 ? patch.ceilingHeight : undefined;
+  }
+  setRoom(doc, next, units);
+  return { ok: true };
+}
+
+export interface AvSummaryView {
+  screens: number;
+  seatsGraded: number;
+  clear: number;
+  blocked: number;
+  tooFar: number;
+  tooClose: number;
+  offAxis: number;
+  notes: string[];
+  recommendWidthText: string;
+}
+
+/** Sightline / screen summary for the Event Room Data A/V tab. */
+export function avSummary(session: Session, units: UnitSystem): AvSummaryView {
+  const doc = session.loaded.document;
+  const items = placedItems(doc);
+  const screens = screensFromItems(items);
+  const seats = items
+    .filter((item) => /chair|seat/i.test(item.name) || /chair/i.test(item.spec?.category ?? ''))
+    .map((item, index) => ({
+      x: item.x,
+      y: item.y,
+      rotation: item.rotation,
+      row: 0,
+      seat: index,
+      section: 0,
+    }));
+  if (!screens.length) {
+    return {
+      screens: 0,
+      seatsGraded: 0,
+      clear: 0,
+      blocked: 0,
+      tooFar: 0,
+      tooClose: 0,
+      offAxis: 0,
+      notes: ['No screen targets on the plan yet. Place a screen or mark a stage as a sight target.'],
+      recommendWidthText: '',
+    };
+  }
+  const primary = screens[0]!;
+  const summary = summariseSightlines(checkSightlines(seats, primary, items));
+  const recommend = recommendImageWidth(seats, primary);
+  return {
+    screens: screens.length,
+    seatsGraded: summary.total,
+    clear: summary.clear,
+    blocked: summary.blocked,
+    tooFar: summary.tooFar,
+    tooClose: summary.tooClose,
+    offAxis: summary.offAxis,
+    notes: summary.notes,
+    recommendWidthText: recommend > 0 ? formatLength(recommend, units) : '',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // What the renderer is given
 // ---------------------------------------------------------------------------
@@ -184,6 +283,8 @@ export interface RoomSummary {
   perimeter: number;
   width: number;
   height: number;
+  /** Ceiling height in logical units, when known. */
+  ceilingHeight: number;
   /** Top-left of the room's bounds, so callers can position against it. */
   x: number;
   y: number;
@@ -191,6 +292,7 @@ export interface RoomSummary {
   areaText: string;
   perimeterText: string;
   sizeText: string;
+  ceilingText: string;
   summary: string;
   problems: string[];
   capacities: Array<{ layout: string; low: number; high: number; squareFeetEach: number }>;
@@ -209,6 +311,12 @@ export interface PlanModelView {
   seatingStyles: Array<{ id: SeatingStyle; label: string; needsTable: boolean }>;
   /** Placed items, summarised — what the allocation and legend are built from. */
   itemCount: number;
+  /** Last seating clearances / counts for the status bar. */
+  seatingStatus: {
+    clearances: NonNullable<PlanModelState['lastClearances']>;
+    chairs: number;
+    tables: number;
+  } | null;
   stage: { present: boolean; buildList: Array<{ item: string; quantity: number; detail?: string }>; warnings: string[] } | null;
 }
 
@@ -265,11 +373,14 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
     perimeter: roomPerimeter(room),
     width,
     height,
+    ceilingHeight: room.ceilingHeight && room.ceilingHeight > 0 ? room.ceilingHeight : 0,
     x: bounds ? bounds.minX : 0,
     y: bounds ? bounds.minY : 0,
     areaText: formatArea(roomArea(room), units),
     perimeterText: formatLength(roomPerimeter(room), units),
     sizeText: `${formatLength(width, units)} × ${formatLength(height, units)}`,
+    ceilingText:
+      room.ceilingHeight && room.ceilingHeight > 0 ? formatLength(room.ceilingHeight, units) : '',
     summary: describeRoom(room),
     problems: roomProblems(room),
     capacities: allCapacities(room),
@@ -307,6 +418,14 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
       needsTable: TABLE_STYLES.has(id),
     })),
     itemCount: placedItems(doc).length,
+    seatingStatus:
+      state.lastClearances && state.lastSeatCounts
+        ? {
+            clearances: state.lastClearances,
+            chairs: state.lastSeatCounts.chairs,
+            tables: state.lastSeatCounts.tables,
+          }
+        : null,
     stage:
       state.stage && stageSolution
         ? {
@@ -475,11 +594,27 @@ export interface SeatingRequestView {
   aisle?: number;
   rowsPerBlock?: number;
   centreAisle?: number;
+  side?: number;
+  wing?: number;
+  rear?: number;
+  frontWall?: number;
   stagger?: boolean;
   splay?: number;
   tableDiameter?: number;
   seatsPerTable?: number;
   maxSeats?: number;
+  /** Prefer denser packing within clearances. */
+  optimum?: boolean;
+  /** Crescent open-side for round layouts (also available as a style). */
+  crescent?: boolean;
+  banquetEndChairs?: boolean;
+  banquetRotate90?: boolean;
+  chairsBothSides?: boolean;
+  tablesAcross?: number;
+  /** Seats/tables across the centre bank when sectioning is on. */
+  sectionCentre?: number;
+  /** Seats/tables across each wing when sectioning is on. */
+  sectionWing?: number;
 }
 
 function planFrom(request: SeatingRequestView): SeatingPlan {
@@ -491,10 +626,32 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
   if (request.aisle != null) plan.clearances.aisle = Math.max(0, request.aisle);
   if (request.rowsPerBlock != null) plan.clearances.rowsPerBlock = Math.max(0, Math.floor(request.rowsPerBlock));
   if (request.centreAisle != null) plan.clearances.centreAisle = Math.max(0, request.centreAisle);
+  if (request.side != null) plan.clearances.side = Math.max(0, request.side);
+  if (request.wing != null) plan.clearances.wing = Math.max(0, request.wing);
+  if (request.rear != null) plan.clearances.rear = Math.max(0, request.rear);
+  if (request.frontWall != null) plan.clearances.frontWall = Math.max(0, request.frontWall);
   if (request.stagger != null) plan.stagger = request.stagger;
   if (request.tableDiameter && request.tableDiameter > 0) plan.tableDiameter = request.tableDiameter;
   if (request.seatsPerTable && request.seatsPerTable > 0) plan.seatsPerTable = request.seatsPerTable;
   if (request.maxSeats && request.maxSeats > 0) plan.maxSeats = request.maxSeats;
+  if (request.optimum != null) plan.optimum = request.optimum;
+  if (request.crescent != null) plan.crescent = request.crescent;
+  if (!plan.banquet) plan.banquet = { stagger: 'none', endChairs: 0, rotate90: false };
+  if (request.banquetEndChairs != null) plan.banquet.endChairs = request.banquetEndChairs ? 2 : 0;
+  if (request.banquetRotate90 != null) plan.banquet.rotate90 = request.banquetRotate90;
+  if (request.stagger) plan.banquet.stagger = 'half';
+  if (!plan.block) plan.block = { chairsBothSides: false, tablesAcross: 0 };
+  if (request.chairsBothSides != null) plan.block.chairsBothSides = request.chairsBothSides;
+  if (request.tablesAcross != null && request.tablesAcross > 0) {
+    plan.block.tablesAcross = Math.floor(request.tablesAcross);
+  }
+  if (request.sectionCentre != null || request.sectionWing != null) {
+    plan.sectioning = {
+      enabled: true,
+      centre: request.sectionCentre != null && request.sectionCentre > 0 ? Math.floor(request.sectionCentre) : 8,
+      wing: request.sectionWing != null && request.sectionWing > 0 ? Math.floor(request.sectionWing) : 4,
+    };
+  }
 
   if (request.splay && Math.abs(request.splay) > 0.5) {
     plan.sections = [
@@ -515,20 +672,62 @@ export interface SeatingPreview {
   rows: number;
   dropped: number;
   notes: string[];
+  clearances: {
+    front: number;
+    side: number;
+    wing: number;
+    rear: number;
+    centreAisle: number;
+    perimeter: number;
+    aisle: number;
+    frontWall: number;
+  };
 }
 
 /** Solves without drawing, so the panel can show the count as sliders move. */
 export function previewSeating(session: Session, request: SeatingRequestView): SeatingPreview {
   const room = currentRoom(session.loaded.document);
-  if (!room) return { seats: 0, tables: 0, rows: 0, dropped: 0, notes: ['This plan has no room outline yet.'] };
+  const emptyClearances = {
+    front: 0,
+    side: 0,
+    wing: 0,
+    rear: 0,
+    centreAisle: 0,
+    perimeter: 0,
+    aisle: 0,
+    frontWall: 0,
+  };
+  if (!room) {
+    return {
+      seats: 0,
+      tables: 0,
+      rows: 0,
+      dropped: 0,
+      notes: ['This plan has no room outline yet.'],
+      clearances: emptyClearances,
+    };
+  }
 
-  const solution = solveSeating(planFrom(request), room);
+  const plan = planFrom(request);
+  const solution = plan.optimum ? solveOptimum(plan, room) : solveSeating(plan, room);
+  state.lastClearances = {
+    front: plan.clearances.front,
+    side: plan.clearances.side,
+    wing: plan.clearances.wing,
+    rear: plan.clearances.rear,
+    centreAisle: plan.clearances.centreAisle,
+    perimeter: plan.clearances.perimeter,
+    aisle: plan.clearances.aisle,
+    frontWall: plan.clearances.frontWall,
+  };
+  state.lastSeatCounts = { chairs: solution.seats.length, tables: solution.tables.length };
   return {
     seats: solution.seats.length,
     tables: solution.tables.length,
     rows: solution.rowCount,
     dropped: solution.dropped,
     notes: solution.notes,
+    clearances: state.lastClearances,
   };
 }
 
@@ -545,7 +744,7 @@ export function applySeating(
   if (!chair.trim()) return { ok: false, reason: 'choose a chair to place' };
 
   const plan = planFrom(request);
-  const solution: SeatingSolution = solveSeating(plan, room);
+  const solution: SeatingSolution = plan.optimum ? solveOptimum(plan, room) : solveSeating(plan, room);
   if (!solution.seats.length && !solution.tables.length) {
     return { ok: false, reason: 'that layout does not fit in this room' };
   }
@@ -557,6 +756,17 @@ export function applySeating(
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
 
   state.seatingIds = drawn.created;
+  state.lastClearances = {
+    front: plan.clearances.front,
+    side: plan.clearances.side,
+    wing: plan.clearances.wing,
+    rear: plan.clearances.rear,
+    centreAisle: plan.clearances.centreAisle,
+    perimeter: plan.clearances.perimeter,
+    aisle: plan.clearances.aisle,
+    frontWall: plan.clearances.frontWall,
+  };
+  state.lastSeatCounts = { chairs: solution.seats.length, tables: solution.tables.length };
   const notes = [...solution.notes];
   if (drawn.removed) notes.unshift(`Replaced the previous layout (${drawn.removed} items).`);
   return { ok: true, created: drawn.created, note: notes.join(' ') || undefined };
@@ -599,7 +809,7 @@ export function addStage(
   const shape = createShape(doc, { name, x: centre.x, y: centre.y, outline });
   if (!shape.ok || !shape.node) return { ok: false, reason: shape.reason };
 
-  const host = stageHost(doc);
+  const host = planBody(doc);
   const added = host ? appendChild(doc, host, shape.node) : addRoot(doc, shape.node);
   if (!added.ok) return { ok: false, reason: added.reason };
 
@@ -611,15 +821,6 @@ export function addStage(
     warnings: [...solution.notes, ...stageWarnings(build)],
     note: `${solution.decks.length} decks.`,
   };
-}
-
-/** Where a placed shape should live: the room container, else document level. */
-function stageHost(doc: RVDocument) {
-  for (const node of walk(doc)) {
-    if (node.fields.childCountAt == null) continue;
-    if (node.cls === 'RVRoomDef' || node.cls === 'RVRoom') return node;
-  }
-  return null;
 }
 
 export function clearStage(): void {
@@ -697,7 +898,7 @@ export function drawShape(
 
   if (!built.ok || !built.node) return { ok: false, reason: built.reason };
 
-  const host = stageHost(doc);
+  const host = planBody(doc);
   const added = host ? appendChild(doc, host, built.node) : addRoot(doc, built.node);
   if (!added.ok) return { ok: false, reason: added.reason };
 

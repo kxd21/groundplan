@@ -14,6 +14,8 @@
 
 import type { RVDocument, RVNode } from './rv.js';
 import { measureNode, type DocumentIndex, type EditResult } from './edit.js';
+import { readLibrary } from './library.js';
+import { planBody } from './plan-skeleton.js';
 
 export interface SymbolSource {
   /** Catalogue name as stored in the file. */
@@ -25,6 +27,24 @@ export interface SymbolSource {
 /** Lists the named shapes a file can contribute, with their real footprints. */
 export function listSymbols(doc: RVDocument): SymbolSource[] {
   const byName = new Map<string, SymbolSource>();
+
+  // A shape library keeps its definitions as typed roots — RVChair, RVTable,
+  // RVAVItem — with the name in a record that follows the object rather than a
+  // label inside it. Reading placements finds none of them, which is why the
+  // catalogues that shipped with the editor listed nothing at all.
+  for (const entry of readLibrary(doc)) {
+    if (byName.has(entry.name)) continue;
+    // A definition's own rect is its footprint and is reliably right — the
+    // chair named "20.5W X 23.23D" measures 20.5 by 23.2 inches by it. Its
+    // geometry is not: where the outline sits under an RVGeometry it is held
+    // in a master space that the rect scales, so measuring it reports a 18in
+    // round table as six feet across.
+    const width = entry.node.bounds.right - entry.node.bounds.left;
+    const height = entry.node.bounds.bottom - entry.node.bounds.top;
+    if (width > 0 && height > 0) {
+      byName.set(entry.name, { name: entry.name, width, height });
+    }
+  }
   const seen = new Set<RVNode>();
   const stack = [...doc.roots];
 
@@ -54,6 +74,10 @@ export function listSymbols(doc: RVDocument): SymbolSource[] {
 /** Finds a named shape in a source document. */
 export function findSymbol(doc: RVDocument, name: string): RVNode | null {
   const want = name.trim().toLowerCase();
+
+  for (const entry of readLibrary(doc)) {
+    if (entry.name.trim().toLowerCase() === want) return entry.node;
+  }
   const seen = new Set<RVNode>();
   const stack = [...doc.roots];
 
@@ -112,24 +136,16 @@ function detach(node: RVNode, source: RVDocument, nextId: () => number, created:
   return copy;
 }
 
-/** Where a newly imported object should live in the destination. */
+/**
+ * Where a newly imported object should live in the destination.
+ *
+ * This used to walk the roots backwards and then prefer whichever room
+ * container already held the most `RVShape`. Both halves were guesses standing
+ * in for a fact nobody had measured: a plan has one display list, it is root 0,
+ * and `plan-skeleton.ts` names it.
+ */
 function findHost(doc: RVDocument): RVNode | null {
-  let best: { node: RVNode; count: number } | null = null;
-  const seen = new Set<RVNode>();
-  const stack = [...doc.roots];
-
-  while (stack.length) {
-    const node = stack.pop()!;
-    if (seen.has(node)) continue;
-    seen.add(node);
-
-    if (node.fields.childCountAt != null && (node.cls === 'RVRoomDef' || node.cls === 'RVRoom')) {
-      const count = node.children.filter((c) => c.cls === 'RVShape').length;
-      if (!best || count > best.count) best = { node, count };
-    }
-    for (const child of node.children) stack.push(child);
-  }
-  return best?.node ?? null;
+  return planBody(doc);
 }
 
 export interface ImportResult extends EditResult {
@@ -178,17 +194,34 @@ export function importSymbol(
     const dy = y - anchor.y;
     const offset = copy.fields.placementAt - copy.span.bodyAt;
     if (offset >= 0 && offset + 16 <= copy.headerOverride!.length) {
-      copy.headerOverride!.writeDoubleLE(anchor.x + dx, offset);
-      copy.headerOverride!.writeDoubleLE(anchor.y + dy, offset + 8);
+      // Write the destination directly rather than `anchor + delta`. The two
+      // are the same number in arithmetic but not in doubles: the round trip
+      // through the delta lands a bit or two away, and since the node records
+      // the exact point while the bytes recorded the drifted one, the save gate
+      // read the document back, saw them disagree, and refused the file.
+      copy.headerOverride!.writeDoubleLE(x, offset);
+      copy.headerOverride!.writeDoubleLE(y, offset + 8);
       copy.points[0] = { x, y };
     }
-    const boundsAt = copy.fields.boundsAt - copy.span.bodyAt;
+    const boundsAt = (copy.fields.boundsAt ?? -1) - copy.span.bodyAt;
     if (boundsAt >= 0 && boundsAt + 16 <= copy.headerOverride!.length) {
+      const moved = {
+        left: Math.round(copy.bounds.left + dx),
+        top: Math.round(copy.bounds.top + dy),
+        right: Math.round(copy.bounds.right + dx),
+        bottom: Math.round(copy.bounds.bottom + dy),
+      };
       const b = copy.headerOverride!;
-      b.writeInt32LE(Math.round(copy.bounds.left + dx), boundsAt);
-      b.writeInt32LE(Math.round(copy.bounds.top + dy), boundsAt + 4);
-      b.writeInt32LE(Math.round(copy.bounds.right + dx), boundsAt + 8);
-      b.writeInt32LE(Math.round(copy.bounds.bottom + dy), boundsAt + 12);
+      b.writeInt32LE(moved.left, boundsAt);
+      b.writeInt32LE(moved.top, boundsAt + 4);
+      b.writeInt32LE(moved.right, boundsAt + 8);
+      b.writeInt32LE(moved.bottom, boundsAt + 12);
+      // The node has to agree with the bytes it just wrote. Left on the source
+      // file's rect, the document described a shape at the old coordinates
+      // while the file described one at the new — and the save gate, which
+      // reads the document back and compares, refused every plan an imported
+      // symbol had been added to.
+      copy.bounds = moved;
     }
   }
 

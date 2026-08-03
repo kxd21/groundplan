@@ -31,6 +31,8 @@ import {
 } from '../src/main/plan-model.js';
 import { companionPathFor } from '../src/main/companion-store.js';
 import { verifyWritable } from '../src/format/write.js';
+import { measureNode } from '../src/format/edit.js';
+import { walk } from '../src/format/rv.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../src/format/rv.js';
 import { fixturePlanBuffer } from './test-fixture.js';
 
@@ -279,6 +281,27 @@ async function main(): Promise<void> {
     check('the panel can see the stage', view.stage?.present === true);
     check('it is one object on the plan', view.itemCount === 2, `${view.itemCount}`);
     check('named with its size', session.scene.inventory.some((i) => i.name.startsWith('Stage 24')), session.scene.inventory.map((i) => i.name).join(' | '));
+
+    // A placed shape keeps its insertion point in absolute coordinates and its
+    // outline local to that point. Measuring the two together reports the
+    // distance from the plan origin to the shape rather than the shape: this
+    // 24ft stage placed 18ft along the room measured 42ft, and every "resize to
+    // N feet" scaled by that same wrong figure.
+    const stageNode = [...walk(session.loaded.document)].find(
+      (node) => node.cls === 'RVShape' && node.labels.some((l) => l.startsWith('Stage 24')),
+    );
+    check('the stage object is findable', !!stageNode);
+    const measured = measureNode(stageNode!);
+    check(
+      'and it measures the stage, not its distance from the origin',
+      Math.abs(measured.width - 24 * F) < 2 && Math.abs(measured.height - 16 * F) < 2,
+      `${(measured.width / F).toFixed(2)} x ${(measured.height / F).toFixed(2)} ft`,
+    );
+    check(
+      'which is what its own bounds rect says too',
+      Math.abs(measured.width - (stageNode!.bounds.right - stageNode!.bounds.left)) < 2,
+      `rect ${((stageNode!.bounds.right - stageNode!.bounds.left) / F).toFixed(2)} ft`,
+    );
 
     // A stage takes its floor out of the seating count.
     const request = { style: 'theatre' as const, focusX: 30 * F, focusY: 8 * F };

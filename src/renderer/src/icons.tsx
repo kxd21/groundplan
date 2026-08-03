@@ -199,6 +199,17 @@ export function IconGrid({ size = 16, className }: IconProps) {
   );
 }
 
+/** Stacked drawing sheets, used for layer visibility and layer selection. */
+export function IconLayers({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M8 2 13.5 5 8 8 2.5 5 8 2Z" />
+      <path d="m2.5 8 5.5 3 5.5-3" />
+      <path d="m2.5 11 5.5 3 5.5-3" />
+    </svg>
+  );
+}
+
 export function IconPrint({ size = 16, className }: IconProps) {
   return (
     <svg {...base(size)} className={className}>

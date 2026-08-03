@@ -157,6 +157,7 @@ export function InventoryPalette({
   const [thumbs, setThumbs] = useState<Record<string, Thumb | null>>({});
   const [tracing, setTracing] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
 
   // A filter change can hide whatever was being edited.
   useEffect(() => {
@@ -421,14 +422,19 @@ export function InventoryPalette({
               </div>
             </li>
           ) : (
-            <li key={item.id} className="palette-row">
+            <li key={item.id} className={`palette-row${draggingId === item.id ? ' is-dragging' : ''}`}>
               <button
                 className="palette-place"
                 draggable={canPlace}
+                disabled={!canPlace}
                 onDragStart={(e) => {
                   e.dataTransfer.setData('application/x-groundplan-item', item.id);
+                  e.dataTransfer.setData('application/x-groundplan-label', item.name);
+                  e.dataTransfer.setData('text/plain', item.name);
                   e.dataTransfer.effectAllowed = 'copy';
+                  setDraggingId(item.id);
                 }}
+                onDragEnd={() => setDraggingId(null)}
                 title={
                   canPlace
                     ? `Drag ${item.name} onto the plan, or click to place it${
@@ -438,6 +444,7 @@ export function InventoryPalette({
                 }
                 onClick={() => canPlace && onPlace(item.id, item.name)}
               >
+                <span className="palette-drag-handle" aria-hidden>⠿</span>
                 <Preview
                 thumb={item.tracedIcon ? centredToThumb(item.tracedIcon) : thumbs[item.id]}
                 width={item.width}

@@ -65,6 +65,7 @@ import {
   measureNode,
   flipNode,
   reorderChild,
+  scalePlanUniform,
 } from '../format/edit.js';
 import { arrangeMoves, type ArrangeBounds, type ArrangeMode } from '../format/arrange.js';
 import { addSeating, type SeatingRequest } from '../format/seating.js';
@@ -72,10 +73,14 @@ import {
   annotationCapabilities,
   createLabel,
   createDimension,
+  setDimensionLengthAngle,
   type AnnotationCapabilities,
 } from '../format/annotate.js';
+import { formatLength as formatLengthUnits, type UnitSystem } from '../format/units.js';
+import { INSERT_TREE, isInsertLeaf, type InsertBranch, type InsertLeaf } from '../inventory/insert-catalog.js';
 import { listSymbols, importSymbol } from '../format/symbol.js';
-import { placeGear, placeTracedIcon, parseDimensions } from '../format/place.js';
+import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions } from '../format/place.js';
+import { isLibrary } from '../format/library.js';
 import { verifyWritable } from '../format/write.js';
 import { Session } from './session.js';
 import { canonicalPath, pathIdentity, samePath } from './paths.js';
@@ -143,12 +148,12 @@ import {
   type RecoveryEntry,
 } from './recovery.js';
 import { buildStableSchedule, setStableScheduleField } from './schedule-metadata.js';
-import type { UnitSystem } from '../format/units.js';
 import { createBlankPlan, ROOM_PRESETS } from '../format/blank.js';
 import { companionPathFor } from './companion-store.js';
 import {
   addStage,
   applySeating as applySeatingModel,
+  avSummary,
   clearStage,
   createRectangularRoom,
   curveRoomWall,
@@ -163,6 +168,7 @@ import {
   reshapeRoom,
   resetPlanModel,
   savePlanModel,
+  updateRoomMeta,
   type DrawTool,
   type ReportOptions,
   type SeatingRequestView,
@@ -293,6 +299,15 @@ export interface SelectionInfo {
   /** Centre of the object's bounds, in logical units. */
   x: number;
   y: number;
+  /** Present when the selection is a dimension line. */
+  dimension?: {
+    length: number;
+    angleDegrees: number;
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
 }
 
 /** The gear lists currently loaded, with their totals. */
@@ -2016,6 +2031,21 @@ function createWindow(): void {
   }
 }
 
+function insertMenuFromTree(nodes: Array<InsertBranch | InsertLeaf>): MenuItemConstructorOptions[] {
+  return nodes.map((node) => {
+    if (isInsertLeaf(node)) {
+      return {
+        label: node.label,
+        click: () => mainWindow?.webContents.send('menu:insert-leaf', node.id),
+      };
+    }
+    return {
+      label: node.label,
+      submenu: insertMenuFromTree(node.children),
+    };
+  });
+}
+
 function buildMenu(): void {
   const isMac = process.platform === 'darwin';
 
@@ -2136,6 +2166,27 @@ function buildMenu(): void {
           label: 'Select All',
           accelerator: 'CmdOrCtrl+A',
           click: () => mainWindow?.webContents.send('menu:select-all'),
+        },
+      ],
+    },
+    {
+      label: '&Insert',
+      submenu: [
+        {
+          label: 'Browse Insert Catalog…',
+          accelerator: 'CmdOrCtrl+I',
+          click: () => mainWindow?.webContents.send('menu:insert'),
+        },
+        { type: 'separator' },
+        ...insertMenuFromTree(INSERT_TREE),
+        { type: 'separator' },
+        {
+          label: 'Shape Editor Wizard…',
+          click: () => mainWindow?.webContents.send('menu:shape-wizard'),
+        },
+        {
+          label: 'Build a Stage…',
+          click: () => mainWindow?.webContents.send('menu:build-stage'),
         },
       ],
     },
@@ -2951,6 +3002,16 @@ app.whenReady().then(async () => {
       // A matched item borrows a shape drawn under a different name — the gear
       // list says "Panasonic PT-RZ21KU", the drawing says "LCD Projector".
       const lookFor = item.symbolName ?? item.name;
+      // A shape library holds definitions — an `RVChair`, an `RVAVItem` — not
+      // placements. Copying one across brings its drawing but not its identity:
+      // it lands as an `RVChair`, so the plan cannot name it, count it, or list
+      // it in the inventory. Rebuilding it as a placement is what makes an item
+      // put down from the palette the same kind of object as everything else on
+      // the drawing.
+      if (isLibrary(from)) {
+        const built = applyEdit((s) => placeFromLibrary(s.loaded.document, from, lookFor, x, y));
+        if (built.ok) return built;
+      }
       const imported = applyEdit((s) => importSymbol(s.loaded.document, s.index, from, lookFor, x, y));
       // Fall through to a drawn box only if the symbol could not be brought in.
       if (imported.ok) return imported;
@@ -3324,6 +3385,14 @@ app.whenReady().then(async () => {
 
   handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
 
+  handle('plan:room-meta', (_event, patch: { name?: string; ceilingHeight?: number }) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const result = updateRoomMeta(session, patch ?? {}, unitSystem());
+    return result;
+  });
+
+  handle('plan:av-summary', () => (session ? avSummary(session, unitSystem()) : null), null);
+
   /** Solves without drawing, so the panel can show the count as it is tuned. */
   handle(
     'plan:seating-preview',
@@ -3395,19 +3464,32 @@ app.whenReady().then(async () => {
    * companion, recent files, the round-trip gate — working exactly as it does
    * for a plan that was opened.
    */
-  handle('file:new', async (_event, options: { name?: string; width?: number; depth?: number }) => {
+  handle(
+    'file:new',
+    async (
+      _event,
+      options: {
+        name?: string;
+        width?: number;
+        depth?: number;
+        identity?: { date?: string; venue?: string; event?: string; contact?: string };
+      },
+    ) => {
     const width = Number(options?.width) || 0;
     const depth = Number(options?.depth) || 0;
+    const roomName =
+      typeof options?.name === 'string' && options.name.trim() ? options.name.trim() : undefined;
 
     const built = createBlankPlan({
       room: width > 0 && depth > 0 ? { width, depth } : undefined,
-      roomName: typeof options?.name === 'string' && options.name.trim() ? options.name.trim() : undefined,
+      roomName,
+      identity: options?.identity,
     });
     if (!built.ok || !built.file) return { ok: false, reason: built.reason };
 
-    const suggested = `${(options?.name ?? 'Untitled plan').trim() || 'Untitled plan'}.rv4`;
+    const suggested = `${roomName || 'Untitled plan'}.rv4`;
     const target = await dialog.showSaveDialog(mainWindow!, {
-      title: 'New plan',
+      title: 'Save new plan',
       defaultPath: suggested,
       filters: [{ name: 'Room Viewer plan', extensions: ['rv4'] }],
     });
@@ -3611,7 +3693,7 @@ app.whenReady().then(async () => {
     if (!node || !session) return null;
     const name = node.labels.find((s) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(s));
     const measured = measureNode(node);
-    return {
+    const info: SelectionInfo = {
       nodeId,
       cls: node.cls,
       name,
@@ -3625,7 +3707,60 @@ app.whenReady().then(async () => {
       x: (node.bounds.left + node.bounds.right) / 2,
       y: (node.bounds.top + node.bounds.bottom) / 2,
     };
+    if (node.cls === 'RVDimensionLine' && node.points.length >= 2) {
+      const a = node.points[0]!;
+      const b = node.points[1]!;
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      info.dimension = {
+        length,
+        angleDegrees: (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI,
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+      };
+    }
+    return info;
   });
+
+  handle(
+    'edit:dimension-props',
+    (_event, nodeId: number, length: number, angleDegrees: number) =>
+      applyEdit((s) => {
+        const node = s.index.byId.get(nodeId);
+        if (!node) return { ok: false, reason: 'that object is gone' };
+        const geometry = setDimensionLengthAngle(s.loaded.document, node, length, angleDegrees);
+        if (!geometry.ok) return geometry;
+        // Refresh the measurement label beside the line when one exists nearby.
+        const midX = (node.points[0]!.x + node.points[1]!.x) / 2;
+        const midY = (node.points[0]!.y + node.points[1]!.y) / 2;
+        for (const candidate of s.loaded.document.roots) {
+          if (candidate.cls !== 'RVLabel') continue;
+          const cx = (candidate.bounds.left + candidate.bounds.right) / 2;
+          const cy = (candidate.bounds.top + candidate.bounds.bottom) / 2;
+          if (Math.hypot(cx - midX, cy - midY) < 240) {
+            renameNode(s.loaded.document, candidate, formatLengthUnits(length, unitSystem()));
+            break;
+          }
+        }
+        return { ok: true };
+      }),
+  );
+
+  handle('edit:scale-to-dimension', (_event, nodeId: number, knownLength: number) =>
+    applyEdit((s) => {
+      const node = s.index.byId.get(nodeId);
+      if (!node || node.cls !== 'RVDimensionLine' || node.points.length < 2) {
+        return { ok: false, reason: 'select a dimension line first' };
+      }
+      const a = node.points[0]!;
+      const b = node.points[1]!;
+      const measured = Math.hypot(b.x - a.x, b.y - a.y);
+      if (!(measured > 0)) return { ok: false, reason: 'that dimension has no length' };
+      if (!(knownLength > 0)) return { ok: false, reason: 'enter the known real length' };
+      return scalePlanUniform(s.loaded.document, knownLength / measured);
+    }),
+  );
 
   // --- saving -------------------------------------------------------------
 

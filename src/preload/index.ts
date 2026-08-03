@@ -62,6 +62,7 @@ const api = {
     name?: string;
     width?: number;
     depth?: number;
+    identity?: { date?: string; venue?: string; event?: string; contact?: string };
   }): Promise<{ ok: boolean; cancelled?: boolean; reason?: string; doc?: OpenResult }> =>
     ipcRenderer.invoke('file:new', options),
   roomPresets: (): Promise<Array<{ label: string; width: number; depth: number }>> =>
@@ -220,6 +221,13 @@ const api = {
       startNodeId,
       endNodeId,
     ),
+  setDimensionProps: (
+    nodeId: number,
+    length: number,
+    angleDegrees: number,
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:dimension-props', nodeId, length, angleDegrees),
+  scaleToDimension: (nodeId: number, knownLength: number): Promise<EditReply> =>
+    ipcRenderer.invoke('edit:scale-to-dimension', nodeId, knownLength),
   addSeating: (request: unknown): Promise<EditReply & { placed?: number }> =>
     ipcRenderer.invoke('plan:add-seating', request),
   previewGear: (description: string): Promise<{ width: number; height: number; source: string }> =>
@@ -248,6 +256,21 @@ const api = {
   roomWallLength: (wallIndex: number, length: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-wall-length', wallIndex, length),
   roomDimension: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:room-dimension'),
+  roomMeta: (patch: {
+    name?: string;
+    ceilingHeight?: number;
+  }): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('plan:room-meta', patch),
+  avSummary: (): Promise<{
+    screens: number;
+    seatsGraded: number;
+    clear: number;
+    blocked: number;
+    tooFar: number;
+    tooClose: number;
+    offAxis: number;
+    notes: string[];
+    recommendWidthText: string;
+  } | null> => ipcRenderer.invoke('plan:av-summary'),
 
   seatingPreview: (request: SeatingRequestView): Promise<SeatingPreview | null> =>
     ipcRenderer.invoke('plan:seating-preview', request),
@@ -469,6 +492,10 @@ const api = {
       'menu:print',
       'menu:undo',
       'menu:redo',
+      'menu:insert',
+      'menu:insert-leaf',
+      'menu:shape-wizard',
+      'menu:build-stage',
     ];
     const listeners = channels.map((channel) => {
       const listener = (_event: IpcRendererEvent, arg?: string) => handler(channel, arg);

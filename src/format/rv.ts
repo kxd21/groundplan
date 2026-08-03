@@ -24,6 +24,7 @@
  */
 
 import { ArchiveReader, ArchiveError, type Rect } from './mfc.js';
+import { decodeTrailer, isTrailerAt } from './trailer.js';
 
 export { UNITS_PER_INCH, UNITS_PER_FOOT } from './constants.js';
 
@@ -385,6 +386,25 @@ function isValidTagAt(r: ArchiveReader, pos: number): boolean {
 }
 
 /**
+ * True where an object may legitimately end.
+ *
+ * Normally that means another object begins here. The exception is the last
+ * object in the file, which is followed by the document trailer — and a trailer
+ * opens with a plain index, the one tag form that cannot be told from data, so
+ * `isValidTagAt` rejects it. Without this the final wall segment had no
+ * boundary to stop at and its point array was located by a heuristic that
+ * happened to be right on real plans and wrong on ours. See `trailer.ts`.
+ */
+function isObjectEndAt(r: ArchiveReader, pos: number): boolean {
+  return isValidTagAt(r, pos) || isTrailerAt(r.buf, pos);
+}
+
+/** The same, for the strong pass: a trailer is as unambiguous as a class tag. */
+function isStrongEndAt(r: ArchiveReader, pos: number): boolean {
+  return isStrongTagAt(r, pos) || isTrailerAt(r.buf, pos);
+}
+
+/**
  * Resolves the class name of the tag at `pos` without advancing the cursor or
  * mutating the load array. Used to decide whether a shape owns the object that
  * follows it.
@@ -645,7 +665,7 @@ class DocumentParser {
         r.i32();
         r.f64();
       }
-      exact = isValidTagAt(r, r.pos);
+      exact = isObjectEndAt(r, r.pos);
     } catch {
       exact = false;
     }
@@ -699,8 +719,10 @@ class DocumentParser {
       for (let i = 0; i < found.count; i++) {
         node.points.push({ x: r.f64(), y: r.f64() });
       }
-      // Anything after the points is a per-kind trailer.
-      if (!isValidTagAt(r, r.pos)) {
+      // Anything after the points is a per-kind trailer — but the *document*
+      // trailer is not the segment's, and swallowing it is what left every
+      // plan without a readable name.
+      if (!isObjectEndAt(r, r.pos)) {
         const next = findNextTag(r, r.pos, 1);
         if (next !== -1) r.pos = next;
         else r.pos = r.buf.length;
@@ -759,8 +781,8 @@ class DocumentParser {
         for (const n of counts) {
           const boundary = s + n * 16;
           if (!pairsPlausible(s, n)) continue;
-          if (!isValidTagAt(r, boundary)) continue;
-          if (requireStrongBoundary && !isStrongTagAt(r, boundary)) continue;
+          if (!isObjectEndAt(r, boundary)) continue;
+          if (requireStrongBoundary && !isStrongEndAt(r, boundary)) continue;
           return { start: s, count: n };
         }
       }
@@ -823,8 +845,9 @@ class DocumentParser {
 
     // Objects may carry fields after their child list (name, seat counts).
     // When the next object follows immediately there is nothing to skip — and
-    // scanning would step straight over a back-reference tag.
-    if (isValidTagAt(r, r.pos)) return;
+    // scanning would step straight over a back-reference tag. The document
+    // trailer ends the last container the same way.
+    if (isObjectEndAt(r, r.pos)) return;
 
     const next = findNextTag(r, r.pos, 1);
     const stop = next === -1 ? r.buf.length : next;
@@ -899,7 +922,14 @@ export function parseArchive(buf: Buffer, start: number): RVDocument {
   // The document trailer: plan name, ceiling notes, saved defaults.
   rawUpTo(buf.length);
 
-  const trailerStrings = r.pos < buf.length ? harvestStrings(buf, r.pos, buf.length) : [];
+  // The trailer is a record with named slots, not a bag of strings to sift for
+  // anything printable. Decoding it keeps the empty slots, which is what makes
+  // "slot 2 is the event" mean something. `harvestStrings` remains the answer
+  // for a tail that is not a trailer — a shape library ends differently.
+  const trailerStrings =
+    r.pos < buf.length
+      ? (decodeTrailer(buf, r.pos) ?? harvestStrings(buf, r.pos, buf.length))
+      : [];
 
   return {
     roots,

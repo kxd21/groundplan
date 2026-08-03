@@ -27,6 +27,7 @@
  */
 
 import type { Rect } from './mfc.js';
+import { CONTAINER_LIST_HEADER } from './plan-skeleton-bytes.js';
 import type { Point, RVDocument, RVNode, RVSpan } from './rv.js';
 import { walk } from './rv.js';
 
@@ -72,8 +73,17 @@ const SEG_COLOR = 54;
 const SEG_DECLARED_COUNT = 58;
 const SEG_POINTS = 62;
 
-/** Container body layout: the common prefix, then the counted list header. */
-const CONTAINER_LIST_VERSION = 20;
+/**
+ * Container body layout: the common prefix, then the counted list header.
+ *
+ * The three words at +20 are a list version, a flag and a reserved word. The
+ * parser reads none of them, which is why this file wrote `1, 0, 0` there for
+ * as long as it existed and no gate ever noticed — round trip, census and
+ * `verifyWritable` are all blind to bytes nobody decodes. Every one of the
+ * 92,230 containers measured across 390 corpus plans writes `0, 1, 0`, so the
+ * measured value is used verbatim (`plan-skeleton-bytes.ts`).
+ */
+const CONTAINER_LIST_HEADER_AT = 20;
 const CONTAINER_CHILD_COUNT = 26;
 const CONTAINER_HEADER_BYTES = 28;
 
@@ -135,6 +145,89 @@ function borrowStyle(doc: RVDocument, cls: string): Buffer | null {
   return null;
 }
 
+/**
+ * Tight bounding box of a cubic Bézier, in whole logical units.
+ *
+ * A curve's control polygon is not its extent — a semicircle's control points
+ * stand a third further out than the curve ever reaches — and Room Viewer
+ * stores the *curve's* box: measured over 99,491 arcs in 1,939 files on the
+ * production drive, the cached rect matches the tight box of the drawn cubic in
+ * 99.99% of them and the control-polygon box in 15%. Writing the polygon box
+ * would make every placed arc claim a footprint a third too large, which is
+ * what the readiness and allocation passes measure.
+ */
+export function curveBounds(curve: Point[]): Rect {
+  const axis = (a: number, b: number, c: number, d: number): [number, number] => {
+    let lo = Math.min(a, d);
+    let hi = Math.max(a, d);
+    const at = (t: number): number => {
+      const s = 1 - t;
+      return s * s * s * a + 3 * s * s * t * b + 3 * s * t * t * c + t * t * t * d;
+    };
+    const consider = (t: number): void => {
+      if (!(t > 0 && t < 1)) return;
+      const v = at(t);
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    };
+    // B'(t) = 0, written in the monomial basis.
+    const qa = -a + 3 * b - 3 * c + d;
+    const qb = 2 * (a - 2 * b + c);
+    const qc = -a + b;
+    if (Math.abs(qa) < 1e-12) {
+      if (Math.abs(qb) > 1e-12) consider(-qc / qb);
+    } else {
+      const disc = qb * qb - 4 * qa * qc;
+      if (disc >= 0) {
+        const root = Math.sqrt(disc);
+        consider((-qb + root) / (2 * qa));
+        consider((-qb - root) / (2 * qa));
+      }
+    }
+    return [lo, hi];
+  };
+
+  if (curve.length !== 4) return boundsOf(curve);
+  const [left, right] = axis(curve[0].x, curve[1].x, curve[2].x, curve[3].x);
+  const [top, bottom] = axis(curve[0].y, curve[1].y, curve[2].y, curve[3].y);
+  return {
+    left: Math.round(left),
+    top: Math.round(top),
+    right: Math.round(right),
+    bottom: Math.round(bottom),
+  };
+}
+
+/**
+ * The eight points an `RVSegmentArc` stores, from the four that are drawn.
+ *
+ * An arc's point array is two representations of one cubic. The last four are
+ * the control points the renderer draws — that is the project's existing
+ * finding, and the cached rect above confirms it. The first four were unread
+ * until now; measured across the corpus they are the same curve in the frame it
+ * was *authored* in, held as a weighted control polygon `(P0, 3·P1, 3·P2, P3)`.
+ * Where an arc has not been rotated or mirrored since it was drawn the two
+ * frames coincide, and 83,229 of the 99,491 arcs on the production drive are
+ * exactly `(P0, 3·P1, 3·P2, P3, P0, P1, P2, P3)`.
+ *
+ * A shape placed from a library has not been transformed, so that is precisely
+ * the form written here: not a guess at half an object, but the byte pattern
+ * Room Viewer itself writes for the case being synthesized.
+ */
+export function arcSegmentPoints(curve: Point[]): Point[] {
+  const [p0, p1, p2, p3] = curve;
+  return [
+    { x: p0.x, y: p0.y },
+    { x: p1.x * 3, y: p1.y * 3 },
+    { x: p2.x * 3, y: p2.y * 3 },
+    { x: p3.x, y: p3.y },
+    { x: p0.x, y: p0.y },
+    { x: p1.x, y: p1.y },
+    { x: p2.x, y: p2.y },
+    { x: p3.x, y: p3.y },
+  ];
+}
+
 /** Bounding box of a point list, in whole logical units. */
 export function boundsOf(points: Point[]): Rect {
   if (!points.length) return { left: 0, top: 0, right: 0, bottom: 0 };
@@ -156,6 +249,17 @@ export function boundsOf(points: Point[]): Rect {
   };
 }
 
+/** Smallest rect holding both, treating a missing one as nothing at all. */
+function unionRect(a: Rect | null, b: Rect): Rect {
+  if (!a) return b;
+  return {
+    left: Math.min(a.left, b.left),
+    top: Math.min(a.top, b.top),
+    right: Math.max(a.right, b.right),
+    bottom: Math.max(a.bottom, b.bottom),
+  };
+}
+
 /** A synthesized node owns its bytes outright, so its span starts at zero. */
 function ownSpan(headerBytes: number): RVSpan {
   return { tagAt: 0, bodyAt: 0, headerEnd: headerBytes, trailerAt: headerBytes, end: headerBytes };
@@ -164,15 +268,26 @@ function ownSpan(headerBytes: number): RVSpan {
 /**
  * The schema number written next to a class name the first time it appears.
  *
- * Every `RV*` class in the corpus is schema 1. Where the open document already
- * introduced the class, its number is reused so a file that already contains
- * the class keeps writing the same value.
+ * Where the open document already introduced the class its number is reused, so
+ * editing a real plan keeps writing whatever that plan uses.
+ *
+ * The fallback matters when a plan is created from nothing. MFC stores one
+ * schema per class for the whole archive, so a document cannot hold two — and
+ * writing geometry at schema 1, as this used to, meant a plan Groundplan
+ * created could never accept a symbol imported from a real one: the archive
+ * ended up describing `RVSegmentLine` as schema 1 while the imported objects
+ * were schema 2, and the save gate refused the file.
+ *
+ * Measured over 149 plans on the production drive, real files are unanimous:
+ * the containers are schema 1 and everything drawable is schema 2.
  */
+const CONTAINER_SCHEMA = new Set(['RVRoom', 'RVRoomDef', 'RVWalls']);
+
 function schemaFor(doc: RVDocument, cls: string): number {
   for (const node of walk(doc)) {
     if (node.cls === cls) return node.schema;
   }
-  return 1;
+  return CONTAINER_SCHEMA.has(cls) ? 1 : 2;
 }
 
 export interface SegmentSpec {
@@ -183,6 +298,13 @@ export interface SegmentSpec {
   color?: number;
   /** Cached rect. Computed from the points when omitted. */
   bounds?: Rect;
+  /**
+   * Second document to take the undecoded style block from when the target has
+   * no segment of this class. A blank plan contains no arc, so an arc placed
+   * into one would otherwise get the zeroed default; the library the shape came
+   * from holds the pen and brush Room Viewer drew it with.
+   */
+  styleFrom?: RVDocument;
 }
 
 export interface SynthesisResult {
@@ -225,8 +347,12 @@ export function createSegment(doc: RVDocument, spec: SegmentSpec): SynthesisResu
     }
   }
 
-  const style = borrowStyle(doc, spec.cls);
-  const bounds = spec.bounds ?? boundsOf(spec.points);
+  const style = borrowStyle(doc, spec.cls) ?? (spec.styleFrom ? borrowStyle(spec.styleFrom, spec.cls) : null);
+  // An arc's rect is the box of the curve it draws, which is the last four of
+  // its eight points; the leading four are the same curve in its authored frame
+  // and reach three times as far.
+  const drawn = spec.cls === 'RVSegmentArc' && spec.points.length === 8 ? spec.points.slice(-4) : null;
+  const bounds = spec.bounds ?? (drawn ? curveBounds(drawn) : boundsOf(spec.points));
   const header = Buffer.alloc(SEG_POINTS + spec.points.length * 16);
 
   header.writeInt32LE(1, 0);
@@ -280,26 +406,43 @@ export function createSegment(doc: RVDocument, spec: SegmentSpec): SynthesisResu
 export interface ContainerSpec {
   cls: SynthesizableContainer;
   bounds?: Rect;
+  /**
+   * Bytes the object carries after its child count.
+   *
+   * Three of the five containers in a Room Viewer plan are *records* rather
+   * than lists: they declare no children and spend the rest of their body on
+   * fields nobody decoded — the second `RVRoomDef`'s 18-byte block, the
+   * `RVRegion`'s 392-byte settings record. The parser folds those bytes into
+   * the object's header span (an empty container's `headerEnd` runs to
+   * wherever the forward scan stopped), so they belong to the header here too.
+   *
+   * A container given a record must stay empty: `appendChild` would write the
+   * child list *after* the record, where no real file has one. `verifyPlanShape`
+   * checks that.
+   */
+  record?: Buffer;
 }
 
 /**
- * Builds an empty counted container.
+ * Builds a counted container.
  *
- * Containers are the one shape with no undecoded block: a common prefix, a list
- * version, two words that are zero in every file examined, and a child count.
- * Nothing is borrowed because there is nothing left over to borrow.
+ * Containers are the one shape with no undecoded block *in the list header*: a
+ * common prefix, the three list words, and a child count. Anything past that is
+ * a `record`, which is copied from the corpus rather than invented.
  */
 export function createContainer(doc: RVDocument, spec: ContainerSpec): SynthesisResult {
   const bounds = spec.bounds ?? { left: 0, top: 0, right: 0, bottom: 0 };
-  const header = Buffer.alloc(CONTAINER_HEADER_BYTES);
+  const record = spec.record ?? Buffer.alloc(0);
+  const header = Buffer.alloc(CONTAINER_HEADER_BYTES + record.length);
 
   header.writeInt32LE(1, 0);
   header.writeInt32LE(bounds.left, 4);
   header.writeInt32LE(bounds.top, 8);
   header.writeInt32LE(bounds.right, 12);
   header.writeInt32LE(bounds.bottom, 16);
-  header.writeUInt16LE(1, CONTAINER_LIST_VERSION);
+  CONTAINER_LIST_HEADER.copy(header, CONTAINER_LIST_HEADER_AT);
   header.writeUInt16LE(0, CONTAINER_CHILD_COUNT);
+  record.copy(header, CONTAINER_HEADER_BYTES);
 
   const node: RVNode = {
     id: doc.nextId++,
@@ -492,6 +635,122 @@ const SHAPE_PLACEMENT = 26;
 const SHAPE_ANGLE = 58;
 const SHAPE_STRINGS = 70;
 
+/**
+ * One run of an outline.
+ *
+ * A bare point list is a straight-sided run — a line if it has two points, a
+ * polyline otherwise. `{ curve }` is a cubic Bézier of exactly four control
+ * points, written as a real `RVSegmentArc` so a round table stays round instead
+ * of being flattened into the chords of its own control polygon.
+ *
+ * `{ rect }` is the same idea for the commonest primitive of all. Room Viewer
+ * stores a rectangular footprint as an `RVSegmentRect` — a closed four-corner
+ * solid — and a rebuild that emitted every straight-sided run as a polyline
+ * turned all of them into open polylines: 5,745 `RVSegmentPoly` where the
+ * original plan had 5,768 `RVSegmentRect`. That is not only a class mismatch.
+ * `scene.ts` types a rect as a `polygon` and a poly as a `polyline`, so the
+ * rebuilt outline stopped closing, stopped filling (`style.ts enclosesArea`),
+ * and became a stroke to hit rather than an area to click.
+ *
+ * The marker records what the source run *was*; `rectangleCorners` then decides
+ * whether it still *is* one. Both have to agree before a rect is written.
+ */
+export type OutlineRun = Point[] | { curve: Point[] } | { rect: Point[] };
+
+const isCurveRun = (run: OutlineRun): run is { curve: Point[] } =>
+  !Array.isArray(run) && 'curve' in run;
+const isRectRun = (run: OutlineRun): run is { rect: Point[] } =>
+  !Array.isArray(run) && 'rect' in run;
+const runPoints = (run: OutlineRun): Point[] =>
+  Array.isArray(run) ? run : isCurveRun(run) ? run.curve : run.rect;
+
+/**
+ * How far the repeat of a closing point may sit from the point it repeats.
+ *
+ * A closed run repeats its first coordinate verbatim, and the only arithmetic
+ * between reading it and testing it here is subtracting one centre from both —
+ * the same double from the same value, so the two stay bit-identical. This is a
+ * guard against a caller that computed its corners rather than copying them,
+ * not a real tolerance: a hundred-millionth of a tenth of an inch.
+ */
+const CLOSING_POINT_TOLERANCE = 1e-9;
+
+/**
+ * The largest `|cos θ|` a corner may show and still count as a right angle.
+ *
+ * Measured over 69,513 four-point `RVSegmentRect` objects in 250 plans on the
+ * production drive, the worst corner of each is sharply bimodal: 69,391 of them
+ * come in under 1e-6 (8,158 exactly zero, 59,873 under 1e-12, 1,360 under 1e-9,
+ * 2 under 1e-6) and 120 come in at 1e-2 or worse — Room Viewer will stamp
+ * `kind = 2` on a skewed quadrilateral, and those are not rectangles. Nothing at
+ * all lands in the four decades between. Any threshold in that gap classifies
+ * the corpus identically, so this takes the conservative end of it: 1e-6 is
+ * about 0.00006°, far tighter than any rectangle a person drew and far looser
+ * than the rounding in a rotated one.
+ */
+const RIGHT_ANGLE_COSINE = 1e-6;
+
+/**
+ * Shortest side a rectangle may have, in logical units (tenths of an inch).
+ *
+ * A zero-length side makes the corner angle meaningless — 119 corpus rects have
+ * one — and a rect collapsed to a line is not what the four-corner class means.
+ */
+const MIN_RECT_SIDE = 1e-6;
+
+/**
+ * The four corners of a run, if the run really is a rectangle.
+ *
+ * Accepts four corners, or five with the last repeating the first, and requires
+ * a right angle at each corner. Four right angles in a closed quadrilateral is
+ * the whole definition — it forces opposite sides parallel and equal — so
+ * nothing else needs checking.
+ *
+ * Rotation is deliberately allowed. Room Viewer itself writes turned rectangles
+ * as `RVSegmentRect`: 1,257 of the 5,768 in the plan being rebuilt are rotated,
+ * as are 32,894 of 69,639 across 250 plans, and the class's cached rect is
+ * `0,0,0,0` in 99.4% of them — so the four stored corners, not an axis-aligned
+ * box, are what the format and the renderer use. Refusing a rotated rectangle
+ * would write a polyline where the original file has a rect.
+ *
+ * Returns `null` for anything else, and the caller falls back to a polyline.
+ */
+export function rectangleCorners(points: Point[]): Point[] | null {
+  let corners = points;
+  if (corners.length === 5) {
+    const first = corners[0];
+    const last = corners[4];
+    if (
+      Math.abs(first.x - last.x) > CLOSING_POINT_TOLERANCE ||
+      Math.abs(first.y - last.y) > CLOSING_POINT_TOLERANCE
+    ) {
+      return null;
+    }
+    corners = corners.slice(0, 4);
+  }
+  if (corners.length !== 4) return null;
+
+  for (const p of corners) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const before = corners[(i + 3) % 4];
+    const at = corners[i];
+    const after = corners[(i + 1) % 4];
+    const ux = at.x - before.x;
+    const uy = at.y - before.y;
+    const vx = after.x - at.x;
+    const vy = after.y - at.y;
+    const lu = Math.hypot(ux, uy);
+    const lv = Math.hypot(vx, vy);
+    if (lu < MIN_RECT_SIDE || lv < MIN_RECT_SIDE) return null;
+    if (Math.abs(ux * vx + uy * vy) / (lu * lv) > RIGHT_ANGLE_COSINE) return null;
+  }
+
+  return corners.map((p) => ({ ...p }));
+}
+
 export interface ShapeSpec {
   /** Catalogue name, as it will appear in the inventory and on schedules. */
   name: string;
@@ -504,8 +763,10 @@ export interface ShapeSpec {
    * The outline, in coordinates local to the insertion point — so a 60in round
    * table is a circle about the origin, not about where it sits.
    */
-  outline: Point[][];
+  outline: OutlineRun[];
   color?: number;
+  /** Style donor for classes the target document does not already contain. */
+  styleFrom?: RVDocument;
 }
 
 /**
@@ -527,24 +788,44 @@ export function createShape(doc: RVDocument, spec: ShapeSpec): SynthesisResult {
   if (!Number.isFinite(spec.x) || !Number.isFinite(spec.y)) {
     return { ok: false, reason: 'the shape position must be finite' };
   }
-  const outline = spec.outline.filter((run) => run.length >= 2);
+  const outline = spec.outline.filter((run) =>
+    isCurveRun(run) ? run.curve.length === 4 : runPoints(run).length >= 2,
+  );
   if (!outline.length) return { ok: false, reason: 'a shape needs at least one outline run' };
 
   // Build the geometry first: a failure part-way leaves nothing attached.
-  let local: Rect = { left: 0, top: 0, right: 0, bottom: 0 };
   const segments: RVNode[] = [];
+  let local: Rect | null = null;
   for (const run of outline) {
+    const curve = isCurveRun(run) ? run.curve : null;
+    // A run becomes a rect only when it was one in the source *and* still
+    // measures as one. A shape library holds rectangles under both classes —
+    // `StockShapes.stk` has 129 `RVSegmentRect` and 59 `RVSegmentPoly` that are
+    // geometrically rectangles — so promoting on geometry alone would write
+    // rects the source file does not have. Requiring both is what makes a
+    // rebuilt histogram match the original rather than merely move.
+    const corners = isRectRun(run) ? rectangleCorners(run.rect) : null;
+    const points = curve ? arcSegmentPoints(curve) : (corners ?? runPoints(run));
+    const cls: SynthesizableSegment = curve
+      ? 'RVSegmentArc'
+      : corners
+        ? 'RVSegmentRect'
+        : points.length === 2
+          ? 'RVSegmentLine'
+          : 'RVSegmentPoly';
     const built = createSegment(doc, {
-      cls: run.length === 2 ? 'RVSegmentLine' : 'RVSegmentPoly',
-      points: run,
+      cls,
+      points,
       color: spec.color,
+      styleFrom: spec.styleFrom,
     });
     if (!built.ok || !built.node) return { ok: false, reason: built.reason };
     segments.push(built.node);
+    // A run's contribution is what it draws: for an arc that is the curve's own
+    // box, not its control points, and not the eight stored coordinates.
+    local = unionRect(local, curve ? curveBounds(curve) : boundsOf(points));
   }
-
-  const all = outline.flat();
-  local = boundsOf(all);
+  local ??= { left: 0, top: 0, right: 0, bottom: 0 };
 
   const geometry = createContainer(doc, { cls: 'RVGeometry', bounds: local });
   if (!geometry.ok || !geometry.node) return { ok: false, reason: geometry.reason };

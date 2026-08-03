@@ -161,6 +161,25 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const [curveOtherWay, setCurveOtherWay] = useState(false);
   const [curveMajor, setCurveMajor] = useState(false);
 
+  // Seed the size fields from the room the plan already has.
+  //
+  // Without this they sit at the 40 x 30 defaults whatever the plan holds, and
+  // the button beside them reads "Redraw room" once a room exists — so on a
+  // 245ft hall one click silently resizes it to 40ft. Seeding once per plan
+  // makes the control describe the room it will act on, and leaves whatever
+  // the user types alone after that.
+  const [sizeSeeded, setSizeSeeded] = useState(false);
+  useEffect(() => {
+    setSizeSeeded(false);
+  }, [doc.path]);
+  useEffect(() => {
+    if (!room || sizeSeeded || room.width <= 0 || room.height <= 0) return;
+    width.setText(formatLength(room.width, units));
+    depth.setText(formatLength(room.height, units));
+    setSizeSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, units, sizeSeeded]);
+
   // Seed reshape origin from the room once per open plan, so "Add area"
   // starts beside the current outline rather than at the origin.
   const [reshapeSeeded, setReshapeSeeded] = useState(false);
@@ -192,44 +211,135 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
     if (curveWall >= count) setCurveWall(0);
   }, [room?.wallDetails, curveWall]);
 
-  // ---- Seating ------------------------------------------------------------
+  // ---- Event Room Data / seating ------------------------------------------
+  type ErdTab = 'seating' | 'spacing' | 'av' | 'design';
+  const [erdTab, setErdTab] = useState<ErdTab>('seating');
+  const [roomName, setRoomName] = useState('');
+  const ceiling = useLength(10 * 120, units);
+  const [rvStyle, setRvStyle] = useState<
+    'schoolroom' | 'theatre' | 'banquet' | 'hollow-square' | 'u-shape' | 'conference' | 'custom'
+  >('theatre');
   const [style, setStyle] = useState('theatre');
   const [chair, setChair] = useState('');
   const [table, setTable] = useState('');
+  const [seatsPerTable, setSeatsPerTable] = useState(8);
+  const [optimum, setOptimum] = useState(false);
+  const [crescent, setCrescent] = useState(false);
   const [stagger, setStagger] = useState(true);
   const [splay, setSplay] = useState(0);
   const [rowsPerBlock, setRowsPerBlock] = useState(0);
+  const [sectionCentre, setSectionCentre] = useState(0);
+  const [sectionWing, setSectionWing] = useState(0);
+  const [banquetEndChairs, setBanquetEndChairs] = useState(false);
+  const [banquetRotate90, setBanquetRotate90] = useState(false);
+  const [chairsBothSides, setChairsBothSides] = useState(false);
+  const [tablesAcross, setTablesAcross] = useState(0);
   const seatSpacing = useLength(20 * 10, units);
   const rowSpacing = useLength(36 * 10, units);
   const frontClearance = useLength(8 * 120, units);
+  const sideClearance = useLength(4 * 120, units);
+  const wingClearance = useLength(4 * 120, units);
+  const rearClearance = useLength(4 * 120, units);
+  const frontWallClearance = useLength(0, units);
+  const aisleClearance = useLength(0, units);
   const centreAisle = useLength(0, units);
   const [preview, setPreview] = useState<SeatingPreview | null>(null);
+  const [av, setAv] = useState<Awaited<ReturnType<typeof api.avSummary>>>(null);
 
   const styleInfo = model?.seatingStyles.find((s) => s.id === style);
   const needsTable = styleInfo?.needsTable ?? false;
 
-  // The stage is where the audience looks; default it to the middle of the
-  // room's front edge, which is where one goes nine times out of ten.
+  // Where the audience looks: a point beyond the front wall, so every seat is
+  // turned towards the front of the room rather than towards a spot inside the
+  // seating itself.
   const focus = useMemo(() => {
     const extent = doc.scene.roomExtent;
     if (!extent) return { x: 0, y: 0 };
     return { x: (extent.minX + extent.maxX) / 2, y: extent.minY - 6 * 120 };
   }, [doc.scene.roomExtent]);
 
+  // Where the stage is built: against the inside of the front wall.
+  //
+  // This used to reuse the seating focus, which sits six feet beyond that wall
+  // — so an 8ft stage was drawn with six of its feet outside the room, and its
+  // floor came off the seating count in floor the room never had.
+  const stageOrigin = useMemo(() => {
+    const extent = doc.scene.roomExtent;
+    if (!extent) return { x: 0, y: 0 };
+    return { x: (extent.minX + extent.maxX) / 2, y: extent.minY };
+  }, [doc.scene.roomExtent]);
+
+  // Seed room name / ceiling once per plan open.
+  const [metaSeeded, setMetaSeeded] = useState(false);
+  useEffect(() => {
+    setMetaSeeded(false);
+  }, [doc.path]);
+  useEffect(() => {
+    if (!room || metaSeeded) return;
+    setRoomName(room.name || '');
+    if (room.ceilingHeight > 0) ceiling.setText(formatLength(room.ceilingHeight, units));
+    setMetaSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, units, metaSeeded]);
+
+  useEffect(() => {
+    if (rvStyle !== 'custom') setStyle(rvStyle);
+  }, [rvStyle]);
+
   const seatingRequest = useMemo(
     () => ({
-      style: style as never,
+      style: (crescent && needsTable ? 'crescent' : style) as never,
       focusX: focus.x,
       focusY: focus.y,
       seatSpacing: seatSpacing.value ?? undefined,
       rowSpacing: rowSpacing.value ?? undefined,
       front: frontClearance.value ?? undefined,
+      side: sideClearance.value ?? undefined,
+      wing: wingClearance.value ?? undefined,
+      rear: rearClearance.value ?? undefined,
+      frontWall: frontWallClearance.value ?? undefined,
+      aisle: aisleClearance.value ?? undefined,
       centreAisle: centreAisle.value ?? 0,
       rowsPerBlock,
       stagger,
       splay,
+      seatsPerTable: seatsPerTable > 0 ? seatsPerTable : undefined,
+      optimum,
+      crescent,
+      banquetEndChairs,
+      banquetRotate90,
+      chairsBothSides,
+      tablesAcross: tablesAcross > 0 ? tablesAcross : undefined,
+      sectionCentre: sectionCentre > 0 ? sectionCentre : undefined,
+      sectionWing: sectionWing > 0 ? sectionWing : undefined,
     }),
-    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, centreAisle.value, rowsPerBlock, stagger, splay],
+    [
+      style,
+      crescent,
+      needsTable,
+      focus.x,
+      focus.y,
+      seatSpacing.value,
+      rowSpacing.value,
+      frontClearance.value,
+      sideClearance.value,
+      wingClearance.value,
+      rearClearance.value,
+      frontWallClearance.value,
+      aisleClearance.value,
+      centreAisle.value,
+      rowsPerBlock,
+      stagger,
+      splay,
+      seatsPerTable,
+      optimum,
+      banquetEndChairs,
+      banquetRotate90,
+      chairsBothSides,
+      tablesAcross,
+      sectionCentre,
+      sectionWing,
+    ],
   );
 
   // Live count. Solving is pure and cheap, so this runs on every change —
@@ -248,12 +358,85 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
     };
   }, [room, seatingRequest]);
 
+  useEffect(() => {
+    if (erdTab !== 'av') return;
+    let cancelled = false;
+    void api.avSummary().then((result) => {
+      if (!cancelled) setAv(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [erdTab, doc.revision]);
+
+  const saveRoomMeta = useCallback(async () => {
+    const patch: { name?: string; ceilingHeight?: number } = {};
+    if (roomName.trim()) patch.name = roomName.trim();
+    if (ceiling.value != null && ceiling.value > 0) patch.ceilingHeight = ceiling.value;
+    const reply = await api.roomMeta(patch);
+    if (!reply.ok) onError(reply.reason ?? 'could not update the room');
+    else {
+      onStatus('Room details updated');
+      await refresh();
+    }
+  }, [roomName, ceiling.value, onError, onStatus, refresh]);
+
   // ---- Stage --------------------------------------------------------------
   const stageWidth = useLength(24 * 120, units);
   const stageDepth = useLength(16 * 120, units);
   const stageHeight = useLength(24 * 10, units);
 
   const names = doc.scene.inventory.map((i) => i.name);
+
+  // Shapes already on the plan are the best chairs and tables to seat with,
+  // because they place as the real drawn symbol rather than a box. But a plan
+  // that has just been created has none — so on a brand-new room the only
+  // thing the chair picker could offer was the stage, and seating could not be
+  // placed at all until something had been put on the drawing by hand.
+  //
+  // The equipment library is the other honest source, so offer it too, keeping
+  // the plan's own shapes first and dropping anything already listed there.
+  const [libraryNames, setLibraryNames] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .inventoryList('', null, null)
+      .then((state) => {
+        if (!cancelled) setLibraryNames(state.items.map((item) => item.name));
+      })
+      .catch(() => {
+        /* the picker still works from the plan's own shapes */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const onPlan = new Set(names);
+  const fromLibrary = libraryNames.filter((name) => !onPlan.has(name));
+
+  /** Chair and table pickers offer the same two groups. */
+  const shapeOptions = (
+    <>
+      {names.length > 0 && (
+        <optgroup label="On this plan">
+          {names.map((name) => (
+            <option key={`plan:${name}`} value={name}>
+              {name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {fromLibrary.length > 0 && (
+        <optgroup label="From the equipment library">
+          {fromLibrary.map((name) => (
+            <option key={`lib:${name}`} value={name}>
+              {name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </>
+  );
 
   if (!model) {
     return (
@@ -525,7 +708,7 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
       {/* ---------------------------------------------------------------- */}
       <div className="section">
         <div className="section-title">
-          <span>Seating</span>
+          <span>Event Room Data</span>
           {preview && (
             <span className="section-count">
               {preview.seats} seat{preview.seats === 1 ? '' : 's'}
@@ -534,82 +717,323 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           )}
         </div>
 
-        <div className="field">
-          <label htmlFor="seat-style">Layout</label>
-          <select id="seat-style" value={style} onChange={(e) => setStyle(e.target.value)} disabled={!editable}>
-            {model.seatingStyles.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="field-row">
-          <LengthField id="seat-spacing" label="Seat spacing" field={seatSpacing} units={units} disabled={!editable} />
-          <LengthField id="row-spacing" label="Row spacing" field={rowSpacing} units={units} disabled={!editable} />
-        </div>
-        <div className="field-row">
-          <LengthField id="front-clearance" label="Front clearance" field={frontClearance} units={units} disabled={!editable} />
-          <LengthField id="centre-aisle" label="Centre aisle" field={centreAisle} units={units} disabled={!editable} />
-        </div>
-
         <div className="field-row">
           <div className="field">
-            <label htmlFor="rows-per-block">Rows per block</label>
+            <label htmlFor="erd-room-name">Room name</label>
             <input
-              id="rows-per-block"
-              type="number"
-              min={0}
-              max={60}
-              value={rowsPerBlock}
+              id="erd-room-name"
+              type="text"
+              value={roomName}
               disabled={!editable}
-              onChange={(e) => setRowsPerBlock(Math.max(0, Number(e.target.value) || 0))}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="splay">Bank splay °</label>
-            <input
-              id="splay"
-              type="number"
-              min={0}
-              max={60}
-              value={splay}
-              disabled={!editable}
-              onChange={(e) => setSplay(Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
+              onChange={(e) => setRoomName(e.target.value)}
+              onBlur={() => void saveRoomMeta()}
             />
           </div>
         </div>
-
-        <label className="check">
-          <input type="checkbox" checked={stagger} disabled={!editable} onChange={(e) => setStagger(e.target.checked)} />
-          Stagger alternate rows
-        </label>
-
-        <div className="field">
-          <label htmlFor="seat-chair-name">Chair</label>
-          <select id="seat-chair-name" value={chair} onChange={(e) => setChair(e.target.value)} disabled={!editable}>
-            <option value="">Choose…</option>
-            {names.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
+        <div className="field-row">
+          <LengthField id="room-width-erd" label="L (width)" field={width} units={units} disabled={!editable} />
+          <LengthField id="room-depth-erd" label="W (depth)" field={depth} units={units} disabled={!editable} />
+        </div>
+        <div className="field-row">
+          <LengthField id="room-ceiling" label="H (ceiling)" field={ceiling} units={units} disabled={!editable} />
+          <div className="field" style={{ justifyContent: 'flex-end' }}>
+            <button type="button" className="btn-outline" disabled={!editable} onClick={() => void saveRoomMeta()}>
+              Save room details
+            </button>
+          </div>
         </div>
 
-        {needsTable && (
-          <div className="field">
-            <label htmlFor="seat-table-name">Table</label>
-            <select id="seat-table-name" value={table} onChange={(e) => setTable(e.target.value)} disabled={!editable}>
-              <option value="">Choose…</option>
-              {names.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
+        <div className="seg tabs seat-kinds" role="tablist" aria-label="Event Room Data">
+          {(
+            [
+              ['seating', 'Seating'],
+              ['spacing', 'Spacing'],
+              ['av', 'A/V'],
+              ['design', 'Design Options'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={erdTab === id}
+              className={erdTab === id ? 'active' : ''}
+              onClick={() => setErdTab(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {erdTab === 'seating' && (
+          <>
+            <fieldset className="erd-styles" disabled={!editable}>
+              <legend>Style</legend>
+              {(
+                [
+                  ['schoolroom', 'Schoolroom'],
+                  ['theatre', 'Theater'],
+                  ['banquet', 'Banquet'],
+                  ['hollow-square', 'Hollow Square'],
+                  ['u-shape', 'U-Shape'],
+                  ['conference', 'Conference'],
+                  ['custom', 'Custom'],
+                ] as const
+              ).map(([id, label]) => (
+                <label key={id} className="check">
+                  <input
+                    type="radio"
+                    name="erd-style"
+                    checked={rvStyle === id}
+                    onChange={() => setRvStyle(id)}
+                  />
+                  {label}
+                </label>
               ))}
-            </select>
-          </div>
+            </fieldset>
+
+            {rvStyle === 'custom' && (
+              <div className="field">
+                <label htmlFor="seat-style">Layout</label>
+                <select id="seat-style" value={style} onChange={(e) => setStyle(e.target.value)} disabled={!editable}>
+                  {model.seatingStyles.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="seat-chair-name">Chair type</label>
+                <select id="seat-chair-name" value={chair} onChange={(e) => setChair(e.target.value)} disabled={!editable}>
+                  <option value="">Choose…</option>
+                  {shapeOptions}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="seat-table-name">Table type</label>
+                <select
+                  id="seat-table-name"
+                  value={table}
+                  onChange={(e) => setTable(e.target.value)}
+                  disabled={!editable || !needsTable}
+                >
+                  <option value="">Choose…</option>
+                  {shapeOptions}
+                </select>
+              </div>
+            </div>
+
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="seats-per-table">Chairs per table</label>
+                <input
+                  id="seats-per-table"
+                  type="number"
+                  min={0}
+                  max={24}
+                  value={seatsPerTable}
+                  disabled={!editable || !needsTable}
+                  onChange={(e) => setSeatsPerTable(Math.max(0, Math.min(24, Number(e.target.value) || 0)))}
+                />
+              </div>
+              <div className="field" style={{ justifyContent: 'center', gap: 8 }}>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={optimum}
+                    disabled={!editable}
+                    onChange={(e) => setOptimum(e.target.checked)}
+                  />
+                  Optimum
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={crescent}
+                    disabled={!editable || !needsTable}
+                    onChange={(e) => setCrescent(e.target.checked)}
+                  />
+                  Crescent
+                </label>
+              </div>
+            </div>
+
+            <dl className="prop-grid">
+              <dt>Total seats</dt>
+              <dd>{preview?.seats ?? '—'}</dd>
+              <dt>Tables</dt>
+              <dd>{preview?.tables ?? '—'}</dd>
+              <dt>Rows</dt>
+              <dd>{preview?.rows ?? '—'}</dd>
+            </dl>
+          </>
+        )}
+
+        {erdTab === 'spacing' && (
+          <>
+            <div className="field-row">
+              <LengthField id="seat-spacing" label="Seat spacing" field={seatSpacing} units={units} disabled={!editable} />
+              <LengthField id="row-spacing" label="Row spacing" field={rowSpacing} units={units} disabled={!editable} />
+            </div>
+            <div className="field-row">
+              <LengthField id="front-clearance" label="Front" field={frontClearance} units={units} disabled={!editable} />
+              <LengthField id="rear-clearance" label="Rear" field={rearClearance} units={units} disabled={!editable} />
+            </div>
+            <div className="field-row">
+              <LengthField id="side-clearance" label="Side" field={sideClearance} units={units} disabled={!editable} />
+              <LengthField id="wing-clearance" label="Wing" field={wingClearance} units={units} disabled={!editable} />
+            </div>
+            <div className="field-row">
+              <LengthField id="front-wall" label="Front wall" field={frontWallClearance} units={units} disabled={!editable} />
+              <LengthField id="aisle-clearance" label="Aisle" field={aisleClearance} units={units} disabled={!editable} />
+            </div>
+            <div className="field-row">
+              <LengthField id="centre-aisle" label="Centre aisle" field={centreAisle} units={units} disabled={!editable} />
+              <div className="field">
+                <label htmlFor="rows-per-block">Rows per block</label>
+                <input
+                  id="rows-per-block"
+                  type="number"
+                  min={0}
+                  max={60}
+                  value={rowsPerBlock}
+                  disabled={!editable}
+                  onChange={(e) => setRowsPerBlock(Math.max(0, Number(e.target.value) || 0))}
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {erdTab === 'av' && (
+          <>
+            {av ? (
+              <>
+                <dl className="prop-grid">
+                  <dt>Screens</dt>
+                  <dd>{av.screens}</dd>
+                  <dt>Seats graded</dt>
+                  <dd>{av.seatsGraded}</dd>
+                  <dt>Clear</dt>
+                  <dd>{av.clear}</dd>
+                  <dt>Blocked</dt>
+                  <dd>{av.blocked}</dd>
+                  <dt>Too far</dt>
+                  <dd>{av.tooFar}</dd>
+                  <dt>Too close</dt>
+                  <dd>{av.tooClose}</dd>
+                  <dt>Off-axis</dt>
+                  <dd>{av.offAxis}</dd>
+                  {av.recommendWidthText ? (
+                    <>
+                      <dt>Recommended width</dt>
+                      <dd>{av.recommendWidthText}</dd>
+                    </>
+                  ) : null}
+                </dl>
+                {av.notes.map((note) => (
+                  <p className="hint" key={note}>
+                    {note}
+                  </p>
+                ))}
+              </>
+            ) : (
+              <p className="hint">Loading A/V summary…</p>
+            )}
+          </>
+        )}
+
+        {erdTab === 'design' && (
+          <>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="splay">Bank splay °</label>
+                <input
+                  id="splay"
+                  type="number"
+                  min={0}
+                  max={60}
+                  value={splay}
+                  disabled={!editable}
+                  onChange={(e) => setSplay(Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="tables-across">Tables across</label>
+                <input
+                  id="tables-across"
+                  type="number"
+                  min={0}
+                  max={40}
+                  value={tablesAcross}
+                  disabled={!editable}
+                  onChange={(e) => setTablesAcross(Math.max(0, Number(e.target.value) || 0))}
+                />
+              </div>
+            </div>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="section-centre">Section centre</label>
+                <input
+                  id="section-centre"
+                  type="number"
+                  min={0}
+                  max={40}
+                  value={sectionCentre}
+                  disabled={!editable}
+                  onChange={(e) => setSectionCentre(Math.max(0, Number(e.target.value) || 0))}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="section-wing">Section wing</label>
+                <input
+                  id="section-wing"
+                  type="number"
+                  min={0}
+                  max={40}
+                  value={sectionWing}
+                  disabled={!editable}
+                  onChange={(e) => setSectionWing(Math.max(0, Number(e.target.value) || 0))}
+                />
+              </div>
+            </div>
+            <label className="check">
+              <input type="checkbox" checked={stagger} disabled={!editable} onChange={(e) => setStagger(e.target.checked)} />
+              Stagger alternate rows
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={banquetEndChairs}
+                disabled={!editable}
+                onChange={(e) => setBanquetEndChairs(e.target.checked)}
+              />
+              Banquet end chairs
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={banquetRotate90}
+                disabled={!editable}
+                onChange={(e) => setBanquetRotate90(e.target.checked)}
+              />
+              Banquet rotate 90°
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={chairsBothSides}
+                disabled={!editable}
+                onChange={(e) => setChairsBothSides(e.target.checked)}
+              />
+              Chairs both sides (block)
+            </label>
+            <p className="hint">Section centre/wing counts enable sectioning when either is greater than zero.</p>
+          </>
         )}
 
         {preview?.notes.map((note) => (
@@ -658,8 +1082,8 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
             onClick={() =>
               void run('Stage added', () =>
                 api.stageAdd(
-                  focus.x - (stageWidth.value ?? 0) / 2,
-                  focus.y,
+                  stageOrigin.x - (stageWidth.value ?? 0) / 2,
+                  stageOrigin.y,
                   stageWidth.value!,
                   stageDepth.value!,
                   stageHeight.value!,

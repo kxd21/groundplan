@@ -22,6 +22,7 @@ import {
   type DocumentIndex,
   type EditResult,
 } from './edit.js';
+import { planBody } from './plan-skeleton.js';
 import { createLabel as synthesizeLabel, createSegment } from './synthesize.js';
 import { formatLength, type UnitSystem } from './units.js';
 
@@ -98,26 +99,17 @@ export function annotationCapabilities(doc: RVDocument): AnnotationCapabilities 
   return { label, dimensionLine, dimension: label && dimensionLine };
 }
 
-/** Where a newly synthesized annotation object should live. */
-function annotationHost(doc: RVDocument): RVNode | null {
-  let best: RVNode | null = null;
-  const seen = new Set<RVNode>();
-  const stack = [...doc.roots];
-  while (stack.length) {
-    const node = stack.pop()!;
-    if (seen.has(node)) continue;
-    seen.add(node);
-    if (node.fields.childCountAt != null && (node.cls === 'RVRoomDef' || node.cls === 'RVRoom')) {
-      if (!best) best = node;
-    }
-    for (const child of node.children) stack.push(child);
-  }
-  return best;
-}
-
-/** Adds a freshly built object wherever this plan can take one. */
+/**
+ * Adds a freshly built object wherever this plan can take one.
+ *
+ * This used to search for the host itself, seeding a stack from `[...doc.roots]`
+ * and `pop`ping it — so it walked the roots *backwards*. On the old blank plan
+ * there was one root and it could not show; on a plan shaped like a real one the
+ * last roots are `RVWalls`, the empty `RVRoomDef` and `RVRoom`, so every label
+ * would have been filed into the empty room-definition record.
+ */
 function placeNew(doc: RVDocument, node: RVNode): EditResult {
-  const host = annotationHost(doc);
+  const host = planBody(doc);
   return host ? appendChild(doc, host, node) : addRoot(doc, node);
 }
 
@@ -149,6 +141,29 @@ export function setDimensionGeometry(
     { x: x2, y: y2 },
   ];
   return { ok: true };
+}
+
+/** Sets a dimension's length and angle from its start point. */
+export function setDimensionLengthAngle(
+  doc: RVDocument,
+  node: RVNode,
+  length: number,
+  angleDegrees: number,
+): EditResult {
+  if (!(length > 0) || !Number.isFinite(angleDegrees)) {
+    return { ok: false, reason: 'enter a positive length and an angle' };
+  }
+  const start = node.points[0];
+  if (!start) return { ok: false, reason: 'the dimension line has no writable geometry' };
+  const rad = (angleDegrees * Math.PI) / 180;
+  return setDimensionGeometry(
+    doc,
+    node,
+    start.x,
+    start.y,
+    start.x + length * Math.cos(rad),
+    start.y + length * Math.sin(rad),
+  );
 }
 
 /**

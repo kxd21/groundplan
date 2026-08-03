@@ -482,7 +482,15 @@ function localBounds(node: RVNode, depth = 0): { minX: number; minY: number; max
     }
   };
 
-  for (const p of node.points) add(p.x, p.y);
+  // An arc carries eight points but only the last four are drawn — the leading
+  // four are control data that never reaches the page. Measuring all eight
+  // reports a box the shape does not occupy: an 8ft circular deck came out 27ft
+  // across, and an 18in round table six feet. The renderer already takes the
+  // last four; measurement has to agree with it or the two describe different
+  // shapes.
+  const drawn =
+    node.cls === 'RVSegmentArc' && node.points.length >= 4 ? node.points.slice(-4) : node.points;
+  for (const p of drawn) add(p.x, p.y);
   for (const slot of node.slots) {
     if (slot.kind !== 'object' || !slot.node) continue;
     const inner = localBounds(slot.node, depth + 1);
@@ -502,8 +510,22 @@ function localBounds(node: RVNode, depth = 0): { minX: number; minY: number; max
  * geometry. Measuring the points is the only reliable answer.
  */
 export function measureNode(node: RVNode): { width: number; height: number } {
-  const box = localBounds(node);
-  if (box) return { width: box.maxX - box.minX, height: box.maxY - box.minY };
+  // A placed shape keeps its insertion point in absolute coordinates and its
+  // outline local to that point. Handing the shape itself to `localBounds`
+  // unions the two spaces and measures from the plan origin out to the shape
+  // instead of measuring the shape: a 42ft stage placed 101ft along the room
+  // reports 143ft 6in. Measure the geometry alone, which is the same thing
+  // `refreshShapeBounds` does when it writes the rect back.
+  const geometry = node.children.find((child) => child.cls === 'RVGeometry');
+  const box = localBounds(geometry ?? node);
+  if (box && box.maxX > box.minX && box.maxY > box.minY) {
+    return { width: box.maxX - box.minX, height: box.maxY - box.minY };
+  }
+  // Nothing measurable. A catalogue shape keeps its outline behind a shared
+  // reference the parser does not follow, so its geometry is an empty husk and
+  // the points collapse to the insertion point — an 8ft circle measures zero.
+  // The stored rect is the better answer, and it is the difference between
+  // "resize to 6ft" working and being refused for having no size.
   return {
     width: node.bounds.right - node.bounds.left,
     height: node.bounds.bottom - node.bounds.top,
@@ -618,6 +640,28 @@ export function resizeNode(doc: RVDocument, node: RVNode, scaleX: number, scaleY
   }
   const after = localBounds(node)!;
   setBounds(doc, node, after.minX, after.minY, after.maxX, after.maxY);
+  return { ok: true };
+}
+
+/**
+ * Uniformly scales every root object about the plan origin.
+ *
+ * Used when a measured dimension on the drawing should become a known real
+ * length — the whole plan grows or shrinks so that dimension matches.
+ */
+export function scalePlanUniform(doc: RVDocument, factor: number): EditResult {
+  if (!Number.isFinite(factor) || factor <= 0.01 || factor > 100) {
+    return { ok: false, reason: 'scale is out of range' };
+  }
+  if (Math.abs(factor - 1) < 1e-9) return { ok: true };
+  for (const root of doc.roots) {
+    if (!transformGeometry(doc, root, (x, y) => [x * factor, y * factor])) {
+      // Some roots have no points (containers); still try to scale bounds.
+    }
+    const box = localBounds(root);
+    if (box) setBounds(doc, root, box.minX, box.minY, box.maxX, box.maxY);
+    if (root.cls === 'RVShape') refreshShapeBounds(doc, root);
+  }
   return { ok: true };
 }
 
