@@ -110,6 +110,12 @@ export interface Section {
   width?: number;
   /** Gap to the bank on its left, in logical units. */
   gap: number;
+  /**
+   * Lateral shift of this bank's centre from the focus line, in logical units.
+   * Lets several straight banks sit side by side with aisles between them,
+   * rather than the fan of angled banks that `splay` produces.
+   */
+  offset?: number;
 }
 
 export interface ReservedArea {
@@ -166,6 +172,13 @@ export interface SeatingPlan {
   stagger: boolean;
   /** Angled banks. One straight section when empty. */
   sections: Section[];
+  /**
+   * Straight seating blocks set side by side across the room, separated by
+   * aisles (`clearances.aisle` wide). One is a single unbroken field. This is
+   * how a real house is laid out — a grid of blocks — rather than one slab or
+   * the angled fan that `sections`/splay produce.
+   */
+  blocksAcross?: number;
   /** Round tables: diameter and seats. */
   tableDiameter?: number;
   seatsPerTable?: number;
@@ -433,8 +446,16 @@ function solveRows(plan: SeatingPlan, room: RoomModel, acc: Accumulator): number
   const maxRows = Math.max(1, Math.ceil(span / plan.rowSpacing) + 2);
   const perSide = Math.ceil(span / plan.seatSpacing) + 2;
 
-  const sections: Section[] = sectionsFor(plan);
-  const half = plan.clearances.centreAisle / 2;
+  // Straight blocks side by side (a real house grid) take precedence over the
+  // angled-bank machinery; they bring their own aisles, so the single centre
+  // aisle would only double one of them up.
+  const blocks = Math.max(1, Math.floor(plan.blocksAcross ?? 1));
+  const straight = !plan.sections.some((s) => s.splay !== 0);
+  const useBlocks = blocks > 1 && straight;
+  const sections: Section[] = useBlocks
+    ? straightBlocks(plan, room, forward, perSide, blocks)
+    : sectionsFor(plan);
+  const half = useBlocks ? 0 : plan.clearances.centreAisle / 2;
 
   let rows = 0;
 
@@ -461,10 +482,11 @@ function solveRows(plan: SeatingPlan, room: RoomModel, acc: Accumulator): number
         // Leave the centre aisle empty rather than straddling it.
         if (half > 0 && Math.abs(along) < half) continue;
         const shifted = along + (along >= 0 ? sideShift : -sideShift) - (half > 0 ? Math.sign(along) * half : 0);
+        const lateral = shifted + (section.offset ?? 0);
 
         const at = {
-          x: plan.focus.x + back.x * depth + across.x * shifted,
-          y: plan.focus.y + back.y * depth + across.y * shifted,
+          x: plan.focus.x + back.x * depth + across.x * lateral,
+          y: plan.focus.y + back.y * depth + across.y * lateral,
         };
         const before = acc.seats.length;
         push(acc, plan, room, {
@@ -752,6 +774,51 @@ function trimAisles(plan: SeatingPlan, acc: Accumulator): void {
     );
     acc.dropped += before - acc.seats.length;
   }
+}
+
+/**
+ * Splits the room's width into N straight seating blocks with aisles between.
+ *
+ * Blocks are sized to the room's across-extent so they fill it evenly, and
+ * over-provisioned seats that fall outside the walls are dropped by `push`, so
+ * an odd room shape trims itself. Each block is a plain straight section shifted
+ * laterally by its `offset`.
+ */
+function straightBlocks(
+  plan: SeatingPlan,
+  room: RoomModel,
+  forward: Point,
+  perSide: number,
+  blocks: number,
+): Section[] {
+  const acrossAxis = { x: forward.y, y: -forward.x };
+  const bounds = roomBounds(room);
+  let acrossHalf = perSide * plan.seatSpacing;
+  if (bounds) {
+    const corners: Point[] = [
+      { x: bounds.minX, y: bounds.minY },
+      { x: bounds.maxX, y: bounds.minY },
+      { x: bounds.maxX, y: bounds.maxY },
+      { x: bounds.minX, y: bounds.maxY },
+    ];
+    acrossHalf = corners.reduce(
+      (max, c) =>
+        Math.max(max, Math.abs((c.x - plan.focus.x) * acrossAxis.x + (c.y - plan.focus.y) * acrossAxis.y)),
+      0,
+    );
+  }
+
+  const aisle = Math.max(0, plan.clearances.aisle);
+  const blockWidth = Math.max(plan.seatSpacing, (2 * acrossHalf - (blocks - 1) * aisle) / blocks);
+  const limitPer = Math.max(1, Math.floor(blockWidth / (2 * plan.seatSpacing)));
+  const pitch = 2 * limitPer * plan.seatSpacing + aisle;
+
+  return Array.from({ length: blocks }, (_, b) => ({
+    splay: 0,
+    width: 2 * limitPer,
+    gap: 0,
+    offset: (b - (blocks - 1) / 2) * pitch,
+  }));
 }
 
 /** Builds the three banks a sectioned layout asks for. */
