@@ -41,6 +41,9 @@ export type Span =
   | { what: 'dimension' }
   | { what: 'draw'; shape: DrawShape };
 
+/** A run of corners that closes into one room when the user finishes it. */
+export type Path = { what: 'room' };
+
 /**
  * The tool in hand.
  *
@@ -51,14 +54,16 @@ export type Tool =
   | { kind: 'select' }
   | { kind: 'hand' }
   | { kind: 'stamp'; stamp: Stamp }
-  | { kind: 'span'; span: Span; from: PlanPoint | null };
+  | { kind: 'span'; span: Span; from: PlanPoint | null }
+  | { kind: 'path'; path: Path; points: PlanPoint[]; closing: boolean };
 
 /** A tool as named by a button, a palette row or a shortcut — before it is held. */
 export type ToolChoice =
   | { kind: 'select' }
   | { kind: 'hand' }
   | { kind: 'stamp'; stamp: Stamp }
-  | { kind: 'span'; span: Span };
+  | { kind: 'span'; span: Span }
+  | { kind: 'path'; path: Path };
 
 /** What the open document permits. Checked once, here, not at each button. */
 export type Capability = { open: boolean; editable: boolean };
@@ -88,6 +93,10 @@ export type ToolEvent =
   | { type: 'toggle'; choice: ToolChoice }
   /** A click on the sheet, already snapped and hit-tested per `pointerSpec`. */
   | { type: 'click'; at: PlanPoint }
+  /** Closes a multi-point path and creates its object. */
+  | { type: 'finish' }
+  /** Removes the most recently clicked path corner. */
+  | { type: 'undo-point' }
   | { type: 'escape' }
   /** The label field changed. Not an act of tool selection — see below. */
   | { type: 'retext'; text: string }
@@ -104,6 +113,7 @@ export type ToolEffect =
   | { do: 'placeLabel'; text: string; at: PlanPoint }
   | { do: 'placeSeating'; request: SeatingRequest; at: PlanPoint }
   | { do: 'draw'; shape: DrawShape; from: PlanPoint; to: PlanPoint }
+  | { do: 'createRoom'; points: PlanPoint[] }
   | { do: 'addDimension'; from: PlanPoint; to: PlanPoint }
   /** Local only — the temporary readout, which never reaches the file. */
   | { do: 'showReadout'; from: PlanPoint; to: PlanPoint };
@@ -153,6 +163,8 @@ export function choiceId(choice: ToolChoice): string {
       break;
     case 'span':
       return choice.span.what === 'draw' ? `span:draw:${choice.span.shape}` : `span:${choice.span.what}`;
+    case 'path':
+      return `path:${choice.path.what}`;
   }
   /* c8 ignore next */
   return 'select';
@@ -202,7 +214,7 @@ export function stampDescription(stamp: Stamp): string {
  * first is never what anyone meant.
  */
 export function staysAfterUse(tool: Tool): boolean {
-  return !(tool.kind === 'stamp' && tool.stamp.what === 'seating');
+  return tool.kind !== 'path' && !(tool.kind === 'stamp' && tool.stamp.what === 'seating');
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +236,7 @@ export function refusalFor(can: Capability, choice: ToolChoice): string | null {
   if (choice.kind === 'stamp' && choice.stamp.what === 'label' && !choice.stamp.text.trim()) {
     return 'Enter label text first.';
   }
-  const needsEdit = choice.kind === 'stamp' || choice.span.what !== 'measure';
+  const needsEdit = choice.kind === 'stamp' || choice.kind === 'path' || choice.span.what !== 'measure';
   if (needsEdit && !can.editable) return 'This plan is read-only, so nothing can be added to it.';
   return null;
 }
@@ -234,7 +246,9 @@ export function refusalFor(can: Capability, choice: ToolChoice): string | null {
 // ---------------------------------------------------------------------------
 
 function held(choice: ToolChoice): Tool {
-  return choice.kind === 'span' ? { kind: 'span', span: choice.span, from: null } : choice;
+  if (choice.kind === 'span') return { kind: 'span', span: choice.span, from: null };
+  if (choice.kind === 'path') return { kind: 'path', path: choice.path, points: [], closing: false };
+  return choice;
 }
 
 /** Everything goes down. The only way to reach `select` with nothing held. */
@@ -286,8 +300,38 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
       if (tool.kind === 'span' && tool.from) {
         return { state: { ...state, tool: { ...tool, from: null } }, effect: null };
       }
+      // While tracing a room, Escape walks back one corner at a time. Once the
+      // path is empty, the same key puts the tool down.
+      if (tool.kind === 'path' && tool.points.length && !tool.closing) {
+        return {
+          state: { ...state, tool: { ...tool, points: tool.points.slice(0, -1) } },
+          effect: null,
+        };
+      }
       if (tool.kind === 'select') return { state, effect: null };
       return { state: putDown(state), effect: null };
+    }
+
+    case 'undo-point': {
+      const tool = state.tool;
+      if (tool.kind !== 'path' || tool.closing || !tool.points.length) return { state, effect: null };
+      return {
+        state: { ...state, tool: { ...tool, points: tool.points.slice(0, -1) } },
+        effect: null,
+      };
+    }
+
+    case 'finish': {
+      const tool = state.tool;
+      if (tool.kind !== 'path') return { state, effect: null };
+      if (tool.closing) return { state, effect: null };
+      if (tool.points.length < 3) {
+        return { state, effect: null, refusal: 'Click at least three corners before finishing the room.' };
+      }
+      return {
+        state: { ...state, tool: { ...tool, closing: true } },
+        effect: { do: 'createRoom', points: tool.points.map((point) => ({ ...point })), epoch: state.epoch },
+      };
     }
 
     case 'retext': {
@@ -313,7 +357,11 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
       // one tool kind — the one that had been observed to break — and every
       // other async path went unguarded.
       if (event.epoch !== state.epoch) return { state, effect: null };
-      if (!event.ok) return { state, effect: null };
+      if (!event.ok) {
+        return state.tool.kind === 'path'
+          ? { state: { ...state, tool: { ...state.tool, closing: false } }, effect: null }
+          : { state, effect: null };
+      }
       if (staysAfterUse(state.tool)) return { state, effect: null };
       return { state: putDown(state), effect: null };
     }
@@ -324,6 +372,34 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
 
       if (tool.kind === 'stamp') {
         return { state, effect: { ...stampEffect(tool.stamp, event.at), epoch: state.epoch } };
+      }
+
+      if (tool.kind === 'path') {
+        if (tool.closing) return { state, effect: null };
+        const previous = tool.points.at(-1);
+        if (previous && Math.hypot(previous.x - event.at.x, previous.y - event.at.y) <= 1) {
+          return { state, effect: null };
+        }
+        // Click near the first corner (with enough points) closes the outline —
+        // the same gesture CAD users expect for a polygon.
+        const first = tool.points[0];
+        // 2 feet — hittable when the room is fitted on screen, without stealing
+        // ordinary far corners. createPolygonalRoom still collapses a near-duplicate end.
+        const closeTol = 2 * 120;
+        if (
+          first &&
+          tool.points.length >= 3 &&
+          Math.hypot(first.x - event.at.x, first.y - event.at.y) <= closeTol
+        ) {
+          return {
+            state: { ...state, tool: { ...tool, closing: true } },
+            effect: { do: 'createRoom', points: tool.points.map((point) => ({ ...point })), epoch: state.epoch },
+          };
+        }
+        return {
+          state: { ...state, tool: { ...tool, points: [...tool.points, event.at] } },
+          effect: null,
+        };
       }
 
       // The span. The held point is consumed in this one synchronous step, so
@@ -373,13 +449,13 @@ function stampEffect(stamp: Stamp, at: PlanPoint): ToolEffect {
 // ---------------------------------------------------------------------------
 
 export type PointerSpec = {
-  mode: 'select' | 'pan' | 'stamp' | 'span';
+  mode: 'select' | 'pan' | 'stamp' | 'span' | 'path';
   /** Whether the click coordinate is rounded to the drawing's snap step. */
   snap: 'grid' | 'none';
   /** Whether the raw click is hit-tested for an object to associate with. */
   associate: boolean;
   /** What the canvas rubber-bands while a span is half-made. */
-  preview: 'none' | 'measure' | DrawShape;
+  preview: 'none' | 'measure' | 'room' | DrawShape;
   /** Which half of a pair the next click completes; spans only. */
   parity?: 'start' | 'end';
 };
@@ -403,6 +479,8 @@ export function pointerSpec(state: ToolState): PointerSpec {
       return { mode: 'pan', snap: 'none', associate: false, preview: 'none' };
     case 'stamp':
       return { mode: 'stamp', snap: 'grid', associate: false, preview: 'none' };
+    case 'path':
+      return { mode: 'path', snap: 'grid', associate: false, preview: 'room' };
     case 'span': {
       const parity = tool.from ? 'end' : 'start';
       if (tool.span.what === 'measure') {
@@ -419,6 +497,10 @@ export function pointerSpec(state: ToolState): PointerSpec {
 export type BannerAction =
   /** Put the tool down. */
   | { id: 'done'; label: string }
+  /** Remove the last corner from a multi-point room outline. */
+  | { id: 'undo-point'; label: string }
+  /** Close and create a multi-point room outline. */
+  | { id: 'finish-room'; label: string; primary: true }
   /** Keep the temporary readout as a real plan dimension. */
   | { id: 'save-dimension'; label: string; primary: true };
 
@@ -448,6 +530,26 @@ export function banner(state: ToolState): Banner | null {
       message: 'Click the plan to place ',
       emphasis: stampDescription(tool.stamp),
       actions: [{ id: 'done', label: 'Cancel' }],
+    };
+  }
+  if (tool.kind === 'path') {
+    const count = tool.points.length;
+    return {
+      badge: { text: 'Room outline', tone: 'persistent' },
+      message: tool.closing
+        ? 'Creating the room…'
+        : count === 0
+          ? 'Click the first corner of the room'
+          : count < 3
+            ? `${count} corner${count === 1 ? '' : 's'} · add ${3 - count} more`
+            : `${count} corners · outline ready`,
+      actions: tool.closing
+        ? []
+        : [
+            ...(count >= 3 ? [{ id: 'finish-room' as const, label: 'Finish room', primary: true as const }] : []),
+            ...(count ? [{ id: 'undo-point' as const, label: 'Undo point' }] : []),
+            { id: 'done', label: 'Cancel' },
+          ],
     };
   }
   const done: BannerAction = { id: 'done', label: 'Done' };
@@ -513,4 +615,5 @@ export const HAND: ToolChoice = { kind: 'hand' };
 export const MEASURE: ToolChoice = { kind: 'span', span: { what: 'measure' } };
 export const DIMENSION: ToolChoice = { kind: 'span', span: { what: 'dimension' } };
 export const drawChoice = (shape: DrawShape): ToolChoice => ({ kind: 'span', span: { what: 'draw', shape } });
+export const roomOutlineChoice: ToolChoice = { kind: 'path', path: { what: 'room' } };
 export const labelChoice = (text: string): ToolChoice => ({ kind: 'stamp', stamp: { what: 'label', text } });

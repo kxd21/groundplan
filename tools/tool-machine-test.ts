@@ -46,6 +46,7 @@ import {
   opensProperties,
   pointerSpec,
   reduce,
+  roomOutlineChoice,
   staysAfterUse,
   type Capability,
   type PendingEffect,
@@ -90,6 +91,7 @@ const ALL_CHOICES: ToolChoice[] = [
   drawChoice('line'),
   drawChoice('rect'),
   drawChoice('ellipse'),
+  roomOutlineChoice,
   labelChoice('X4S'),
   MEASURE,
   DIMENSION,
@@ -152,6 +154,65 @@ const misPaired = (pairs: Pair[]): Pair[] =>
     pairs.every((d, i) => !pairs[i + 1] || indexOf(d.to) !== indexOf(pairs[i + 1].from)),
   );
   check('and the tool is still in hand for the next pair', isPressed(run.state, DIMENSION));
+}
+
+{
+  const traced = play(initialToolState(EDITABLE), [
+    { type: 'pick', choice: roomOutlineChoice },
+    { type: 'click', at: clickAt(0) },
+    { type: 'click', at: clickAt(1) },
+    { type: 'click', at: clickAt(2) },
+    { type: 'click', at: clickAt(3) },
+    { type: 'finish' },
+  ]);
+  check(
+    'a freeform room waits for Finish before creating anything',
+    traced.effects.length === 1 && traced.effects[0].do === 'createRoom',
+  );
+  check(
+    'the room effect carries every clicked corner in order',
+    traced.effects[0]?.do === 'createRoom' &&
+      traced.effects[0].points.map(indexOf).join(',') === '0,1,2,3',
+  );
+  check(
+    'a finished room is one-shot after its edit succeeds',
+    reduce(traced.state, { type: 'settled', epoch: traced.state.epoch, ok: true }).state.tool.kind === 'select',
+  );
+}
+
+{
+  // clickAt points are 100 units (~10") apart; closing tolerance is 2 feet, so a
+  // click within a few units of the first corner finishes the outline.
+  const closed = play(initialToolState(EDITABLE), [
+    { type: 'pick', choice: roomOutlineChoice },
+    { type: 'click', at: clickAt(0) },
+    { type: 'click', at: clickAt(1) },
+    { type: 'click', at: clickAt(2) },
+    { type: 'click', at: { x: clickAt(0).x + 2, y: clickAt(0).y - 1 } },
+  ]);
+  check(
+    'clicking near the first corner closes a freeform room',
+    closed.effects.length === 1 && closed.effects[0].do === 'createRoom',
+  );
+  check(
+    'the closing click is not added as another corner',
+    closed.effects[0]?.do === 'createRoom' && closed.effects[0].points.length === 3,
+  );
+}
+
+{
+  const twoCorners = play(initialToolState(EDITABLE), [
+    { type: 'pick', choice: roomOutlineChoice },
+    { type: 'click', at: clickAt(0) },
+    { type: 'click', at: clickAt(1) },
+  ]).state;
+  const refused = reduce(twoCorners, { type: 'finish' });
+  check('a room cannot close with fewer than three corners', !!refused.refusal && !refused.effect);
+  const undone = reduce(twoCorners, { type: 'undo-point' }).state;
+  check('Undo point removes only the latest room corner', undone.tool.kind === 'path' && undone.tool.points.length === 1);
+  const escaped = reduce(undone, { type: 'escape' }).state;
+  check('Escape also walks a custom outline back one point', escaped.tool.kind === 'path' && escaped.tool.points.length === 0);
+  check('a second Escape cancels an empty room outline', reduce(escaped, { type: 'escape' }).state.tool.kind === 'select');
 }
 
 {
@@ -344,7 +405,9 @@ console.log('\n3. a reply that lands late keeps its hands off a newer tool\n');
   const armed = reduce(initialToolState(EDITABLE), { type: 'pick', choice: SEATING }).state;
   const after = reduce(armed, { type: 'settled', epoch: armed.epoch, ok: true }).state;
   check('seating is one-shot — the drop consumes the block', after.tool.kind === 'select');
-  check('and that is the only one-shot tool', !staysAfterUse(armed.tool));
+  check('seating and completed room outlines are deliberately one-shot',
+    !staysAfterUse(armed.tool) &&
+      !staysAfterUse(reduce(initialToolState(EDITABLE), { type: 'pick', choice: roomOutlineChoice }).state.tool));
 }
 
 {
@@ -585,6 +648,13 @@ console.log('\n8. how the canvas reads the next click\n');
       (s) => spec(drawChoice(s)).snap === 'grid' && spec(drawChoice(s)).associate && spec(drawChoice(s)).preview === s,
     ),
   );
+  check(
+    'a custom room collects snapped corners without associating to objects',
+    spec(roomOutlineChoice).mode === 'path' &&
+      spec(roomOutlineChoice).snap === 'grid' &&
+      !spec(roomOutlineChoice).associate &&
+      spec(roomOutlineChoice).preview === 'room',
+  );
   check('a measure preview rubber-bands a measurement', spec(MEASURE).preview === 'measure');
   check('and nothing else previews anything', spec(SELECT).preview === 'none' && spec(GEAR).preview === 'none');
 }
@@ -648,6 +718,8 @@ console.log('\n10. the machine is total, and never leaks a start point\n');
     { type: 'pick', choice: SELECT },
     { type: 'toggle', choice: MEASURE },
     { type: 'click', at: clickAt(3) },
+    { type: 'finish' },
+    { type: 'undo-point' },
     { type: 'escape' },
     { type: 'retext', text: 'X4S' },
     { type: 'reset' },
@@ -659,7 +731,7 @@ console.log('\n10. the machine is total, and never leaks a start point\n');
   for (const seed of seeds) {
     for (const event of events) {
       const next = reduce(seed, event);
-      if (!next || !next.state || !['select', 'hand', 'stamp', 'span'].includes(next.state.tool.kind)) {
+      if (!next || !next.state || !['select', 'hand', 'stamp', 'span', 'path'].includes(next.state.tool.kind)) {
         total = false;
       }
     }

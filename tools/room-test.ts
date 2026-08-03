@@ -15,6 +15,7 @@ import { createContainer, createSegment } from '../src/format/synthesize.js';
 import {
   allCapacities,
   arcOf,
+  circularRoom,
   containsPoint,
   deriveRoom,
   describeRoom,
@@ -197,6 +198,14 @@ console.log('\nroom geometry\n');
     Math.abs(roomPerimeter(round) - 2 * Math.PI * r) < 0.01,
     `${roomPerimeter(round)}`,
   );
+
+  const authored = circularRoom(2 * r, 'Rotunda', { x: 25, y: 50 });
+  const authoredBounds = roomBounds(authored)!;
+  check('the circular-room constructor keeps four exact curved walls', authored.walls.length === 4 && authored.walls.every((run) => !!run.bulge));
+  check('a circular room is positioned from its top-left bounds',
+    near(authoredBounds.minX, 25) && near(authoredBounds.minY, 50) && near(authoredBounds.maxX, 25 + 2 * r) && near(authoredBounds.maxY, 50 + 2 * r));
+  check('the circular-room constructor has exact area and perimeter',
+    near(roomArea(authored), Math.PI * r * r) && near(roomPerimeter(authored), 2 * Math.PI * r));
 }
 
 // ---------------------------------------------------------------------------

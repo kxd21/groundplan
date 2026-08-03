@@ -37,16 +37,33 @@ import { buildReport } from '../format/report.js';
 import {
   allCapacities,
   arcOf,
+  circularRoom,
   deriveRoom,
   describeRoom,
   rectangularRoom,
   roomArea,
   roomBounds,
+  roomFromPolygon,
   roomPerimeter,
+  simplifyCollinear,
   wallLength,
   type RoomModel,
 } from '../format/room.js';
-import { combineRooms, curveWall, rectRoom, roomProblems, setWallLength, setWallRadius } from '../format/room-edit.js';
+import {
+  addCorner,
+  combineRooms,
+  curveWall,
+  isAxisAligned,
+  moveCorner,
+  rectRoom,
+  removeCorner,
+  roundAllCorners,
+  roomProblems,
+  roundCorner,
+  setWallLength,
+  setWallRadius,
+  type RoomEditResult,
+} from '../format/room-edit.js';
 import { applyRoom } from '../format/room-render.js';
 import {
   createSeatingPlan,
@@ -67,9 +84,9 @@ import {
   type StageBuild,
 } from '../format/stage.js';
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
-import { UNITS_PER_FOOT, type RVDocument } from '../format/rv.js';
+import { UNITS_PER_FOOT, type Point, type RVDocument } from '../format/rv.js';
 import { addRoot, appendChild, indexDocument } from '../format/edit.js';
-import { planBody } from '../format/plan-skeleton.js';
+import { planBody, planName } from '../format/plan-skeleton.js';
 import { createSegment, createShape } from '../format/synthesize.js';
 import { companionPathFor, loadCompanion, saveCompanion } from './companion-store.js';
 import type { Session } from './session.js';
@@ -261,6 +278,11 @@ export function avSummary(session: Session, units: UnitSystem): AvSummaryView {
 
 export interface RoomWallSummary {
   index: number;
+  /** The corner that begins this wall, for outline editing controls. */
+  startX: number;
+  startY: number;
+  startXText: string;
+  startYText: string;
   lengthText: string;
   curved: boolean;
   /** Arc radius in logical units when curved; otherwise 0. */
@@ -270,6 +292,8 @@ export interface RoomWallSummary {
 
 export interface RoomSummary {
   name: string;
+  /** Best description of the authored boundary, for safe redraw defaults. */
+  shape: 'rectangle' | 'circle' | 'custom';
   /** How the outline was arrived at, so the UI can be honest about it. */
   source: 'companion' | 'walls' | 'region' | 'extent' | 'none';
   closed: boolean;
@@ -278,6 +302,8 @@ export interface RoomSummary {
   wallDetails: RoomWallSummary[];
   holes: number;
   curved: number;
+  /** True when every wall is axis-aligned and straight — required for Add/Cut rectangle. */
+  axisAligned: boolean;
   /** Raw logical units, for anything that needs to compute. */
   area: number;
   perimeter: number;
@@ -351,9 +377,29 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
   const bounds = roomBounds(room);
   const width = bounds ? bounds.maxX - bounds.minX : 0;
   const height = bounds ? bounds.maxY - bounds.minY : 0;
+  const arcs = room.walls.map((segment) => arcOf(segment));
+  const looksCircular =
+    room.walls.length === 4 &&
+    arcs.every((arc) => !!arc && Math.abs(Math.abs(arc.sweep) - Math.PI / 2) < 1e-6) &&
+    arcs.every((arc) => !arc || Math.abs(arc.radius - (arcs[0]?.radius ?? 0)) <= 1);
+  const lengths = room.walls.map((segment) => wallLength(segment));
+  const looksRectangular =
+    room.walls.length === 4 &&
+    room.walls.every((segment) => !segment.bulge) &&
+    room.walls.every((segment, index) => {
+      const next = room.walls[(index + 1) % room.walls.length];
+      const ax = segment.end.x - segment.start.x;
+      const ay = segment.end.y - segment.start.y;
+      const bx = next.end.x - next.start.x;
+      const by = next.end.y - next.start.y;
+      return Math.abs(ax * bx + ay * by) <= Math.max(1, lengths[index] * lengths[(index + 1) % 4] * 1e-6);
+    }) &&
+    Math.abs(lengths[0] - lengths[2]) <= 1 &&
+    Math.abs(lengths[1] - lengths[3]) <= 1;
 
   return {
     name: room.name,
+    shape: looksCircular ? 'circle' : looksRectangular ? 'rectangle' : 'custom',
     source,
     closed: roomProblems(room).length === 0,
     walls: room.walls.length,
@@ -361,6 +407,10 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
       const arc = arcOf(segment);
       return {
         index,
+        startX: segment.start.x,
+        startY: segment.start.y,
+        startXText: formatLength(segment.start.x, units),
+        startYText: formatLength(segment.start.y, units),
         lengthText: formatLength(wallLength(segment), units),
         curved: Boolean(segment.bulge),
         radius: arc?.radius ?? 0,
@@ -369,6 +419,7 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
     }),
     holes: room.holes.length,
     curved: room.walls.filter((w) => w.bulge).length,
+    axisAligned: isAxisAligned(room.walls),
     area: roomArea(room),
     perimeter: roomPerimeter(room),
     width,
@@ -462,24 +513,13 @@ export interface ModelEdit {
   note?: string;
 }
 
-/** Draws a rectangular room, replacing whatever this drew before. */
-export function createRectangularRoom(
-  session: Session,
-  width: number,
-  height: number,
-  units: UnitSystem,
-): ModelEdit {
-  if (!(width > 0) || !(height > 0)) return { ok: false, reason: 'enter a width and a depth' };
-  if (width > 2000 * UNITS_PER_FOOT || height > 2000 * UNITS_PER_FOOT) {
-    return { ok: false, reason: 'that is larger than any room this format can hold' };
-  }
-
+/** Replaces the authored room while preserving conflict reporting and undo. */
+function replaceAuthoredRoom(session: Session, room: RoomModel, units: UnitSystem): ModelEdit {
   const doc = session.loaded.document;
-  const bounds = state.rendered ? roomBounds(state.rendered) : null;
-  const origin = bounds ? { x: bounds.minX, y: bounds.minY } : { x: 0, y: 0 };
-  const room = rectangularRoom(width, height, state.rendered?.name ?? 'Room', origin);
-
-  const drawn = applyRoom(doc, room, state.rendered ?? undefined);
+  // Prefer the companion's last render; if missing (opened plan, no sidecar),
+  // fall back to the derived current room so Redraw replaces walls instead of stacking.
+  const previous = state.rendered ?? currentRoom(doc) ?? undefined;
+  const drawn = applyRoom(doc, room, previous);
   if (!drawn.ok) return { ok: false, reason: drawn.reason };
 
   state.rendered = room;
@@ -494,6 +534,184 @@ export function createRectangularRoom(
           } left alone.`
         : undefined,
   };
+}
+
+/** Draws a rectangular room, replacing whatever this drew before. */
+export function createRectangularRoom(
+  session: Session,
+  width: number,
+  height: number,
+  units: UnitSystem,
+): ModelEdit {
+  if (!(width > 0) || !(height > 0)) return { ok: false, reason: 'enter a width and a depth' };
+  if (width > 2000 * UNITS_PER_FOOT || height > 2000 * UNITS_PER_FOOT) {
+    return { ok: false, reason: 'that is larger than any room this format can hold' };
+  }
+
+  const bounds = state.rendered ? roomBounds(state.rendered) : null;
+  const origin = bounds ? { x: bounds.minX, y: bounds.minY } : { x: 0, y: 0 };
+  const room = rectangularRoom(width, height, state.rendered?.name ?? planName(session.loaded.document) ?? 'Room', origin);
+
+  return replaceAuthoredRoom(session, room, units);
+}
+
+/** Draws a true circular room, replacing the previously authored outline. */
+export function createCircularRoom(session: Session, diameter: number, units: UnitSystem): ModelEdit {
+  if (!(diameter > 0)) return { ok: false, reason: 'enter a positive diameter' };
+  if (diameter > 2000 * UNITS_PER_FOOT) {
+    return { ok: false, reason: 'that is larger than any room this format can hold' };
+  }
+
+  const bounds = state.rendered ? roomBounds(state.rendered) : null;
+  const origin = bounds ? { x: bounds.minX, y: bounds.minY } : { x: 0, y: 0 };
+  const room = circularRoom(diameter, state.rendered?.name ?? planName(session.loaded.document) ?? 'Room', origin);
+  return replaceAuthoredRoom(session, room, units);
+}
+
+const OUTLINE_TOLERANCE = 1;
+
+function orientation(a: Point, b: Point, c: Point): number {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+function onSegment(a: Point, b: Point, point: Point): boolean {
+  return (
+    Math.abs(orientation(a, b, point)) <= OUTLINE_TOLERANCE &&
+    point.x >= Math.min(a.x, b.x) - OUTLINE_TOLERANCE &&
+    point.x <= Math.max(a.x, b.x) + OUTLINE_TOLERANCE &&
+    point.y >= Math.min(a.y, b.y) - OUTLINE_TOLERANCE &&
+    point.y <= Math.max(a.y, b.y) + OUTLINE_TOLERANCE
+  );
+}
+
+function segmentsMeet(a: Point, b: Point, c: Point, d: Point): boolean {
+  const abC = orientation(a, b, c);
+  const abD = orientation(a, b, d);
+  const cdA = orientation(c, d, a);
+  const cdB = orientation(c, d, b);
+  const abStraddles =
+    (abC > OUTLINE_TOLERANCE && abD < -OUTLINE_TOLERANCE) ||
+    (abC < -OUTLINE_TOLERANCE && abD > OUTLINE_TOLERANCE);
+  const cdStraddles =
+    (cdA > OUTLINE_TOLERANCE && cdB < -OUTLINE_TOLERANCE) ||
+    (cdA < -OUTLINE_TOLERANCE && cdB > OUTLINE_TOLERANCE);
+  if (abStraddles && cdStraddles) return true;
+  return (
+    onSegment(a, b, c) ||
+    onSegment(a, b, d) ||
+    onSegment(c, d, a) ||
+    onSegment(c, d, b)
+  );
+}
+
+function outlineCrossesItself(points: Point[]): boolean {
+  for (let first = 0; first < points.length; first++) {
+    const firstNext = (first + 1) % points.length;
+    for (let second = first + 1; second < points.length; second++) {
+      const secondNext = (second + 1) % points.length;
+      // Neighbouring walls are meant to share one corner.
+      if (first === second || firstNext === second || secondNext === first) continue;
+      if (segmentsMeet(points[first], points[firstNext], points[second], points[secondNext])) return true;
+    }
+  }
+  return false;
+}
+
+/** Draws a closed room from corners clicked in order on the plan. */
+export function createPolygonalRoom(session: Session, input: Point[], units: UnitSystem): ModelEdit {
+  if (!Array.isArray(input)) return { ok: false, reason: 'the room outline is invalid' };
+  if (input.length > 512) return { ok: false, reason: 'this outline has too many corners' };
+
+  const clean: Point[] = [];
+  for (const point of input) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      return { ok: false, reason: 'every room corner needs a valid position' };
+    }
+    const previous = clean[clean.length - 1];
+    if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) > OUTLINE_TOLERANCE) {
+      clean.push({ x: point.x, y: point.y });
+    }
+  }
+  if (
+    clean.length > 1 &&
+    Math.hypot(clean[0].x - clean.at(-1)!.x, clean[0].y - clean.at(-1)!.y) <= OUTLINE_TOLERANCE
+  ) {
+    clean.pop();
+  }
+
+  const corners = simplifyCollinear(clean, OUTLINE_TOLERANCE);
+  if (corners.length < 3) return { ok: false, reason: 'click at least three different corners' };
+  const xs = corners.map((point) => point.x);
+  const ys = corners.map((point) => point.y);
+  if (
+    Math.max(...xs) - Math.min(...xs) > 2000 * UNITS_PER_FOOT ||
+    Math.max(...ys) - Math.min(...ys) > 2000 * UNITS_PER_FOOT
+  ) {
+    return { ok: false, reason: 'that is larger than any room this format can hold' };
+  }
+  if (outlineCrossesItself(corners)) {
+    return { ok: false, reason: 'the room outline crosses itself — undo a corner and trace around the edge in order' };
+  }
+
+  const room = roomFromPolygon(corners, state.rendered?.name ?? planName(session.loaded.document) ?? 'Room');
+  if (roomArea(room) <= 1) return { ok: false, reason: 'the room outline does not enclose any floor' };
+  return replaceAuthoredRoom(session, room, units);
+}
+
+function commitRoomEdit(
+  session: Session,
+  current: RoomModel,
+  edited: RoomEditResult,
+  units: UnitSystem,
+): ModelEdit {
+  if (!edited.ok || !edited.room) return { ok: false, reason: edited.reason };
+  const doc = session.loaded.document;
+  const drawn = applyRoom(doc, edited.room, state.rendered ?? current);
+  if (!drawn.ok) return { ok: false, reason: drawn.reason };
+  state.rendered = edited.room;
+  setRoom(doc, edited.room, units);
+  return { ok: true, created: drawn.createdIds };
+}
+
+/** Moves one outline corner and stretches its adjoining plot lines. */
+export function moveRoomCorner(
+  session: Session,
+  index: number,
+  x: number,
+  y: number,
+  units: UnitSystem,
+): ModelEdit {
+  const room = currentRoom(session.loaded.document);
+  if (!room) return { ok: false, reason: 'there is no room to adjust yet' };
+  return commitRoomEdit(session, room, moveCorner(room, index, { x, y }), units);
+}
+
+/** Splits one wall at its midpoint, adding a corner and another plot line. */
+export function addRoomCorner(session: Session, wallIndex: number, units: UnitSystem): ModelEdit {
+  const room = currentRoom(session.loaded.document);
+  if (!room) return { ok: false, reason: 'there is no room to adjust yet' };
+  return commitRoomEdit(session, room, addCorner(room, wallIndex), units);
+}
+
+/** Removes one corner and joins its neighbouring plot lines. */
+export function removeRoomCorner(session: Session, index: number, units: UnitSystem): ModelEdit {
+  const room = currentRoom(session.loaded.document);
+  if (!room) return { ok: false, reason: 'there is no room to adjust yet' };
+  return commitRoomEdit(session, room, removeCorner(room, index), units);
+}
+
+/** Trims the adjoining walls and inserts a tangent rounded corner. */
+export function roundRoomCorner(session: Session, index: number, radius: number, units: UnitSystem): ModelEdit {
+  const room = currentRoom(session.loaded.document);
+  if (!room) return { ok: false, reason: 'there is no room to adjust yet' };
+  return commitRoomEdit(session, room, roundCorner(room, index, radius), units);
+}
+
+/** Applies one consistent radius to every sharp corner in the outline. */
+export function roundAllRoomCorners(session: Session, radius: number, units: UnitSystem): ModelEdit {
+  const room = currentRoom(session.loaded.document);
+  if (!room) return { ok: false, reason: 'there is no room to adjust yet' };
+  return commitRoomEdit(session, room, roundAllCorners(room, radius), units);
 }
 
 /** Adds or cuts a rectangle from the current room. */

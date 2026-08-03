@@ -243,6 +243,20 @@ const api = {
   planModel: (): Promise<PlanModelView | null> => ipcRenderer.invoke('plan:model'),
   roomCreate: (width: number, height: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-create', width, height),
+  roomCreateCircle: (diameter: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-create-circle', diameter),
+  roomCreatePolygon: (points: Array<{ x: number; y: number }>): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-create-polygon', points),
+  roomCornerMove: (index: number, x: number, y: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-move', index, x, y),
+  roomCornerAdd: (wallIndex: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-add', wallIndex),
+  roomCornerRemove: (index: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-remove', index),
+  roomCornerRound: (index: number, radius: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corner-round', index, radius),
+  roomCornersRoundAll: (radius: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-corners-round-all', radius),
   roomReshape: (
     op: 'union' | 'difference',
     x: number,
@@ -259,7 +273,7 @@ const api = {
   roomMeta: (patch: {
     name?: string;
     ceilingHeight?: number;
-  }): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('plan:room-meta', patch),
+  }): Promise<{ ok: boolean; reason?: string; note?: string }> => ipcRenderer.invoke('plan:room-meta', patch),
   avSummary: (): Promise<{
     screens: number;
     seatsGraded: number;
@@ -374,6 +388,9 @@ const api = {
     width: number;
     height: number;
     paths: Array<{ points: number[]; closed: boolean }>;
+    category?: string;
+    notes?: string;
+    department?: string;
   }): Promise<{ ok: boolean; reason?: string; id?: string; inventory?: InventoryState }> =>
     ipcRenderer.invoke('inventory:add-traced', payload),
   inventoryRemove: (id: string): Promise<{

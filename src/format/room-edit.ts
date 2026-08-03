@@ -254,6 +254,148 @@ export function removeCorner(room: RoomModel, index: number): RoomEditResult {
 }
 
 /**
+ * Replaces a sharp corner with a tangent circular fillet.
+ *
+ * The adjoining straight walls are trimmed by `r / tan(angle / 2)` and a new
+ * arc is inserted between them. That makes the radius genuine geometry rather
+ * than a visual smoothing effect: area, perimeter, dimensions, print and DXF
+ * all see the same rounded corner.
+ */
+export function roundCorner(room: RoomModel, index: number, radius: number): RoomEditResult {
+  if (index < 0 || index >= room.walls.length) return { ok: false, reason: 'no such corner' };
+  if (!(radius > 0) || !Number.isFinite(radius)) return { ok: false, reason: 'enter a positive corner radius' };
+
+  const previousIndex = (index - 1 + room.walls.length) % room.walls.length;
+  const previous = room.walls[previousIndex];
+  const next = room.walls[index];
+  if (previous.bulge || next.bulge) {
+    return { ok: false, reason: 'Round a corner where both adjoining walls are straight.' };
+  }
+
+  const corner = next.start;
+  const previousLength = Math.hypot(previous.start.x - corner.x, previous.start.y - corner.y);
+  const nextLength = Math.hypot(next.end.x - corner.x, next.end.y - corner.y);
+  if (previousLength < 2 || nextLength < 2) return { ok: false, reason: 'The adjoining walls are too short to round.' };
+
+  const incoming = {
+    x: (previous.start.x - corner.x) / previousLength,
+    y: (previous.start.y - corner.y) / previousLength,
+  };
+  const outgoing = {
+    x: (next.end.x - corner.x) / nextLength,
+    y: (next.end.y - corner.y) / nextLength,
+  };
+  const angle = Math.acos(Math.max(-1, Math.min(1, incoming.x * outgoing.x + incoming.y * outgoing.y)));
+  if (angle < 0.01 || Math.PI - angle < 0.01) {
+    return { ok: false, reason: 'This corner is too sharp or too straight to round.' };
+  }
+
+  const trim = radius / Math.tan(angle / 2);
+  const maxTrim = Math.min(previousLength, nextLength) * 0.49;
+  if (trim > maxTrim) {
+    return { ok: false, reason: 'That radius is too large for the adjoining walls.' };
+  }
+
+  const start = { x: corner.x + incoming.x * trim, y: corner.y + incoming.y * trim };
+  const end = { x: corner.x + outgoing.x * trim, y: corner.y + outgoing.y * trim };
+  const turn = incoming.x * outgoing.y - incoming.y * outgoing.x;
+  const sweep = Math.PI - angle;
+  const bulge = -Math.sign(turn || 1) * Math.tan(sweep / 4);
+
+  const walls = room.walls.map((segment) => ({
+    ...segment,
+    start: { ...segment.start },
+    end: { ...segment.end },
+  }));
+  walls[previousIndex].end = start;
+  walls[index].start = end;
+  const fillet = wall(start, end, bulge);
+  fillet.thickness = previous.thickness ?? next.thickness;
+  fillet.label = 'Rounded corner';
+  walls.splice(index, 0, fillet);
+
+  return { ok: true, room: { ...room, walls } };
+}
+
+/** Replaces every sharp corner with the same exact-radius tangent fillet. */
+export function roundAllCorners(room: RoomModel, radius: number): RoomEditResult {
+  if (!(radius > 0) || !Number.isFinite(radius)) return { ok: false, reason: 'enter a positive corner radius' };
+  if (room.walls.length < 3) return { ok: false, reason: 'the room needs at least three corners' };
+  if (room.walls.some((segment) => segment.bulge)) {
+    return { ok: false, reason: 'Straighten the curved plot lines before rounding every corner.' };
+  }
+
+  const trims: Array<{
+    before: Point;
+    after: Point;
+    bulge: number;
+    distance: number;
+  }> = [];
+
+  for (let index = 0; index < room.walls.length; index++) {
+    const previous = room.walls[(index - 1 + room.walls.length) % room.walls.length];
+    const next = room.walls[index];
+    const corner = next.start;
+    const previousLength = Math.hypot(previous.start.x - corner.x, previous.start.y - corner.y);
+    const nextLength = Math.hypot(next.end.x - corner.x, next.end.y - corner.y);
+    if (previousLength < 2 || nextLength < 2) {
+      return { ok: false, reason: `Corner ${index + 1} has adjoining lines that are too short to round.` };
+    }
+
+    const incoming = {
+      x: (previous.start.x - corner.x) / previousLength,
+      y: (previous.start.y - corner.y) / previousLength,
+    };
+    const outgoing = {
+      x: (next.end.x - corner.x) / nextLength,
+      y: (next.end.y - corner.y) / nextLength,
+    };
+    const angle = Math.acos(Math.max(-1, Math.min(1, incoming.x * outgoing.x + incoming.y * outgoing.y)));
+    if (angle < 0.01 || Math.PI - angle < 0.01) {
+      return { ok: false, reason: `Corner ${index + 1} is too sharp or too straight to round.` };
+    }
+
+    const distance = radius / Math.tan(angle / 2);
+    if (distance > Math.min(previousLength, nextLength) * 0.49) {
+      return { ok: false, reason: `That radius is too large at corner ${index + 1}.` };
+    }
+    const turn = incoming.x * outgoing.y - incoming.y * outgoing.x;
+    trims.push({
+      before: { x: corner.x + incoming.x * distance, y: corner.y + incoming.y * distance },
+      after: { x: corner.x + outgoing.x * distance, y: corner.y + outgoing.y * distance },
+      bulge: -Math.sign(turn || 1) * Math.tan((Math.PI - angle) / 4),
+      distance,
+    });
+  }
+
+  for (let index = 0; index < room.walls.length; index++) {
+    const next = (index + 1) % room.walls.length;
+    const length = Math.hypot(
+      room.walls[index].end.x - room.walls[index].start.x,
+      room.walls[index].end.y - room.walls[index].start.y,
+    );
+    if (trims[index].distance + trims[next].distance >= length * 0.98) {
+      return { ok: false, reason: `That radius leaves no straight run on plot line ${index + 1}.` };
+    }
+  }
+
+  const walls: WallSegment[] = [];
+  for (let index = 0; index < room.walls.length; index++) {
+    const next = (index + 1) % room.walls.length;
+    const source = room.walls[index];
+    const fillet = wall(trims[index].before, trims[index].after, trims[index].bulge);
+    fillet.thickness = room.walls[(index - 1 + room.walls.length) % room.walls.length].thickness ?? source.thickness;
+    fillet.label = `Rounded corner ${index + 1}`;
+    const straight = wall(trims[index].after, trims[next].before);
+    straight.thickness = source.thickness;
+    straight.label = source.label;
+    walls.push(fillet, straight);
+  }
+
+  return { ok: true, room: { ...room, walls } };
+}
+
+/**
  * Moves a whole wall along its own normal.
  *
  * Positive is outward for a counter-clockwise outline. The neighbouring walls

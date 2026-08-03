@@ -50,6 +50,12 @@ async function main(): Promise<void> {
   ]);
   check('chairs tallied', counts.chairs === 120, String(counts.chairs));
   check('tables tallied', counts.tables === 15, String(counts.tables));
+  const rental = countFurniture([
+    { name: 'Chiavari Gold', count: 40 },
+    { name: '72" Round', count: 5 },
+  ]);
+  check('chiavari counts as chairs', rental.chairs === 40, String(rental.chairs));
+  check('round size counts as tables', rental.tables === 5, String(rental.tables));
 
   console.log('\ninsert catalog\n');
   const leaves = flattenInsertLeaves();

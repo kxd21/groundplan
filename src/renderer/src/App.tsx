@@ -29,6 +29,7 @@ import {
   labelChoice,
   opensProperties,
   pointerSpec,
+  roomOutlineChoice,
   type PendingEffect,
 } from './tool/machine.js';
 import { runEffect } from './tool/effects.js';
@@ -61,6 +62,7 @@ import {
   IconDrawLine,
   IconDrawRect,
   IconDrawEllipse,
+  IconDrawPolygon,
   IconPointer,
   IconText,
   IconRotateLeft,
@@ -99,12 +101,96 @@ declare global {
 
 const api = window.groundplan;
 
-const LAYERS: Array<{ id: Layer; label: string; tint: string }> = [
-  { id: 'walls', label: 'Walls & structure', tint: '#c9d1dc' },
-  { id: 'furniture', label: 'Tables & equipment', tint: '#7fb3ff' },
-  { id: 'region', label: 'Regions', tint: '#8fd6a8' },
-  { id: 'annotation', label: 'Dimensions & labels', tint: '#e6c06a' },
-  { id: 'other', label: 'Other geometry', tint: '#a99ad6' },
+type LayerGroupId = 'structure' | 'content' | 'markup';
+
+interface LayerListItem {
+  selectId: number;
+  label: string;
+  kind: string;
+  x?: number;
+  y?: number;
+  searchText: string;
+}
+
+const LAYER_ITEM_KINDS: Record<string, string> = {
+  RVSegmentLine: 'Line',
+  RVSegmentRect: 'Rectangle',
+  RVSegmentPoly: 'Polyline',
+  RVSegmentArc: 'Curve',
+  RVSegmentOle: 'Embedded object',
+  RVDimensionLine: 'Dimension',
+  RVLabel: 'Label',
+};
+
+const LAYER_GROUPS: Array<{
+  id: LayerGroupId;
+  label: string;
+  description: string;
+}> = [
+  { id: 'structure', label: 'Plan structure', description: 'Room boundaries and zones' },
+  { id: 'content', label: 'Placed content', description: 'Equipment and free geometry' },
+  { id: 'markup', label: 'Markup', description: 'Dimensions and plan notes' },
+];
+
+const LAYERS: Array<{
+  id: Layer;
+  label: string;
+  description: string;
+  tint: string;
+  group: LayerGroupId;
+}> = [
+  {
+    id: 'walls',
+    label: 'Walls & structure',
+    description: 'Walls, doors, columns, and room edges',
+    tint: '#8796a8',
+    group: 'structure',
+  },
+  {
+    id: 'region',
+    label: 'Regions',
+    description: 'Named areas and planning zones',
+    tint: '#51b879',
+    group: 'structure',
+  },
+  {
+    id: 'furniture',
+    label: 'Tables & equipment',
+    description: 'Placed inventory and gear items',
+    tint: '#438fe8',
+    group: 'content',
+  },
+  {
+    id: 'other',
+    label: 'Other geometry',
+    description: 'Imported and free-drawn shapes',
+    tint: '#9173cf',
+    group: 'content',
+  },
+  {
+    id: 'annotation',
+    label: 'Dimensions & labels',
+    description: 'Measurements, dimensions, and text',
+    tint: '#d99a29',
+    group: 'markup',
+  },
+];
+
+const PRINT_PAPERS: Record<string, { width: number; height: number; label: string }> = {
+  Letter: { width: 8.5, height: 11, label: 'Letter · 8.5 × 11 in' },
+  Legal: { width: 8.5, height: 14, label: 'Legal · 8.5 × 14 in' },
+  Tabloid: { width: 11, height: 17, label: 'Tabloid · 11 × 17 in' },
+  A4: { width: 8.27, height: 11.69, label: 'A4 · 210 × 297 mm' },
+  A3: { width: 11.69, height: 16.54, label: 'A3 · 297 × 420 mm' },
+};
+
+const PRINT_SCALES: Array<{ id: string; label: string; inchesPerFoot: number }> = [
+  { id: '1/16', label: '1/16″ = 1′-0″', inchesPerFoot: 1 / 16 },
+  { id: '3/32', label: '3/32″ = 1′-0″', inchesPerFoot: 3 / 32 },
+  { id: '1/8', label: '1/8″ = 1′-0″', inchesPerFoot: 1 / 8 },
+  { id: '3/16', label: '3/16″ = 1′-0″', inchesPerFoot: 3 / 16 },
+  { id: '1/4', label: '1/4″ = 1′-0″', inchesPerFoot: 1 / 4 },
+  { id: 'fit', label: 'Fit to page · not to scale', inchesPerFoot: 0 },
 ];
 
 export interface Doc {
@@ -167,7 +253,7 @@ type RecoveryEntry = Awaited<ReturnType<GroundplanApi['recoveryList']>>[number];
 type PlanFolderState = Awaited<ReturnType<GroundplanApi['planFoldersList']>>;
 type Workspace = 'plan' | 'gear' | 'inventory';
 type PlanRailSource = 'recent' | 'collections' | 'folder' | 'equipment';
-type EquipmentSource = 'inventory' | 'gear';
+type EquipmentSource = 'inventory' | 'gear' | 'plan';
 type InspectorTab = 'properties' | 'room' | 'create' | 'layers';
 
 /** One foot in logical units — the arrow-key nudge and duplicate offset. */
@@ -227,6 +313,13 @@ function hexToColorRef(hex: string): number | null {
 export function App() {
   const [doc, setDoc] = useState<Doc | null>(null);
   const [newPlanOpen, setNewPlanOpen] = useState(false);
+  const [startNewRoomOutline, setStartNewRoomOutline] = useState(false);
+  /**
+   * New Plan → Custom writes an empty file first, then the user traces walls.
+   * Kept in a ref so cancelling/re-arming the outline tool cannot drop the
+   * "save once the room exists" promise before createRoom runs.
+   */
+  const saveNewRoomOutlineRef = useRef(false);
   /** How lengths are shown and typed. Mirrors the drawing setting. */
   const [unitSystem, setUnitSystem] = useState<'imperial' | 'metric'>('imperial');
   const [folder, setFolder] = useState<string | null>(null);
@@ -283,6 +376,20 @@ export function App() {
   const [planRailSource, setPlanRailSource] = useState<PlanRailSource>('recent');
   const [equipmentSource, setEquipmentSource] = useState<EquipmentSource>('inventory');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('properties');
+  const [layerQuery, setLayerQuery] = useState('');
+  const [openLayerGroups, setOpenLayerGroups] = useState<Set<LayerGroupId>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('groundplan:open-layer-groups') ?? '[]');
+      const valid = Array.isArray(saved)
+        ? saved.filter((id): id is LayerGroupId => LAYER_GROUPS.some((group) => group.id === id))
+        : [];
+      return new Set(valid.length ? valid : ['structure']);
+    } catch {
+      return new Set<LayerGroupId>(['structure']);
+    }
+  });
+  const [openItemLayers, setOpenItemLayers] = useState<Set<Layer>>(new Set());
+  const [layerItemLimits, setLayerItemLimits] = useState<Partial<Record<Layer, number>>>({});
   const [inventory, setInventory] = useState<InventoryState | null>(null);
   const [libQuery, setLibQuery] = useState('');
   const [invQuery, setInvQuery] = useState('');
@@ -306,11 +413,13 @@ export function App() {
     tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'gear' ? tool.tool.stamp.description : null;
   const [annotationDraft, setAnnotationDraft] = useState('');
   const annotationInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inspectorRef = useRef<HTMLElement | null>(null);
   /** Snap step in logical units; 0 is off. Object alignment always applies. */
   const [snapStep, setSnapStep] = useState(FOOT);
   /** Last non-zero snap, so the magnet toggle can restore Off ↔ step. */
   const lastSnapStepRef = useRef(FOOT);
   const [printOpen, setPrintOpen] = useState(false);
+  const [printBusy, setPrintBusy] = useState(false);
   const [printScale, setPrintScale] = useState('1/8');
   const [printPaper, setPrintPaper] = useState('Tabloid');
   const [printLandscape, setPrintLandscape] = useState(true);
@@ -368,6 +477,14 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('groundplan:inspector-open', String(inspectorOpen));
   }, [inspectorOpen]);
+
+  useEffect(() => {
+    inspectorRef.current?.scrollTo({ top: 0 });
+  }, [doc?.path, inspectorTab, view]);
+
+  useEffect(() => {
+    localStorage.setItem('groundplan:open-layer-groups', JSON.stringify([...openLayerGroups]));
+  }, [openLayerGroups]);
 
   const showToolbarTooltipFor = useCallback((target: EventTarget | null) => {
     const control = target instanceof Element ? target.closest<HTMLElement>('[data-tooltip]') : null;
@@ -464,6 +581,7 @@ export function App() {
     setInspectorTab('properties');
     setSelectedIds([]);
     setSelection(null);
+    saveNewRoomOutlineRef.current = false;
     // One dispatch puts everything down. The old block cleared four armed cells
     // and the two measure/dimension pairs but never `drawTool`/`drawFrom`, so
     // opening a different plan left a draw tool in hand holding a half-consumed
@@ -627,6 +745,22 @@ export function App() {
     }, duration);
   }, []);
 
+  // A Custom room chosen in New Plan starts where that choice promises: on the
+  // plan, with the Room inspector open and the multi-point outline tool ready.
+  // Waiting for the adopted document to render also lets the tool machine see
+  // the new file's editable capability before it receives the pick.
+  useEffect(() => {
+    if (!startNewRoomOutline || !doc?.editable) return;
+    setStartNewRoomOutline(false);
+    setInspectorOpen(true);
+    setInspectorTab('room');
+    setSelectedIds([]);
+    saveNewRoomOutlineRef.current = true;
+    const { refusal } = dispatchTool({ type: 'pick', choice: roomOutlineChoice });
+    if (refusal) notify(refusal);
+    else showStatus('Click each room corner in order, then press Enter to finish.', 5200);
+  }, [dispatchTool, doc?.editable, doc?.path, notify, showStatus, startNewRoomOutline]);
+
   const acceptPlanFolderState = useCallback(
     (state: PlanFolderState | undefined) => {
       if (!state) return;
@@ -786,6 +920,24 @@ export function App() {
   }, [notify, showStatus]);
 
 
+  const persistNewRoomOutlineIfNeeded = useCallback(async (): Promise<{
+    doc?: Doc;
+    statusSuffix?: string;
+    failed?: string;
+  }> => {
+    if (!saveNewRoomOutlineRef.current) return {};
+    saveNewRoomOutlineRef.current = false;
+    const saved = await api.save(false);
+    if (saved.ok && saved.doc) {
+      if (saved.warning) notify(saved.warning);
+      return { doc: saved.doc as Doc, statusSuffix: ' · Saved' };
+    }
+    if (!saved.cancelled) {
+      return { failed: `The room was created but could not be saved: ${saved.reason ?? 'unknown error'}` };
+    }
+    return {};
+  }, [notify]);
+
   const applyToolEffect = useCallback(
     async (effect: PendingEffect | null, refusal?: string) => {
       if (refusal) {
@@ -798,6 +950,18 @@ export function App() {
         return;
       }
       const result = await runEffect(effect, api);
+      if (effect.do === 'createRoom' && result.ok) {
+        // New Plan already asked where the file should live. Finishing its
+        // promised custom outline should persist it there immediately instead
+        // of leaving the brand-new file as the empty sheet first written.
+        const persisted = await persistNewRoomOutlineIfNeeded();
+        if (persisted.doc) {
+          result.doc = persisted.doc;
+          result.status = `${result.status ?? 'Created custom room'}${persisted.statusSuffix ?? ''}`;
+        } else if (persisted.failed) {
+          notify(persisted.failed);
+        }
+      }
       if (result.ok && result.doc) {
         setDoc(result.doc as Doc);
         setError(null);
@@ -811,8 +975,13 @@ export function App() {
       }
       dispatchTool({ type: 'settled', epoch: effect.epoch, ok: result.ok });
     },
-    [dispatchTool, notify, showStatus],
+    [dispatchTool, notify, persistNewRoomOutlineIfNeeded, showStatus],
   );
+
+  const finishRoomOutline = useCallback(() => {
+    const { effect, refusal } = dispatchTool({ type: 'finish' });
+    void applyToolEffect(effect, refusal);
+  }, [applyToolEffect, dispatchTool]);
 
   const cancelPlacement = useCallback(() => {
     dispatchTool({ type: 'pick', choice: SELECT });
@@ -1146,36 +1315,49 @@ export function App() {
   }, [doc, visible]);
 
   const printPdf = useCallback(async () => {
-    if (!doc) return;
-    const extent = doc.scene.roomExtent ?? doc.scene.extent;
-    const reply = await api.printPdf({
-      svg: toSvg(doc.scene, visible, printScale),
-      title: doc.scene.title ?? doc.name.replace(/\.[^.]+$/, ''),
-      subtitle: gear?.lists[gearIndex]?.jobNumber
-        ? `Job ${gear.lists[gearIndex].jobNumber}`
-        : printSubtitle || undefined,
-      roomWidth: extent ? extent.maxX - extent.minX : undefined,
-      roomHeight: extent ? extent.maxY - extent.minY : undefined,
-      scale: printScale,
-      paper: printPaper,
-      landscape: printLandscape,
-      suggestedName: doc.name.replace(/\.[^.]+$/, '') + '.pdf',
-    });
-    setPrintOpen(false);
-    if (reply.cancelled) return;
-    if (reply.ok) {
-      const name = reply.path?.split(/[\\/]/).pop();
-      if (reply.fits === false) {
-        // Better to be told the sheet crops than to find out at the venue.
-        notify(
-          `Printed ${name}, but the room is ${Math.round(((reply.overBy ?? 1) - 1) * 100)}% larger than ` +
-            `this sheet at that scale — use a bigger sheet or a smaller scale to see all of it.`,
-        );
-      } else {
-        showStatus(`Printed ${name}`);
-      }
-    } else if (reply.reason) notify(reply.reason);
-  }, [doc, visible, printScale, printPaper, printLandscape, printSubtitle, gear, gearIndex, notify, showStatus]);
+    if (!doc || printBusy || visible.size === 0) return;
+    setPrintBusy(true);
+    try {
+      const extent = doc.scene.roomExtent ?? doc.scene.extent;
+      const reply = await api.printPdf({
+        svg: toSvg(doc.scene, visible, printScale),
+        title: doc.scene.title ?? doc.name.replace(/\.[^.]+$/, ''),
+        subtitle: gear?.lists[gearIndex]?.jobNumber
+          ? `Job ${gear.lists[gearIndex].jobNumber}`
+          : printSubtitle || undefined,
+        roomWidth: extent ? extent.maxX - extent.minX : undefined,
+        roomHeight: extent ? extent.maxY - extent.minY : undefined,
+        scale: printScale,
+        paper: printPaper,
+        landscape: printLandscape,
+        suggestedName: doc.name.replace(/\.[^.]+$/, '') + '.pdf',
+      });
+      if (reply.cancelled) return;
+      if (reply.ok) {
+        setPrintOpen(false);
+        void api.settingsPatch({
+          print: {
+            scale: printScale,
+            paper: printPaper,
+            landscape: printLandscape,
+            subtitle: printSubtitle,
+          },
+        });
+        const name = reply.path?.split(/[\\/]/).pop();
+        if (reply.fits === false) {
+          // Better to be told the sheet crops than to find out at the venue.
+          notify(
+            `Saved ${name}, but the drawing is ${Math.round(((reply.overBy ?? 1) - 1) * 100)}% larger than ` +
+              `this sheet at that scale — use a bigger sheet or a smaller scale to see all of it.`,
+          );
+        } else {
+          showStatus(`Saved ${name}`);
+        }
+      } else if (reply.reason) notify(reply.reason);
+    } finally {
+      setPrintBusy(false);
+    }
+  }, [doc, printBusy, visible, printScale, printPaper, printLandscape, printSubtitle, gear, gearIndex, notify, showStatus]);
 
   /** Places a inventory item where it was dropped on the drawing. */
   const dropItem = useCallback(
@@ -1424,7 +1606,7 @@ export function App() {
         if (dim) {
           setDimLengthDraft(formatLength(dim.length, unitSystem));
           setDimAngleDraft(String(Math.round(dim.angleDegrees * 10) / 10));
-          setDimScaleDraft(formatLength(dim.length, unitSystem));
+          setDimScaleDraft('');
         } else {
           setDimLengthDraft('');
           setDimAngleDraft('');
@@ -1565,6 +1747,21 @@ export function App() {
           setSettingsOpen(false);
           return;
         }
+        if (insertOpen) {
+          e.preventDefault();
+          setInsertOpen(false);
+          return;
+        }
+        if (shapeWizardOpen) {
+          e.preventDefault();
+          setShapeWizardOpen(false);
+          return;
+        }
+        if (buildStageOpen) {
+          e.preventDefault();
+          setBuildStageOpen(false);
+          return;
+        }
       }
       const target = e.target as HTMLElement | null;
       if (
@@ -1599,12 +1796,22 @@ export function App() {
         void duplicateSelection();
         return;
       }
+      if (e.key === 'Enter' && toolRef.current.tool.kind === 'path') {
+        e.preventDefault();
+        finishRoomOutline();
+        return;
+      }
       if (e.key === 'Enter' && toolRef.current.readout) {
         e.preventDefault();
         void keepMeasurement();
         return;
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (toolRef.current.tool.kind === 'path' && toolRef.current.tool.points.length) {
+          e.preventDefault();
+          dispatchTool({ type: 'undo-point' });
+          return;
+        }
         if (doc?.editable && selectedIds.length) {
           e.preventDefault();
           void deleteSelection();
@@ -1688,11 +1895,15 @@ export function App() {
     newPlanOpen,
     settingsOpen,
     shortcutsOpen,
+    insertOpen,
+    shapeWizardOpen,
+    buildStageOpen,
     cancelPlacement,
     toggleMeasure,
     toggleDimension,
     toggleGrid,
     toggleSnap,
+    finishRoomOutline,
     keepMeasurement,
     selectAll,
     view,
@@ -1751,6 +1962,46 @@ export function App() {
     setVisible(show ? new Set(LAYERS.map((layer) => layer.id)) : new Set());
   }, []);
 
+  const setLayerGroupVisible = useCallback((group: LayerGroupId, show: boolean) => {
+    setVisible((current) => {
+      const next = new Set(current);
+      for (const layer of LAYERS) {
+        if (layer.group !== group) continue;
+        if (show) next.add(layer.id);
+        else next.delete(layer.id);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleLayerGroupOpen = useCallback((group: LayerGroupId) => {
+    setOpenLayerGroups((current) => {
+      const next = new Set(current);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
+  }, []);
+
+  const toggleLayerItemsOpen = useCallback((layer: Layer) => {
+    setOpenItemLayers((current) => {
+      const next = new Set(current);
+      if (next.has(layer)) next.delete(layer);
+      else next.add(layer);
+      return next;
+    });
+    setLayerItemLimits((current) => (current[layer] ? current : { ...current, [layer]: 50 }));
+  }, []);
+
+  const showOnlyLayer = useCallback(
+    (id: Layer) => {
+      const layer = LAYERS.find((candidate) => candidate.id === id);
+      setVisible(new Set([id]));
+      showStatus(`Showing only ${layer?.label ?? id}`);
+    },
+    [showStatus],
+  );
+
   const layerCounts = useMemo(() => {
     const idsByLayer = new Map<Layer, Set<number>>(LAYERS.map((layer) => [layer.id, new Set()]));
     for (const primitive of doc?.scene.primitives ?? []) {
@@ -1758,6 +2009,68 @@ export function App() {
     }
     return new Map(LAYERS.map((layer) => [layer.id, idsByLayer.get(layer.id)?.size ?? 0]));
   }, [doc?.scene.primitives]);
+
+  const layerItems = useMemo(() => {
+    const itemsByLayer = new Map<Layer, Map<number, LayerListItem>>(
+      LAYERS.map((layer) => [layer.id, new Map()]),
+    );
+    for (const primitive of doc?.scene.primitives ?? []) {
+      const items = itemsByLayer.get(primitive.layer);
+      if (!items || items.has(primitive.selectId)) continue;
+      const kind = LAYER_ITEM_KINDS[primitive.cls] ?? primitive.cls.replace(/^RV/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+      const owner = primitive.owner?.trim();
+      const text = primitive.text?.trim();
+      const label = owner || text || kind || `Object ${primitive.selectId}`;
+      const x = primitive.pts.length >= 2 ? primitive.pts[0] : undefined;
+      const y = primitive.pts.length >= 2 ? primitive.pts[1] : undefined;
+      items.set(primitive.selectId, {
+        selectId: primitive.selectId,
+        label,
+        kind,
+        x,
+        y,
+        searchText: `${label} ${kind}`.toLowerCase(),
+      });
+    }
+    return new Map(
+      LAYERS.map((layer) => [
+        layer.id,
+        [...(itemsByLayer.get(layer.id)?.values() ?? [])].sort(
+          (left, right) => left.label.localeCompare(right.label) || left.selectId - right.selectId,
+        ),
+      ]),
+    );
+  }, [doc?.scene.primitives]);
+
+  const layerObjectTotal = useMemo(
+    () => LAYERS.reduce((total, layer) => total + (layerCounts.get(layer.id) ?? 0), 0),
+    [layerCounts],
+  );
+
+  const visibleLayerObjectTotal = useMemo(
+    () =>
+      LAYERS.reduce(
+        (total, layer) => total + (visible.has(layer.id) ? (layerCounts.get(layer.id) ?? 0) : 0),
+        0,
+      ),
+    [layerCounts, visible],
+  );
+
+  const organizedLayers = useMemo(() => {
+    const query = layerQuery.trim().toLowerCase();
+    return LAYER_GROUPS.map((group) => ({
+      ...group,
+      layers: LAYERS.filter(
+        (layer) =>
+          layer.group === group.id &&
+          (!query ||
+            layer.label.toLowerCase().includes(query) ||
+            layer.description.toLowerCase().includes(query) ||
+            group.label.toLowerCase().includes(query) ||
+            (layerItems.get(layer.id) ?? []).some((item) => item.searchText.includes(query))),
+      ),
+    })).filter((group) => group.layers.length > 0);
+  }, [layerItems, layerQuery]);
 
   const selectLayer = useCallback(
     (id: Layer) => {
@@ -1783,8 +2096,91 @@ export function App() {
     [dispatchTool, doc, notify, showStatus],
   );
 
+  const selectLayerItem = useCallback(
+    (layer: Layer, item: LayerListItem) => {
+      setVisible((current) => new Set(current).add(layer));
+      dispatchTool({ type: 'pick', choice: SELECT });
+      setSelection(null);
+      setSelectedIds([item.selectId]);
+      showStatus(`Selected ${item.label}`);
+    },
+    [dispatchTool, showStatus],
+  );
+
   const extent = doc?.scene.roomExtent ?? doc?.scene.extent ?? null;
   const inventoryTotal = doc?.scene.inventory.reduce((sum, i) => sum + i.count, 0) ?? 0;
+  const printPreview = useMemo(() => {
+    if (!doc) return null;
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    const visibleIds = new Set<number>();
+    for (const primitive of doc.scene.primitives) {
+      if (!visible.has(primitive.layer)) continue;
+      visibleIds.add(primitive.selectId);
+      for (let index = 0; index + 1 < primitive.pts.length; index += 2) {
+        const x = primitive.pts[index];
+        const y = primitive.pts[index + 1];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    const fallback = doc.scene.roomExtent ?? doc.scene.extent;
+    const drawingWidth = Number.isFinite(maxX - minX) && maxX > minX
+      ? maxX - minX
+      : fallback
+        ? fallback.maxX - fallback.minX
+        : 1;
+    const drawingHeight = Number.isFinite(maxY - minY) && maxY > minY
+      ? maxY - minY
+      : fallback
+        ? fallback.maxY - fallback.minY
+        : 1;
+    const paper = PRINT_PAPERS[printPaper] ?? PRINT_PAPERS.Tabloid;
+    const scale = PRINT_SCALES.find((candidate) => candidate.id === printScale) ?? PRINT_SCALES[2];
+
+    const calculate = (landscape: boolean) => {
+      const pageWidth = landscape ? paper.height : paper.width;
+      const pageHeight = landscape ? paper.width : paper.height;
+      const frameWidth = Math.max(0.1, pageWidth - 1);
+      const frameHeight = Math.max(0.1, pageHeight - 1.85);
+      const inchesPerFoot = scale.inchesPerFoot || 1 / 8;
+      const naturalWidth = (drawingWidth / 120) * inchesPerFoot;
+      const naturalHeight = (drawingHeight / 120) * inchesPerFoot;
+      const fitFactor = Math.min(frameWidth / naturalWidth, frameHeight / naturalHeight);
+      const displayFactor = scale.inchesPerFoot ? 1 : fitFactor;
+      const overBy = scale.inchesPerFoot
+        ? Math.max(naturalWidth / frameWidth, naturalHeight / frameHeight)
+        : 1;
+      return {
+        pageWidth,
+        pageHeight,
+        frameWidth,
+        frameHeight,
+        fits: overBy <= 1.001,
+        overBy,
+        footprintWidth: Math.min(170, (naturalWidth * displayFactor / frameWidth) * 100),
+        footprintHeight: Math.min(170, (naturalHeight * displayFactor / frameHeight) * 100),
+      };
+    };
+
+    const current = calculate(printLandscape);
+    const alternate = calculate(!printLandscape);
+    return {
+      ...current,
+      drawingWidth,
+      drawingHeight,
+      visibleObjects: visibleIds.size,
+      scaleLabel: scale.label,
+      paperLabel: paper.label,
+      alternateFits: alternate.fits,
+      alternateOrientation: printLandscape ? 'Portrait' : 'Landscape',
+    };
+  }, [doc, printLandscape, printPaper, printScale, visible]);
   const furnitureCounts = useMemo(
     () => countFurniture(doc?.scene.inventory ?? []),
     [doc?.scene.inventory],
@@ -1854,12 +2250,14 @@ export function App() {
           units={unitSystem}
           onCancel={() => setNewPlanOpen(false)}
           onError={notify}
-          onCreated={(created) => {
+          onCreated={(created, options) => {
             setNewPlanOpen(false);
             // The same path an opened plan takes, so nothing is left over from
             // whatever was on screen before.
             adopt(created as Doc);
             setInspectorTab('room');
+            setInspectorOpen(true);
+            setStartNewRoomOutline(options.startRoomOutline);
             setFitToken((t) => t + 1);
             refreshRecent();
           }}
@@ -1895,9 +2293,15 @@ export function App() {
         origin={stageOrigin}
         disabled={!doc?.editable}
         onClose={() => setBuildStageOpen(false)}
-        onBuilt={(next) => {
+        onBuilt={(next, created) => {
           if (next) setDoc(next as Doc);
+          setInspectorOpen(true);
           setInspectorTab('room');
+          if (created?.length) {
+            setSelectedIds(created);
+            setSelection(null);
+          }
+          setFitToken((t) => t + 1);
         }}
         onError={notify}
         onStatus={showStatus}
@@ -2393,6 +2797,27 @@ export function App() {
                   <span>{label}</span>
                 </button>
               ))}
+              <button
+                className={`icon-btn ribbon-action${isPressed(tool, roomOutlineChoice) ? ' is-on' : ''}`}
+                onClick={() => {
+                  setInspectorOpen(true);
+                  setInspectorTab('room');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+                  if (refusal) notify(refusal);
+                  else setSelectedIds([]);
+                }}
+                disabled={!doc?.editable}
+                data-tooltip={
+                  doc?.editable
+                    ? 'Draw a custom room — click each corner, then press Enter'
+                    : 'Open an editable plan to draw a room'
+                }
+                aria-label="Draw custom room outline"
+                aria-pressed={isPressed(tool, roomOutlineChoice)}
+              >
+                <IconDrawPolygon />
+                <span>Room</span>
+              </button>
               <button
                 className={`icon-btn ribbon-action${isPressed(tool, labelChoice(annotationDraft.trim() || ' ')) ? ' is-on' : ''}`}
                 onClick={() => {
@@ -3159,6 +3584,16 @@ export function App() {
                       Gear list
                       {gear && <span className="num">{gear.totals[gearIndex]?.pieces ?? 0}</span>}
                     </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      className={equipmentSource === 'plan' ? 'active' : ''}
+                      aria-selected={equipmentSource === 'plan'}
+                      onClick={() => setEquipmentSource('plan')}
+                    >
+                      On plan
+                      <span className="num">{inventoryTotal.toLocaleString()}</span>
+                    </button>
                   </div>
                   <div className="equipment-gesture-hint" role="note">
                     <span><strong>Drag</strong> to place once</span>
@@ -3180,7 +3615,7 @@ export function App() {
                       onError={notify}
                       onStatus={showStatus}
                     />
-                  ) : (
+                  ) : equipmentSource === 'gear' ? (
                     <GearPalette
                       lists={gear?.lists ?? []}
                       activeIndex={gearIndex}
@@ -3191,6 +3626,82 @@ export function App() {
                       onPlace={armGear}
                       onManage={() => showWorkspace('gear')}
                     />
+                  ) : (
+                    <div className="plan-items-palette">
+                      <div className="section-title">
+                        <span>Items placed on this plan</span>
+                        <span className="num">{inventoryTotal.toLocaleString()}</span>
+                      </div>
+                      <div className="search inv-search">
+                        <IconSearch size={13} />
+                        <input
+                          aria-label="Search items in this plan"
+                          placeholder="Search placed items…"
+                          value={invQuery}
+                          onChange={(event) => setInvQuery(event.target.value)}
+                        />
+                      </div>
+                      {(doc?.scene.inventory.length ?? 0) > 0 ? (
+                        <ul className="inventory">
+                          {doc?.scene.inventory
+                            .filter((item) =>
+                              invQuery.trim()
+                                ? item.name.toLowerCase().includes(invQuery.trim().toLowerCase()) ||
+                                  (item.category ?? '').toLowerCase().includes(invQuery.trim().toLowerCase())
+                                : true,
+                            )
+                            .map((item) => (
+                              <li key={item.name}>
+                                <button
+                                  className="inv-add"
+                                  disabled={!doc?.editable}
+                                  draggable={!!doc?.editable}
+                                  title={doc?.editable ? `Place another ${item.name}` : 'This plan is read-only'}
+                                  onClick={() => armGear(item.name)}
+                                  onDragStart={(event) => {
+                                    event.dataTransfer.effectAllowed = 'copy';
+                                    event.dataTransfer.setData('application/x-groundplan-gear', item.name);
+                                    event.dataTransfer.setData('application/x-groundplan-label', item.name);
+                                    event.dataTransfer.setData('text/plain', item.name);
+                                  }}
+                                >
+                                  <span className="iname">
+                                    {item.name}
+                                    {item.category && <em className="icat">{item.category}</em>}
+                                  </span>
+                                  <span className="icount num">{item.count}</span>
+                                  <IconPlus size={12} className="inv-plus" />
+                                </button>
+                              </li>
+                            ))}
+                        </ul>
+                      ) : (
+                        <div className="layer-no-results">
+                          <strong>No placed items yet</strong>
+                          <span>Use Inventory or Gear list to add the first item.</span>
+                        </div>
+                      )}
+                      <div className="plan-items-exports">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const saved = await api.scheduleExport(true);
+                            if (saved) showStatus(`Exported ${saved.split(/[\\/]/).pop()}`);
+                          }}
+                        >
+                          Counts CSV
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const saved = await api.scheduleExport(false);
+                            if (saved) showStatus(`Exported ${saved.split(/[\\/]/).pop()}`);
+                          }}
+                        >
+                          Full schedule
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
               ) : (
@@ -3379,6 +3890,7 @@ export function App() {
               units={unitSystem}
               pointerMode={pointerMode}
               spanFrom={tool.tool.kind === 'span' ? tool.tool.from : null}
+              pathPoints={tool.tool.kind === 'path' ? tool.tool.points : []}
               readout={tool.readout}
               onCanvasClick={(at) => {
                 const { effect, refusal } = dispatchTool({ type: 'click', at });
@@ -3438,54 +3950,232 @@ export function App() {
               </span>
             </div>
           )}
-          {printOpen && doc && (
-            <div className="print-panel">
-              <div className="section-title">
-                <span>Print to PDF</span>
-              </div>
-              <div className="field">
-                <label htmlFor="p-scale">Scale</label>
-                <select id="p-scale" value={printScale} onChange={(e) => setPrintScale(e.target.value)}>
-                  <option value="1/16">1/16″ = 1′-0″</option>
-                  <option value="3/32">3/32″ = 1′-0″</option>
-                  <option value="1/8">1/8″ = 1′-0″</option>
-                  <option value="3/16">3/16″ = 1′-0″</option>
-                  <option value="1/4">1/4″ = 1′-0″</option>
-                  <option value="fit">Fit to page</option>
-                </select>
-              </div>
-              <div className="field">
-                <label htmlFor="p-paper">Paper</label>
-                <select id="p-paper" value={printPaper} onChange={(e) => setPrintPaper(e.target.value)}>
-                  <option value="Letter">Letter</option>
-                  <option value="Legal">Legal</option>
-                  <option value="Tabloid">Tabloid 11×17</option>
-                  <option value="A4">A4</option>
-                  <option value="A3">A3</option>
-                </select>
-              </div>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={printLandscape}
-                  onChange={(e) => setPrintLandscape(e.target.checked)}
-                />
-                <span>Landscape</span>
-              </label>
-              <div className="actions-row">
-                <button onClick={() => setPrintOpen(false)}>Cancel</button>
-                <button className="btn-primary" onClick={printPdf}>
-                  Print
-                </button>
-              </div>
-              <p className="hint">
-                A fixed scale prints to size and may crop a large room; the title block records which scale was
-                used.
-              </p>
+          {printOpen && doc && printPreview && (
+            <div
+              className="print-backdrop"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !printBusy) setPrintOpen(false);
+              }}
+            >
+              <section className="print-dialog" role="dialog" aria-modal="true" aria-labelledby="print-dialog-title">
+                <header className="print-dialog-header">
+                  <span className="print-dialog-icon" aria-hidden><IconPrint size={18} /></span>
+                  <span className="print-dialog-title">
+                    <strong id="print-dialog-title">Print plan to PDF</strong>
+                    <small title={doc.name}>{doc.name.replace(/\.[^.]+$/, '')}</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="print-close"
+                    onClick={() => setPrintOpen(false)}
+                    disabled={printBusy}
+                    aria-label="Close print setup"
+                    title="Close print setup (Esc)"
+                  >
+                    ×
+                  </button>
+                </header>
+
+                <div className="print-dialog-body">
+                  <section className="print-preview-pane" aria-label="Sheet preview">
+                    <div className="print-preview-heading">
+                      <span>
+                        <strong>Sheet preview</strong>
+                        <small>Visible layers · {printPreview.visibleObjects.toLocaleString()} objects</small>
+                      </span>
+                      <span className="print-preview-sheet-badge">{printPaper} · {printLandscape ? 'Landscape' : 'Portrait'}</span>
+                    </div>
+                    <div className="print-preview-stage">
+                      <div
+                        className="print-sheet"
+                        style={{ aspectRatio: `${printPreview.pageWidth} / ${printPreview.pageHeight}` }}
+                      >
+                        <div className="print-sheet-frame">
+                          <div
+                            className={`print-plan-footprint${printPreview.fits ? '' : ' is-cropped'}`}
+                            style={{
+                              width: `${printPreview.footprintWidth}%`,
+                              height: `${printPreview.footprintHeight}%`,
+                            }}
+                          >
+                            <span>PLAN</span>
+                          </div>
+                        </div>
+                        <div className="print-title-block">
+                          <span className="print-title-plan">
+                            <small>Plan</small>
+                            <strong>{doc.scene.title ?? doc.name.replace(/\.[^.]+$/, '')}</strong>
+                          </span>
+                          <span>
+                            <small>Scale</small>
+                            <strong>{printPreview.scaleLabel}</strong>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="print-preview-meta">
+                      <span>
+                        <small>Drawing</small>
+                        <strong>
+                          {formatLength(printPreview.drawingWidth, unitSystem)} ×{' '}
+                          {formatLength(printPreview.drawingHeight, unitSystem)}
+                        </strong>
+                      </span>
+                      <span>
+                        <small>Paper</small>
+                        <strong>{printPreview.paperLabel}</strong>
+                      </span>
+                    </div>
+                    <div
+                      className={`print-fit-callout${
+                        printScale === 'fit' ? ' is-info' : printPreview.fits ? ' is-ok' : ' is-warning'
+                      }`}
+                      role="status"
+                    >
+                      <span className="print-fit-icon" aria-hidden>
+                        {printScale !== 'fit' && !printPreview.fits ? <IconWarning size={15} /> : <IconFit size={15} />}
+                      </span>
+                      <span className="print-fit-copy">
+                        <strong>
+                          {printScale === 'fit'
+                            ? 'Fits on one sheet — not to scale'
+                            : printPreview.fits
+                              ? 'Fits on one sheet at the selected scale'
+                              : `Drawing will crop by about ${Math.max(1, Math.round((printPreview.overBy - 1) * 100))}%`}
+                        </strong>
+                        <small>
+                          {printScale === 'fit'
+                            ? 'Best for overview sheets; do not measure this print with an architectural scale.'
+                            : printPreview.fits
+                              ? 'The PDF remains measurable and the scale is recorded in its title block.'
+                              : 'Choose a smaller scale, a larger sheet, or Fit to page before saving.'}
+                        </small>
+                      </span>
+                      {printScale !== 'fit' && !printPreview.fits && (
+                        <span className="print-fit-actions">
+                          {printPreview.alternateFits && (
+                            <button type="button" onClick={() => setPrintLandscape((current) => !current)}>
+                              Use {printPreview.alternateOrientation.toLowerCase()}
+                            </button>
+                          )}
+                          <button type="button" onClick={() => setPrintScale('fit')}>Fit to page</button>
+                        </span>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="print-settings-pane" aria-label="Print settings">
+                    <div className="print-settings-section">
+                      <div className="print-settings-title">
+                        <span className="num">1</span>
+                        <span><strong>Sheet</strong><small>Choose a page and orientation</small></span>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="p-paper">Paper size</label>
+                        <select id="p-paper" value={printPaper} onChange={(event) => setPrintPaper(event.target.value)}>
+                          {Object.entries(PRINT_PAPERS).map(([id, paper]) => (
+                            <option value={id} key={id}>{paper.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="print-orientation" role="group" aria-label="Page orientation">
+                        {([false, true] as const).map((landscape) => (
+                          <button
+                            type="button"
+                            key={String(landscape)}
+                            className={printLandscape === landscape ? 'active' : ''}
+                            aria-pressed={printLandscape === landscape}
+                            onClick={() => setPrintLandscape(landscape)}
+                          >
+                            <span className={`print-orientation-page${landscape ? ' is-landscape' : ''}`} aria-hidden />
+                            <span>{landscape ? 'Landscape' : 'Portrait'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="print-settings-section">
+                      <div className="print-settings-title">
+                        <span className="num">2</span>
+                        <span><strong>Drawing scale</strong><small>Fixed scales remain measurable</small></span>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="p-scale">Scale</label>
+                        <select id="p-scale" value={printScale} onChange={(event) => setPrintScale(event.target.value)}>
+                          {PRINT_SCALES.map((scale) => (
+                            <option value={scale.id} key={scale.id}>{scale.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="print-settings-section">
+                      <div className="print-settings-title">
+                        <span className="num">3</span>
+                        <span><strong>Title block</strong><small>Add an optional job or issue note</small></span>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="p-subtitle">Subtitle</label>
+                        <input
+                          id="p-subtitle"
+                          value={printSubtitle}
+                          onChange={(event) => setPrintSubtitle(event.target.value)}
+                          placeholder="Job number, issue, or revision"
+                          maxLength={80}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="print-layer-summary">
+                      <span className="print-layer-summary-copy">
+                        <IconLayers size={14} />
+                        <span>
+                          <strong>{visible.size} of {LAYERS.length} layers included</strong>
+                          <small>{LAYERS.filter((layer) => visible.has(layer.id)).map((layer) => layer.label).join(' · ') || 'No visible layers'}</small>
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPrintOpen(false);
+                          setInspectorOpen(true);
+                          setInspectorTab('layers');
+                        }}
+                      >
+                        Manage
+                      </button>
+                    </div>
+                  </section>
+                </div>
+
+                <footer className="print-dialog-footer">
+                  <span>
+                    {visible.size === 0
+                      ? 'Show at least one layer before printing.'
+                      : 'Creates a sharp, single-page vector PDF.'}
+                  </span>
+                  <div>
+                    <button type="button" onClick={() => setPrintOpen(false)} disabled={printBusy}>Cancel</button>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => void printPdf()}
+                      disabled={printBusy || visible.size === 0}
+                    >
+                      <IconPrint size={14} />
+                      {printBusy ? 'Preparing PDF…' : 'Save PDF…'}
+                    </button>
+                  </div>
+                </footer>
+              </section>
             </div>
           )}
           {toolBannerState && (
-            <div className="arming" role="status" aria-live="polite">
+            <div
+              className={`arming${tool.tool.kind === 'path' ? ' is-path' : ''}`}
+              role="status"
+              aria-live="polite"
+            >
               {toolBannerState.badge && (
                 <span
                   className={`tool-state-badge ${
@@ -3495,7 +4185,7 @@ export function App() {
                   {toolBannerState.badge.text}
                 </span>
               )}
-              <span>
+              <span className="tool-state-message">
                 {toolBannerState.message}
                 {toolBannerState.emphasis && <strong>{toolBannerState.emphasis}</strong>}
               </span>
@@ -3512,6 +4202,14 @@ export function App() {
                         : 'This plan is read-only'
                     }
                   >
+                    {action.label}
+                  </button>
+                ) : action.id === 'finish-room' ? (
+                  <button key={action.id} className="btn-primary" onClick={finishRoomOutline}>
+                    {action.label}
+                  </button>
+                ) : action.id === 'undo-point' ? (
+                  <button key={action.id} onClick={() => dispatchTool({ type: 'undo-point' })}>
                     {action.label}
                   </button>
                 ) : (
@@ -3551,7 +4249,7 @@ export function App() {
           )}
         </main>
 
-        <aside className="inspector" aria-hidden={!inspectorOpen}>
+        <aside ref={inspectorRef} className="inspector" aria-hidden={!inspectorOpen}>
           {view === 'inventory' ? (
             <>
               <div className="section">
@@ -3714,6 +4412,8 @@ export function App() {
                         ? 'Placement active'
                         : tool.tool.kind === 'span'
                           ? 'Drawing tool active'
+                          : tool.tool.kind === 'path'
+                            ? 'Room outline active'
                           : tool.tool.kind === 'hand'
                             ? 'Hand tool active'
                             : selectedIds.length
@@ -3725,6 +4425,8 @@ export function App() {
                         ? toolBannerState?.emphasis ?? 'Click the plan to place'
                         : tool.tool.kind === 'span'
                           ? toolBannerState?.message ?? 'Follow the prompt over the plan'
+                          : tool.tool.kind === 'path'
+                            ? toolBannerState?.message ?? 'Click around the room boundary'
                           : tool.tool.kind === 'hand'
                             ? 'Drag the plan to pan · press H to finish'
                             : selectedIds.length
@@ -4258,7 +4960,23 @@ export function App() {
                   doc={doc}
                   onDoc={setDoc}
                   onStatus={showStatus}
-                  onError={setError}
+                  onError={notify}
+                  drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
+                  onDrawRoomOutline={() => {
+                    const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+                    if (refusal) notify(refusal);
+                    else setSelectedIds([]);
+                  }}
+                  onRoomAuthored={async () => {
+                    const persisted = await persistNewRoomOutlineIfNeeded();
+                    if (persisted.doc) {
+                      setDoc(persisted.doc);
+                      showStatus('Room saved');
+                    } else if (persisted.failed) {
+                      notify(persisted.failed);
+                    }
+                  }}
+                  onSeatingStatus={setSeatingClearances}
                   onSelect={(ids) => {
                     setSelectedIds(ids);
                     setSelection(null);
@@ -4489,10 +5207,20 @@ export function App() {
 
               {inspectorTab === 'layers' && (
                 <>
-              <div className="section">
+              <div className="section layer-manager">
                 <div className="section-title">
-                  <span>Layers</span>
-                  <span className="layer-summary">{visible.size}/{LAYERS.length} shown</span>
+                  <span>Drawing layers</span>
+                  <span className="layer-summary">{visible.size}/{LAYERS.length} visible</span>
+                </div>
+                <div className="layer-stats" aria-label="Layer summary">
+                  <div>
+                    <strong>{visible.size}/{LAYERS.length}</strong>
+                    <span>Visible layers</span>
+                  </div>
+                  <div>
+                    <strong>{visibleLayerObjectTotal.toLocaleString()}</strong>
+                    <span>of {layerObjectTotal.toLocaleString()} objects shown</span>
+                  </div>
                 </div>
                 <div className="layer-bulk-actions" aria-label="Layer visibility controls">
                   <button type="button" onClick={() => setAllLayersVisible(true)} disabled={!doc}>
@@ -4503,100 +5231,187 @@ export function App() {
                     Hide all
                   </button>
                 </div>
-                <ul className="layers">
-                  {LAYERS.map((l) => (
-                    <li key={l.id}>
-                      <label>
-                        <input type="checkbox" checked={visible.has(l.id)} onChange={() => toggleLayer(l.id)} />
-                        <span className="swatch" style={{ background: l.tint }} />
-                        <span>{l.label}</span>
-                      </label>
-                      <button
-                        type="button"
-                        className="layer-select"
-                        onClick={() => selectLayer(l.id)}
-                        disabled={!doc || (layerCounts.get(l.id) ?? 0) === 0}
-                        title={`Select every object on the ${l.label.toLowerCase()} layer`}
-                      >
-                        Select
-                        <span className="num">{layerCounts.get(l.id) ?? 0}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                <div className="search layer-search">
+                  <IconSearch size={13} />
+                  <input
+                    aria-label="Search layers"
+                    placeholder="Find a layer or item…"
+                    value={layerQuery}
+                    onChange={(event) => setLayerQuery(event.target.value)}
+                  />
+                </div>
+                <div className="layer-groups">
+                  {organizedLayers.map((group) => {
+                    const groupLayers = LAYERS.filter((layer) => layer.group === group.id);
+                    const visibleInGroup = groupLayers.filter((layer) => visible.has(layer.id)).length;
+                    const allGroupVisible = visibleInGroup === groupLayers.length;
+                    const groupOpen = !!layerQuery.trim() || openLayerGroups.has(group.id);
+                    const groupPanelId = `layer-group-${group.id}`;
+                    return (
+                      <section className={`layer-group${groupOpen ? ' is-open' : ''}`} key={group.id}>
+                        <header className="layer-group-heading">
+                          <button
+                            type="button"
+                            className="layer-group-disclosure"
+                            aria-expanded={groupOpen}
+                            aria-controls={groupPanelId}
+                            onClick={() => toggleLayerGroupOpen(group.id)}
+                          >
+                            <span className="layer-group-chevron" aria-hidden>›</span>
+                            <span className="layer-group-copy">
+                              <strong>{group.label}</strong>
+                              <small>{group.description}</small>
+                            </span>
+                            <span className="layer-group-count num">
+                              {groupLayers.length} layer{groupLayers.length === 1 ? '' : 's'}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="layer-group-visibility"
+                            onClick={() => setLayerGroupVisible(group.id, !allGroupVisible)}
+                            title={`${allGroupVisible ? 'Hide' : 'Show'} every layer in ${group.label}`}
+                          >
+                            {allGroupVisible ? 'Hide' : 'Show'}
+                            <span className="num">{visibleInGroup}/{groupLayers.length}</span>
+                          </button>
+                        </header>
+                        <div className="layer-group-panel" id={groupPanelId} hidden={!groupOpen}>
+                          <ul className="layers">
+                            {group.layers.map((layer) => {
+                              const count = layerCounts.get(layer.id) ?? 0;
+                              const isVisible = visible.has(layer.id);
+                              const query = layerQuery.trim().toLowerCase();
+                              const items = layerItems.get(layer.id) ?? [];
+                              const matchingItems = query
+                                ? items.filter((item) => item.searchText.includes(query))
+                                : items;
+                              const hasItemSearchMatch = !!query && matchingItems.length > 0;
+                              const displayedItems = hasItemSearchMatch ? matchingItems : items;
+                              const itemsOpen = openItemLayers.has(layer.id) || hasItemSearchMatch;
+                              const itemLimit = layerItemLimits[layer.id] ?? 50;
+                              const shownItems = displayedItems.slice(0, itemLimit);
+                              const itemPanelId = `layer-items-${layer.id}`;
+                              return (
+                                <li
+                                  key={layer.id}
+                                  className={`${isVisible ? 'is-visible' : 'is-hidden'}${count === 0 ? ' is-empty' : ''}${itemsOpen ? ' has-items-open' : ''}`}
+                                >
+                                  <div className="layer-row-main">
+                                    <button
+                                      type="button"
+                                      className="layer-visibility"
+                                      onClick={() => toggleLayer(layer.id)}
+                                      aria-pressed={isVisible}
+                                      title={`${isVisible ? 'Hide' : 'Show'} ${layer.label}`}
+                                    >
+                                      <span className="layer-check" aria-hidden>{isVisible ? '✓' : ''}</span>
+                                      <span className="swatch" style={{ background: layer.tint }} />
+                                      <span className="layer-copy">
+                                        <strong>{layer.label}</strong>
+                                        <small>{layer.description}</small>
+                                      </span>
+                                      <span className="layer-object-count num" title={`${count} objects`}>{count}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="layer-only"
+                                      onClick={() => showOnlyLayer(layer.id)}
+                                      disabled={!doc || count === 0}
+                                      title={`Hide every layer except ${layer.label}`}
+                                    >
+                                      Only
+                                    </button>
+                                  </div>
+                                  <div className="layer-row-actions">
+                                    <button
+                                      type="button"
+                                      className="layer-items-disclosure"
+                                      onClick={() => toggleLayerItemsOpen(layer.id)}
+                                      disabled={!doc || items.length === 0}
+                                      aria-expanded={itemsOpen}
+                                      aria-controls={itemPanelId}
+                                    >
+                                      <span className="layer-items-chevron" aria-hidden>›</span>
+                                      Items line by line
+                                      <span className="num">{items.length.toLocaleString()}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="layer-select"
+                                      onClick={() => selectLayer(layer.id)}
+                                      disabled={!doc || count === 0}
+                                      title={`Select every object on the ${layer.label.toLowerCase()} layer`}
+                                    >
+                                      Select all
+                                    </button>
+                                  </div>
+                                  <div className="layer-item-panel" id={itemPanelId} hidden={!itemsOpen}>
+                                    <div className="layer-item-panel-heading">
+                                      <span>
+                                        <strong>{hasItemSearchMatch ? 'Matching items' : 'Every item'}</strong>
+                                        <small>Choose a row to select it on the plan</small>
+                                      </span>
+                                      <span className="num">{displayedItems.length.toLocaleString()}</span>
+                                    </div>
+                                    <div className="layer-item-list" role="list" aria-label={`Items on ${layer.label}`}>
+                                      {shownItems.map((item, index) => (
+                                        <div role="listitem" key={item.selectId}>
+                                          <button
+                                            type="button"
+                                            className={selectedIds.includes(item.selectId) ? 'is-selected' : ''}
+                                            onClick={() => selectLayerItem(layer.id, item)}
+                                            aria-current={selectedIds.includes(item.selectId) ? 'true' : undefined}
+                                          >
+                                            <span className="layer-item-index num">{index + 1}</span>
+                                            <span className="layer-item-copy">
+                                              <strong>{item.label}</strong>
+                                              <small>
+                                                {item.kind}
+                                                {item.x !== undefined && item.y !== undefined
+                                                  ? ` · ${formatLength(item.x, unitSystem)}, ${formatLength(item.y, unitSystem)}`
+                                                  : ''}
+                                              </small>
+                                            </span>
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    {shownItems.length < displayedItems.length && (
+                                      <button
+                                        type="button"
+                                        className="layer-items-more"
+                                        onClick={() =>
+                                          setLayerItemLimits((current) => ({
+                                            ...current,
+                                            [layer.id]: Math.min(displayedItems.length, itemLimit + 100),
+                                          }))
+                                        }
+                                      >
+                                        Show next {Math.min(100, displayedItems.length - shownItems.length).toLocaleString()}
+                                        <span className="num">
+                                          {(displayedItems.length - shownItems.length).toLocaleString()} remaining
+                                        </span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      </section>
+                    );
+                  })}
+                  {organizedLayers.length === 0 && (
+                    <div className="layer-no-results">
+                      <strong>No matching layers</strong>
+                      <span>Try walls, equipment, dimensions, or geometry.</span>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {doc.scene.inventory.length > 0 && (
-                <div className="section">
-                  <div className="section-title">
-                    <span>In this plan</span>
-                    <span className="num">{inventoryTotal.toLocaleString()}</span>
-                  </div>
-                  <div className="search inv-search">
-                    <IconSearch size={13} />
-                    <input
-                      aria-label="Search items in this plan"
-                      placeholder="Search items…"
-                      value={invQuery}
-                      onChange={(e) => setInvQuery(e.target.value)}
-                    />
-                  </div>
-                  <p className="hint" style={{ margin: '0 0 8px' }}>
-                    Click an item to place another one.
-                  </p>
-                  <ul className="inventory">
-                    {doc.scene.inventory
-                      .filter((i) =>
-                        invQuery.trim()
-                          ? i.name.toLowerCase().includes(invQuery.trim().toLowerCase()) ||
-                            (i.category ?? '').toLowerCase().includes(invQuery.trim().toLowerCase())
-                          : true,
-                      )
-                      .map((item) => (
-                      <li key={item.name}>
-                        <button
-                          className="inv-add"
-                          disabled={!doc.editable}
-                          title={doc.editable ? `Place another ${item.name}` : 'This plan is read-only'}
-                          onClick={() => armGear(item.name)}
-                        >
-                          <span className="iname">
-                            {item.name}
-                            {item.category && <em className="icat">{item.category}</em>}
-                          </span>
-                          <span className="icount num">{item.count}</span>
-                          <IconPlus size={12} className="inv-plus" />
-                        </button>
-                      </li>
-                      ))}
-                  </ul>
-                  <div className="actions-row">
-                    <button
-                      onClick={async () => {
-                        const saved = await api.scheduleExport(true);
-                        if (saved) {
-                          showStatus(`Exported ${saved.split(/[\\/]/).pop()}`);
-                        }
-                      }}
-                    >
-                      Counts CSV
-                    </button>
-                    <button
-                      onClick={async () => {
-                        const saved = await api.scheduleExport(false);
-                        if (saved) {
-                          showStatus(`Exported ${saved.split(/[\\/]/).pop()}`);
-                        }
-                      }}
-                    >
-                      Full schedule
-                    </button>
-                  </div>
-                  <p className="hint">
-                    The full schedule lists every placed item with its position and rotation.
-                  </p>
-                </div>
-              )}
                 </>
               )}
             </>

@@ -18,7 +18,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import type { Doc } from './App.js';
-import { IconPlus, IconRuler, IconWarning } from './icons.js';
+import {
+  IconDrawEllipse,
+  IconDrawPolygon,
+  IconDrawRect,
+  IconEdit,
+  IconPlus,
+  IconRuler,
+  IconTrash,
+  IconWarning,
+} from './icons.js';
 
 const api = window.groundplan;
 
@@ -28,6 +37,20 @@ interface Props {
   onStatus: (message: string) => void;
   onError: (message: string) => void;
   onSelect: (ids: number[]) => void;
+  drawingRoomOutline: boolean;
+  onDrawRoomOutline: () => void;
+  /** After Draw/Redraw rectangle or circle — New Plan custom may need an immediate save. */
+  onRoomAuthored?: () => void | Promise<void>;
+  /** Live clearance readouts for the status bar (preview + place). */
+  onSeatingStatus?: (
+    status: {
+      front: number;
+      side: number;
+      wing: number;
+      rear: number;
+      centreAisle: number;
+    } | null,
+  ) => void;
 }
 
 /**
@@ -96,7 +119,17 @@ function LengthField({
   );
 }
 
-export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: Props) {
+export default function RoomPanel({
+  doc,
+  onDoc,
+  onStatus,
+  onError,
+  onSelect,
+  drawingRoomOutline,
+  onDrawRoomOutline,
+  onRoomAuthored,
+  onSeatingStatus,
+}: Props) {
   const [model, setModel] = useState<PlanModelView | null>(null);
   const [busy, setBusy] = useState(false);
   const units: UnitSystem = model?.units ?? 'imperial';
@@ -146,20 +179,38 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const editable = doc.editable && !busy;
 
   // ---- Room ---------------------------------------------------------------
+  const [roomShape, setRoomShape] = useState<'rectangle' | 'circle' | 'custom'>('rectangle');
   const width = useLength(40 * 120, units);
   const depth = useLength(30 * 120, units);
 
+  useEffect(() => {
+    if (drawingRoomOutline) setRoomShape('custom');
+  }, [drawingRoomOutline]);
+
   // ---- Reshape / curve ----------------------------------------------------
+  const [outlineMode, setOutlineMode] = useState<'build' | 'adjust'>('build');
   const [reshapeOp, setReshapeOp] = useState<'union' | 'difference'>('union');
   const reshapeX = useLength(0, units);
   const reshapeY = useLength(0, units);
   const reshapeW = useLength(10 * 120, units);
   const reshapeD = useLength(10 * 120, units);
-  const [curveWall, setCurveWall] = useState(0);
+  const [editCorner, setEditCorner] = useState(0);
+  const cornerX = useLength(0, units);
+  const cornerY = useLength(0, units);
+  const cornerRadius = useLength(2 * 120, units);
   const curveRadius = useLength(20 * 120, units);
   const wallLengthField = useLength(40 * 120, units);
   const [curveOtherWay, setCurveOtherWay] = useState(false);
   const [curveMajor, setCurveMajor] = useState(false);
+  const selectedWall = room?.wallDetails?.[editCorner];
+  const selectedWallCurved = Boolean(selectedWall?.curved);
+  const selectedCornerCanRound = Boolean(
+    room?.wallDetails?.length &&
+    !room.wallDetails[editCorner]?.curved &&
+    !room.wallDetails[(editCorner - 1 + room.wallDetails.length) % room.wallDetails.length]?.curved
+  );
+  const canReshapeRect =
+    Boolean(room) && room!.axisAligned && room!.curved === 0;
 
   // Seed the size fields from the room the plan already has.
   //
@@ -180,6 +231,17 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, units, sizeSeeded]);
 
+  const [shapeSeeded, setShapeSeeded] = useState(false);
+  useEffect(() => {
+    setShapeSeeded(false);
+  }, [doc.path]);
+  useEffect(() => {
+    if (!room || shapeSeeded) return;
+    setRoomShape(room.shape);
+    if (room.shape === 'custom') setOutlineMode('adjust');
+    setShapeSeeded(true);
+  }, [room, shapeSeeded]);
+
   // Seed reshape origin from the room once per open plan, so "Add area"
   // starts beside the current outline rather than at the origin.
   const [reshapeSeeded, setReshapeSeeded] = useState(false);
@@ -194,22 +256,26 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, units, reshapeSeeded]);
 
+  // A corner is the start of its numbered wall. Keep position, length and
+  // curve radius in sync while switching lines or after an edit.
   useEffect(() => {
-    const detail = room?.wallDetails?.[curveWall];
+    const detail = room?.wallDetails?.[editCorner];
     if (!detail) return;
+    cornerX.setText(detail.startXText);
+    cornerY.setText(detail.startYText);
     wallLengthField.setText(detail.lengthText);
     if (detail.curved && detail.radius > 0) {
       curveRadius.setText(detail.radiusText);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curveWall, room?.wallDetails]);
+  }, [editCorner, room?.wallDetails]);
 
   // After reshape, wall count can shrink — keep the picker on a real wall.
   useEffect(() => {
     const count = room?.wallDetails?.length ?? 0;
     if (count === 0) return;
-    if (curveWall >= count) setCurveWall(0);
-  }, [room?.wallDetails, curveWall]);
+    if (editCorner >= count) setEditCorner(0);
+  }, [room?.wallDetails, editCorner]);
 
   // ---- Event Room Data / seating ------------------------------------------
   type ErdTab = 'seating' | 'spacing' | 'av' | 'design';
@@ -348,15 +414,26 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
     let cancelled = false;
     if (!room) {
       setPreview(null);
+      onSeatingStatus?.(null);
       return;
     }
     void api.seatingPreview(seatingRequest).then((result) => {
-      if (!cancelled) setPreview(result);
+      if (cancelled) return;
+      setPreview(result);
+      if (result?.clearances) {
+        onSeatingStatus?.({
+          front: result.clearances.front,
+          side: result.clearances.side,
+          wing: result.clearances.wing,
+          rear: result.clearances.rear,
+          centreAisle: result.clearances.centreAisle,
+        });
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [room, seatingRequest]);
+  }, [room, seatingRequest, onSeatingStatus]);
 
   useEffect(() => {
     if (erdTab !== 'av') return;
@@ -376,7 +453,7 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
     const reply = await api.roomMeta(patch);
     if (!reply.ok) onError(reply.reason ?? 'could not update the room');
     else {
-      onStatus('Room details updated');
+      onStatus(reply.note ?? 'Room details saved');
       await refresh();
     }
   }, [roomName, ceiling.value, onError, onStatus, refresh]);
@@ -498,21 +575,96 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           </div>
         )}
 
-        <div className="field-row">
-          <LengthField id="room-width" label="Width" field={width} units={units} disabled={!editable} />
-          <LengthField id="room-depth" label="Depth" field={depth} units={units} disabled={!editable} />
+        <div className="room-shape-picker" role="radiogroup" aria-label="Room shape">
+          {(
+            [
+              ['rectangle', 'Rectangle', 'Width and depth', IconDrawRect],
+              ['circle', 'Circle', 'Exact diameter', IconDrawEllipse],
+              ['custom', 'Freeform', 'Click every corner', IconDrawPolygon],
+            ] as const
+          ).map(([shape, label, description, Icon]) => (
+            <button
+              type="button"
+              key={shape}
+              className={roomShape === shape ? 'active' : ''}
+              role="radio"
+              aria-checked={roomShape === shape}
+              disabled={!editable}
+              onClick={() => {
+                if (drawingRoomOutline && shape !== 'custom') onDrawRoomOutline();
+                setRoomShape(shape);
+              }}
+            >
+              <Icon size={17} />
+              <span><strong>{label}</strong><small>{description}</small></span>
+            </button>
+          ))}
         </div>
+
+        {roomShape === 'rectangle' && (
+          <div className="field-row room-shape-fields">
+            <LengthField id="room-width" label="Width" field={width} units={units} disabled={!editable} />
+            <LengthField id="room-depth" label="Depth" field={depth} units={units} disabled={!editable} />
+          </div>
+        )}
+        {roomShape === 'circle' && (
+          <div className="field-row room-shape-fields is-single">
+            <LengthField id="room-diameter" label="Diameter" field={width} units={units} disabled={!editable} />
+          </div>
+        )}
+        {roomShape === 'custom' && (
+          <div className={`room-outline-guide${drawingRoomOutline ? ' is-active' : ''}`} role="status">
+            <IconDrawPolygon size={18} />
+            <span>
+              <strong>{drawingRoomOutline ? 'Custom outline is active' : 'Trace any room shape on the plan'}</strong>
+              <small>
+                {drawingRoomOutline
+                  ? 'Click corners in order. Click near the first corner or press Enter to finish; Backspace undoes the last point; Escape cancels.'
+                  : 'Click each corner on the plan. After three or more points, click near the start or press Enter to close the outline.'}
+              </small>
+            </span>
+          </div>
+        )}
         <div className="actions-row">
-          <button
-            onClick={() =>
-              void run('Room drawn', () => api.roomCreate(width.value!, depth.value!))
-            }
-            disabled={!editable || !width.positive || !depth.positive}
-            title={doc.editable ? 'Draw a rectangular room' : 'This plan is open read-only'}
-          >
-            <IconPlus size={14} />
-            {room && room.source === 'companion' ? 'Redraw room' : 'Draw room'}
-          </button>
+          {roomShape === 'custom' ? (
+            <button
+              type="button"
+              className={drawingRoomOutline ? 'is-on' : ''}
+              onClick={onDrawRoomOutline}
+              disabled={!editable}
+              title={drawingRoomOutline ? 'Cancel the custom room outline' : 'Click each corner on the plan'}
+            >
+              <IconDrawPolygon size={14} />
+              {drawingRoomOutline ? 'Cancel outline' : room ? 'Redraw freeform' : 'Draw freeform'}
+            </button>
+          ) : (
+            <button
+              onClick={() =>
+                void (async () => {
+                  const ok = await run(
+                    roomShape === 'circle' ? 'Circular room drawn' : 'Room drawn',
+                    () => roomShape === 'circle'
+                      ? api.roomCreateCircle(width.value!)
+                      : api.roomCreate(width.value!, depth.value!),
+                  );
+                  if (ok) await onRoomAuthored?.();
+                })()
+              }
+              disabled={!editable || !width.positive || (roomShape === 'rectangle' && !depth.positive)}
+              title={
+                doc.editable
+                  ? roomShape === 'circle'
+                    ? 'Draw an exact circular room'
+                    : 'Draw a rectangular room'
+                  : 'This plan is open read-only'
+              }
+            >
+              {roomShape === 'circle' ? <IconDrawEllipse size={14} /> : <IconPlus size={14} />}
+              {room && room.source === 'companion'
+                ? `Redraw ${roomShape}`
+                : `Draw ${roomShape}`}
+            </button>
+          )}
           <button
             onClick={() => void run('Room dimensioned', () => api.roomDimension())}
             disabled={!editable || !room}
@@ -523,155 +675,339 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           </button>
         </div>
         <p className="hint">
-          Drawing a room again moves the walls it drew before rather than adding a second set. Curved walls are drawn
-          as polylines a hundredth of an inch off the true arc.
+          A new room outline replaces the one Groundplan drew before instead of stacking another room on top.
+          Circles keep exact area and perimeter; freeform rooms support angled and concave walls.
         </p>
       </div>
 
       {room && (
         <div className="section">
           <div className="section-title">
-            <span>Shape</span>
+            <span>Outline editor</span>
+            <span className="section-count">{room.walls} lines</span>
           </div>
 
-          <div className="seg tabs seat-kinds" role="tablist" aria-label="Reshape operation">
+          <div className="room-outline-modes" role="tablist" aria-label="Room outline editing mode">
             <button
               type="button"
-              className={reshapeOp === 'union' ? 'active' : ''}
-              onClick={() => setReshapeOp('union')}
+              role="tab"
+              aria-selected={outlineMode === 'build'}
+              className={outlineMode === 'build' ? 'active' : ''}
+              onClick={() => setOutlineMode('build')}
               disabled={!editable}
             >
-              Add area
+              <IconPlus size={15} />
+              <span><strong>Build outline</strong><small>Add or cut areas</small></span>
             </button>
             <button
               type="button"
-              className={reshapeOp === 'difference' ? 'active' : ''}
-              onClick={() => setReshapeOp('difference')}
+              role="tab"
+              aria-selected={outlineMode === 'adjust'}
+              className={outlineMode === 'adjust' ? 'active' : ''}
+              onClick={() => setOutlineMode('adjust')}
               disabled={!editable}
             >
-              Cut out
+              <IconEdit size={15} />
+              <span><strong>Adjust outline</strong><small>Lines and corners</small></span>
             </button>
           </div>
 
-          <div className="field-row">
-            <LengthField id="reshape-x" label="X" field={reshapeX} units={units} disabled={!editable} />
-            <LengthField id="reshape-y" label="Y" field={reshapeY} units={units} disabled={!editable} />
-          </div>
-          <div className="field-row">
-            <LengthField id="reshape-w" label="Width" field={reshapeW} units={units} disabled={!editable} />
-            <LengthField id="reshape-d" label="Depth" field={reshapeD} units={units} disabled={!editable} />
-          </div>
-          <div className="actions-row">
-            <button
-              type="button"
-              onClick={() =>
-                void run(reshapeOp === 'union' ? 'Area added' : 'Cut-out applied', () =>
-                  api.roomReshape(
-                    reshapeOp,
-                    reshapeX.value!,
-                    reshapeY.value!,
-                    reshapeW.value!,
-                    reshapeD.value!,
-                  ),
-                )
-              }
-              disabled={
-                !editable ||
-                !reshapeX.valid ||
-                !reshapeY.valid ||
-                !reshapeW.positive ||
-                !reshapeD.positive
-              }
-              title={
-                reshapeOp === 'union'
-                  ? 'Union a rectangle into the room outline'
-                  : 'Subtract a rectangle (corridor, column pocket, L-cut)'
-              }
-            >
-              <IconPlus size={14} />
-              {reshapeOp === 'union' ? 'Add to room' : 'Cut from room'}
-            </button>
-          </div>
+          {outlineMode === 'build' ? (
+            <div className="room-outline-pane" role="tabpanel">
+              <div className="room-edit-heading">
+                <strong>Add or remove floor area</strong>
+                <small>
+                  {canReshapeRect
+                    ? 'Place a rectangular patch to extend the room or make a cut-out.'
+                    : room.curved > 0
+                      ? 'Straighten curved walls before adding or cutting a rectangle.'
+                      : 'Add/Cut needs axis-aligned walls. Use Freeform above for angled outlines.'}
+                </small>
+              </div>
+              <div className="seg tabs seat-kinds" role="tablist" aria-label="Reshape operation">
+                <button
+                  type="button"
+                  className={reshapeOp === 'union' ? 'active' : ''}
+                  onClick={() => setReshapeOp('union')}
+                  disabled={!editable || !canReshapeRect}
+                >
+                  Add area
+                </button>
+                <button
+                  type="button"
+                  className={reshapeOp === 'difference' ? 'active' : ''}
+                  onClick={() => setReshapeOp('difference')}
+                  disabled={!editable || !canReshapeRect}
+                >
+                  Cut out
+                </button>
+              </div>
 
-          <div className="field-row" style={{ marginTop: 12 }}>
-            <div className="field">
-              <label htmlFor="curve-wall">Wall</label>
-              <select
-                id="curve-wall"
-                value={curveWall}
-                onChange={(e) => setCurveWall(Number(e.target.value))}
-                disabled={!editable || !(room.wallDetails?.length)}
-              >
-                {(room.wallDetails ?? []).map((wall) => (
-                  <option key={wall.index} value={wall.index}>
-                    Wall {wall.index + 1} · {wall.lengthText}
-                    {wall.curved ? ` · R ${wall.radiusText}` : ''}
-                  </option>
-                ))}
-              </select>
+              <div className="field-row">
+                <LengthField id="reshape-x" label="X" field={reshapeX} units={units} disabled={!editable || !canReshapeRect} />
+                <LengthField id="reshape-y" label="Y" field={reshapeY} units={units} disabled={!editable || !canReshapeRect} />
+              </div>
+              <div className="field-row">
+                <LengthField id="reshape-w" label="Width" field={reshapeW} units={units} disabled={!editable || !canReshapeRect} />
+                <LengthField id="reshape-d" label="Depth" field={reshapeD} units={units} disabled={!editable || !canReshapeRect} />
+              </div>
+              <div className="actions-row">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void run(reshapeOp === 'union' ? 'Area added' : 'Cut-out applied', () =>
+                      api.roomReshape(
+                        reshapeOp,
+                        reshapeX.value!,
+                        reshapeY.value!,
+                        reshapeW.value!,
+                        reshapeD.value!,
+                      ),
+                    )
+                  }
+                  disabled={
+                    !editable ||
+                    !canReshapeRect ||
+                    !reshapeX.valid ||
+                    !reshapeY.valid ||
+                    !reshapeW.positive ||
+                    !reshapeD.positive
+                  }
+                  title={
+                    !canReshapeRect
+                      ? room.curved > 0
+                        ? 'Straighten curved walls before adding or cutting a rectangle'
+                        : 'Add/Cut needs an axis-aligned room outline'
+                      : reshapeOp === 'union'
+                        ? 'Union a rectangle into the room outline'
+                        : 'Subtract a rectangle for a corridor, column pocket or L-cut'
+                  }
+                >
+                  <IconPlus size={14} />
+                  {reshapeOp === 'union' ? 'Add to room' : 'Cut from room'}
+                </button>
+              </div>
+              <p className="hint">Use Freeform above when the new boundary is not rectangular.</p>
             </div>
-            <LengthField id="wall-length" label="Length" field={wallLengthField} units={units} disabled={!editable} />
-          </div>
-          <div className="actions-row">
-            <button
-              type="button"
-              onClick={() =>
-                void run('Wall length set', () => api.roomWallLength(curveWall, wallLengthField.value!))
-              }
-              disabled={!editable || !wallLengthField.positive || !(room.wallDetails?.length)}
-              title="Set this wall's length, keeping its start corner fixed"
-            >
-              Set length
-            </button>
-          </div>
+          ) : (
+            <div className="room-outline-pane" role="tabpanel">
+              <div className="room-edit-heading">
+                <strong>Adjust plot lines and corners</strong>
+                <small>
+                  Each entry is one plot line. Its start is Corner N; length and curve apply to that line.
+                </small>
+              </div>
 
-          <div className="field-row" style={{ marginTop: 12 }}>
-            <LengthField id="curve-radius" label="Radius" field={curveRadius} units={units} disabled={!editable} />
-          </div>
-          <label className="setting-check">
-            <input
-              type="checkbox"
-              checked={curveOtherWay}
-              disabled={!editable}
-              onChange={(e) => setCurveOtherWay(e.target.checked)}
-            />
-            <span>Bow the other way</span>
-          </label>
-          <label className="setting-check">
-            <input
-              type="checkbox"
-              checked={curveMajor}
-              disabled={!editable}
-              onChange={(e) => setCurveMajor(e.target.checked)}
-            />
-            <span>Long way round (major arc)</span>
-          </label>
-          <div className="actions-row">
-            <button
-              type="button"
-              onClick={() => {
-                const radius = curveRadius.value!;
-                const signed = curveOtherWay ? -Math.abs(radius) : Math.abs(radius);
-                void run('Wall curved', () => api.roomCurve(curveWall, signed, curveMajor));
-              }}
-              disabled={!editable || !curveRadius.positive || !(room.wallDetails?.length)}
-              title="Bow the selected wall to this radius"
-            >
-              Curve wall
-            </button>
-            <button
-              type="button"
-              onClick={() => void run('Wall straightened', () => api.roomCurve(curveWall, 0))}
-              disabled={!editable || !(room.wallDetails?.length)}
-              title="Remove the curve from this wall"
-            >
-              Straighten
-            </button>
-          </div>
-          <p className="hint">
-            Add or cut rectangles to make L-shapes and corridors. Set a wall length before curving it.
-            Radius must be at least half the wall length for a gentle bay.
-          </p>
+              <div className="field room-corner-select">
+                <label htmlFor="outline-line">Plot line (starts at corner)</label>
+                <select
+                  id="outline-line"
+                  value={editCorner}
+                  onChange={(e) => setEditCorner(Number(e.target.value))}
+                  disabled={!editable || !(room.wallDetails?.length)}
+                >
+                  {(room.wallDetails ?? []).map((wall) => (
+                    <option key={wall.index} value={wall.index}>
+                      Line {wall.index + 1} from corner {wall.index + 1} · {wall.lengthText}
+                      {wall.curved ? ` · curved R ${wall.radiusText}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="room-edit-card is-prominent">
+                <div className="room-edit-card-title">
+                  <strong>Round corners</strong>
+                  <small>Choose a radius, then round this corner or every sharp corner at once.</small>
+                </div>
+                <div className="field-row is-single">
+                  <LengthField id="corner-radius" label="Corner radius" field={cornerRadius} units={units} disabled={!editable} />
+                </div>
+                <div className="actions-row room-edit-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void run('Corner rounded', () =>
+                      api.roomCornerRound(editCorner, cornerRadius.value!),
+                    )}
+                    disabled={!editable || !cornerRadius.positive || !selectedCornerCanRound}
+                    title={
+                      selectedCornerCanRound
+                        ? 'Round the selected corner with an exact tangent radius'
+                        : 'Select a sharp corner whose adjoining plot lines are straight'
+                    }
+                  >
+                    Round this corner
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void run('All corners rounded', () =>
+                      api.roomCornersRoundAll(cornerRadius.value!),
+                    )}
+                    disabled={!editable || !cornerRadius.positive || room.curved > 0}
+                    title={
+                      room.curved > 0
+                        ? 'Straighten existing curved lines before rounding every corner'
+                        : 'Apply this radius to every corner in the room'
+                    }
+                  >
+                    Round all
+                  </button>
+                </div>
+              </div>
+
+              <div className="room-edit-card">
+                <div className="room-edit-card-title">
+                  <strong>Corner position</strong>
+                  <small>Move the start of the selected line (corner {editCorner + 1}).</small>
+                </div>
+                <div className="field-row">
+                  <LengthField id="corner-x" label="X" field={cornerX} units={units} disabled={!editable} />
+                  <LengthField id="corner-y" label="Y" field={cornerY} units={units} disabled={!editable} />
+                </div>
+                <div className="actions-row room-edit-actions">
+                  <button
+                    type="button"
+                    onClick={() => void run('Corner moved', () =>
+                      api.roomCornerMove(editCorner, cornerX.value!, cornerY.value!),
+                    )}
+                    disabled={!editable || !cornerX.valid || !cornerY.valid}
+                    title="Move this corner and stretch the two connected plot lines"
+                  >
+                    <IconEdit size={13} />
+                    Move corner
+                  </button>
+                </div>
+              </div>
+
+              <div className="room-edit-card">
+                <div className="room-edit-card-title">
+                  <strong>Line structure</strong>
+                  <small>Split the selected line, or remove its start corner.</small>
+                </div>
+                <div className="actions-row room-edit-actions">
+                  <button
+                    type="button"
+                    onClick={() => void run('Plot line added', () => api.roomCornerAdd(editCorner))}
+                    disabled={!editable || selectedWallCurved}
+                    title={
+                      selectedWallCurved
+                        ? 'Straighten this curved line before splitting it'
+                        : 'Split the selected plot line at its midpoint'
+                    }
+                  >
+                    <IconPlus size={13} />
+                    Add plot line
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void run('Corner removed', () => api.roomCornerRemove(editCorner))}
+                    disabled={!editable || room.walls <= 3}
+                    title={
+                      room.walls <= 3
+                        ? 'A room needs at least three corners'
+                        : 'Remove this corner and join the two plot lines'
+                    }
+                  >
+                    <IconTrash size={13} />
+                    Remove corner
+                  </button>
+                </div>
+              </div>
+
+              <div className="room-edit-card">
+                <div className="room-edit-card-title">
+                  <strong>Selected plot line</strong>
+                  <small>
+                    {selectedWallCurved
+                      ? 'Straighten before changing length. Curve radius updates the arc.'
+                      : 'Set its length or bow the whole line into an arc.'}
+                  </small>
+                </div>
+                <div className="field-row is-single">
+                  <LengthField
+                    id="wall-length"
+                    label="Line length"
+                    field={wallLengthField}
+                    units={units}
+                    disabled={!editable || selectedWallCurved}
+                  />
+                </div>
+                <div className="actions-row room-edit-actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void run('Plot line length set', () => api.roomWallLength(editCorner, wallLengthField.value!))
+                    }
+                    disabled={
+                      !editable ||
+                      selectedWallCurved ||
+                      !wallLengthField.positive ||
+                      !(room.wallDetails?.length)
+                    }
+                    title={
+                      selectedWallCurved
+                        ? 'Straighten this curved line before changing its length'
+                        : "Set this line's length, keeping its start corner fixed"
+                    }
+                  >
+                    Set line length
+                  </button>
+                </div>
+
+                <div className="field-row is-single room-curve-field">
+                  <LengthField id="curve-radius" label="Wall curve radius" field={curveRadius} units={units} disabled={!editable} />
+                </div>
+                <label className="setting-check">
+                  <input
+                    type="checkbox"
+                    checked={curveOtherWay}
+                    disabled={!editable}
+                    onChange={(e) => setCurveOtherWay(e.target.checked)}
+                  />
+                  <span>Bow the other way</span>
+                </label>
+                <label className="setting-check">
+                  <input
+                    type="checkbox"
+                    checked={curveMajor}
+                    disabled={!editable}
+                    onChange={(e) => setCurveMajor(e.target.checked)}
+                  />
+                  <span>Long way round (major arc)</span>
+                </label>
+                <div className="actions-row room-edit-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const radius = curveRadius.value!;
+                      const signed = curveOtherWay ? -Math.abs(radius) : Math.abs(radius);
+                      void run('Plot line curved', () => api.roomCurve(editCorner, signed, curveMajor));
+                    }}
+                    disabled={!editable || !curveRadius.positive || !(room.wallDetails?.length)}
+                    title="Bow the selected plot line to this radius"
+                  >
+                    Curve line
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void run('Plot line straightened', () => api.roomCurve(editCorner, 0))}
+                    disabled={!editable || !selectedWallCurved}
+                    title={
+                      selectedWallCurved
+                        ? 'Remove the curve from the selected plot line'
+                        : 'This plot line is already straight'
+                    }
+                  >
+                    Straighten
+                  </button>
+                </div>
+              </div>
+              <p className="hint">
+                Corner rounding and curves change the real room geometry, so dimensions, area, print and DXF stay accurate.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -731,17 +1067,16 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           </div>
         </div>
         <div className="field-row">
-          <LengthField id="room-width-erd" label="L (width)" field={width} units={units} disabled={!editable} />
-          <LengthField id="room-depth-erd" label="W (depth)" field={depth} units={units} disabled={!editable} />
-        </div>
-        <div className="field-row">
           <LengthField id="room-ceiling" label="H (ceiling)" field={ceiling} units={units} disabled={!editable} />
           <div className="field" style={{ justifyContent: 'flex-end' }}>
             <button type="button" className="btn-outline" disabled={!editable} onClick={() => void saveRoomMeta()}>
-              Save room details
+              Save name &amp; ceiling
             </button>
           </div>
         </div>
+        <p className="erd-meta-hint">
+          Outline size is set above with Draw / Redraw or the Outline editor — not here.
+        </p>
 
         <div className="seg tabs seat-kinds" role="tablist" aria-label="Event Room Data">
           {(
@@ -1005,33 +1340,39 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
               <input type="checkbox" checked={stagger} disabled={!editable} onChange={(e) => setStagger(e.target.checked)} />
               Stagger alternate rows
             </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={banquetEndChairs}
-                disabled={!editable}
-                onChange={(e) => setBanquetEndChairs(e.target.checked)}
-              />
-              Banquet end chairs
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={banquetRotate90}
-                disabled={!editable}
-                onChange={(e) => setBanquetRotate90(e.target.checked)}
-              />
-              Banquet rotate 90°
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={chairsBothSides}
-                disabled={!editable}
-                onChange={(e) => setChairsBothSides(e.target.checked)}
-              />
-              Chairs both sides (block)
-            </label>
+            {(style === 'banquet' || style === 'cabaret' || style === 'crescent' || rvStyle === 'banquet') && (
+              <>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={banquetEndChairs}
+                    disabled={!editable}
+                    onChange={(e) => setBanquetEndChairs(e.target.checked)}
+                  />
+                  Banquet end chairs
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={banquetRotate90}
+                    disabled={!editable}
+                    onChange={(e) => setBanquetRotate90(e.target.checked)}
+                  />
+                  Banquet rotate 90°
+                </label>
+              </>
+            )}
+            {(style === 'schoolroom' || style === 'conference' || style === 'u-shape' || style === 'hollow-square') && (
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={chairsBothSides}
+                  disabled={!editable}
+                  onChange={(e) => setChairsBothSides(e.target.checked)}
+                />
+                Chairs both sides (block)
+              </label>
+            )}
             <p className="hint">Section centre/wing counts enable sectioning when either is greater than zero.</p>
           </>
         )}

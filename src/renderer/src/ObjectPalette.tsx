@@ -1,6 +1,7 @@
 /**
  * Classic left icon strip: Tables, Chairs, Staging, Screens, …
  * Click arms the first matching inventory item for stamp placement.
+ * Empty categories still open the Insert browser.
  */
 
 import { PALETTE_CATEGORIES, type InsertGroupId } from '../../inventory/insert-catalog.js';
@@ -43,26 +44,36 @@ export default function ObjectPalette({ items, armedId, disabled, onArm, onBrows
           <button
             key={cat.id}
             type="button"
-            className={active ? 'active' : ''}
-            disabled={disabled || !match}
+            className={`${active ? 'active' : ''}${!match ? ' is-browse-only' : ''}`}
+            disabled={disabled}
+            aria-label={
+              match
+                ? `${cat.label}: ${match.name}. Click to stamp, Shift+click to browse.`
+                : `${cat.label}: browse catalog`
+            }
             title={
               match
-                ? `${cat.label}: ${match.name} (click to stamp, Shift+click to browse)`
-                : `${cat.label}: nothing in inventory yet`
+                ? `${cat.label}: ${match.name}\nClick to stamp · Shift+click or right-click to browse`
+                : `${cat.label}: nothing matched in inventory — click to browse Insert`
             }
             onClick={(e) => {
-              if (e.shiftKey) {
+              if (e.shiftKey || !match) {
                 onBrowse(cat.id);
                 return;
               }
-              if (match) onArm(match.id, match.name);
+              onArm(match.id, match.name);
             }}
             onContextMenu={(e) => {
               e.preventDefault();
               onBrowse(cat.id);
             }}
           >
-            <span aria-hidden>{cat.short}</span>
+            <span className="palette-short" aria-hidden>
+              {cat.short}
+            </span>
+            <span className="palette-label" aria-hidden>
+              {cat.label.split(' ')[0]}
+            </span>
           </button>
         );
       })}

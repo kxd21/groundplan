@@ -55,6 +55,8 @@ interface Props {
   pointerMode: PointerSpec;
   /** The start point of a half-made span, for the rubber band. */
   spanFrom?: PlanPoint | null;
+  /** Corners already clicked for a multi-point room outline. */
+  pathPoints?: PlanPoint[];
   /** The completed measure readout; stays visible until the tool is put down. */
   readout?: { from: PlanPoint; to: PlanPoint } | null;
   /** A click that the pointer mode says means something. Already snapped. */
@@ -221,6 +223,7 @@ export function PlanCanvas({
   units = 'imperial',
   pointerMode,
   spanFrom,
+  pathPoints = [],
   readout,
   onCanvasClick,
   onToggleHand,
@@ -605,7 +608,9 @@ export function PlanCanvas({
     if (spanFrom && pointerMode.preview !== 'none') {
       const to = pointer ?? spanFrom;
       if (pointerMode.preview === 'measure') drawMeasurement(ctx, spanFrom, to, view, paper, units);
-      else drawShapePreview(ctx, spanFrom, to, pointerMode.preview, view);
+      else if (pointerMode.preview !== 'room') drawShapePreview(ctx, spanFrom, to, pointerMode.preview, view);
+    } else if (pointerMode.preview === 'room') {
+      drawRoomPathPreview(ctx, pathPoints, pointer, view);
     } else if (readout) {
       drawMeasurement(ctx, readout.from, readout.to, view, paper, units);
     }
@@ -626,6 +631,7 @@ export function PlanCanvas({
     hover,
     nudge,
     spanFrom,
+    pathPoints,
     readout,
     pointerMode,
     pointer,
@@ -691,7 +697,11 @@ export function PlanCanvas({
       return;
     }
 
-    if ((pointerMode.mode === 'stamp' || pointerMode.mode === 'span') && onCanvasClick && e.button === 0) {
+    if (
+      (pointerMode.mode === 'stamp' || pointerMode.mode === 'span' || pointerMode.mode === 'path') &&
+      onCanvasClick &&
+      e.button === 0
+    ) {
       const point = toPlan(e);
       // Association is decided at the actual click location, before optional
       // grid snapping changes the coordinate. This lets a dimension follow the
@@ -838,7 +848,7 @@ export function PlanCanvas({
   // The one place the tool's mode becomes the CSS cursor token, plus the two
   // transient overrides the canvas owns: a held Space and a drag in progress.
   const mode =
-    pointerMode.mode === 'span'
+    pointerMode.mode === 'span' || pointerMode.mode === 'path'
       ? 'measure'
       : pointerMode.mode === 'stamp'
         ? 'place'
@@ -859,6 +869,7 @@ export function PlanCanvas({
       ref={wrapRef}
       data-mode={spaceHeld ? 'pan' : mode}
       data-two-point={twoPoint}
+      data-path-points={pointerMode.mode === 'path' ? pathPoints.length : undefined}
       data-dropping={dropping?.kind}
     >
       <canvas
@@ -1124,6 +1135,63 @@ function drawShapePreview(
   }
 
   ctx.stroke();
+  ctx.restore();
+}
+
+/** Live preview for the click-by-click custom room tool. */
+function drawRoomPathPreview(
+  ctx: CanvasRenderingContext2D,
+  points: PlanPoint[],
+  pointer: { x: number; y: number } | null,
+  view: View,
+): void {
+  if (!points.length) return;
+  const sx = (point: { x: number }) => point.x * view.scale + view.offsetX;
+  const sy = (point: { y: number }) => point.y * view.scale + view.offsetY;
+
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // The committed corners read as the future room floor; the pointer leg and
+  // closing leg stay dashed so it is clear they have not been committed yet.
+  if (points.length >= 3) {
+    ctx.beginPath();
+    ctx.moveTo(sx(points[0]), sy(points[0]));
+    for (let index = 1; index < points.length; index++) ctx.lineTo(sx(points[index]), sy(points[index]));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(77, 148, 255, 0.1)';
+    ctx.fill();
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(sx(points[0]), sy(points[0]));
+  for (let index = 1; index < points.length; index++) ctx.lineTo(sx(points[index]), sy(points[index]));
+  ctx.strokeStyle = 'rgba(77, 148, 255, 0.95)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const last = points.at(-1)!;
+  const live = pointer ?? last;
+  ctx.beginPath();
+  ctx.moveTo(sx(last), sy(last));
+  ctx.lineTo(sx(live), sy(live));
+  if (points.length >= 2) ctx.lineTo(sx(points[0]), sy(points[0]));
+  ctx.strokeStyle = 'rgba(77, 148, 255, 0.72)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  for (const [index, point] of points.entries()) {
+    ctx.beginPath();
+    ctx.arc(sx(point), sy(point), index === 0 ? 5 : 4, 0, Math.PI * 2);
+    ctx.fillStyle = index === 0 ? '#1678d3' : '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#1678d3';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
   ctx.restore();
 }
 

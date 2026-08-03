@@ -73,11 +73,13 @@ import {
   annotationCapabilities,
   createLabel,
   createDimension,
+  formatDistance,
   setDimensionLengthAngle,
   type AnnotationCapabilities,
 } from '../format/annotate.js';
-import { formatLength as formatLengthUnits, type UnitSystem } from '../format/units.js';
+import { type UnitSystem } from '../format/units.js';
 import { INSERT_TREE, isInsertLeaf, type InsertBranch, type InsertLeaf } from '../inventory/insert-catalog.js';
+import { walk } from '../format/rv.js';
 import { listSymbols, importSymbol } from '../format/symbol.js';
 import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions } from '../format/place.js';
 import { isLibrary } from '../format/library.js';
@@ -151,21 +153,28 @@ import { buildStableSchedule, setStableScheduleField } from './schedule-metadata
 import { createBlankPlan, ROOM_PRESETS } from '../format/blank.js';
 import { companionPathFor } from './companion-store.js';
 import {
+  addRoomCorner,
   addStage,
   applySeating as applySeatingModel,
   avSummary,
   clearStage,
+  createCircularRoom,
+  createPolygonalRoom,
   createRectangularRoom,
   curveRoomWall,
   drawShape,
   dimensionTheRoom,
   lengthenRoomWall,
+  moveRoomCorner,
   openPlanModel,
   planAllocation,
   planModelView,
   planReport,
   previewSeating,
+  removeRoomCorner,
   reshapeRoom,
+  roundAllRoomCorners,
+  roundRoomCorner,
   resetPlanModel,
   savePlanModel,
   updateRoomMeta,
@@ -1006,6 +1015,13 @@ const RESULT_CHANNELS = new Set([
   'export:dxf',
   'print:pdf',
   'plan:room-create',
+  'plan:room-create-circle',
+  'plan:room-create-polygon',
+  'plan:room-corner-move',
+  'plan:room-corner-add',
+  'plan:room-corner-remove',
+  'plan:room-corner-round',
+  'plan:room-corners-round-all',
   'plan:room-reshape',
   'plan:room-curve',
   'plan:room-wall-length',
@@ -2897,7 +2913,15 @@ app.whenReady().then(async () => {
     'inventory:add-traced',
     async (
       _event,
-      payload: { name: string; width: number; height: number; paths: Array<{ points: number[]; closed: boolean }> },
+      payload: {
+        name: string;
+        width: number;
+        height: number;
+        paths: Array<{ points: number[]; closed: boolean }>;
+        category?: string;
+        notes?: string;
+        department?: string;
+      },
     ) => {
       const name = payload?.name?.trim();
       if (!name) return { ok: false, reason: 'the item needs a name' };
@@ -2923,12 +2947,23 @@ app.whenReady().then(async () => {
       }
 
       mergeItems(inventory, [
-        { name, width: payload.width, height: payload.height, sizeSource: 'user' },
+        {
+          name,
+          width: payload.width,
+          height: payload.height,
+          sizeSource: 'user',
+          department: payload.department?.trim() || undefined,
+          notes: payload.notes?.trim() || undefined,
+        },
       ]);
       const created = inventory.items.find((i) => normaliseName(i.name) === normaliseName(name));
       if (created) {
-        created.category = classify(name).category;
+        const forced = payload.category?.trim();
+        created.category =
+          forced && forced in CATEGORY_LABELS ? (forced as keyof typeof CATEGORY_LABELS) : classify(name).category;
         created.tracedIcon = { paths: payload.paths, width: payload.width, height: payload.height };
+        if (payload.notes?.trim()) created.notes = payload.notes.trim();
+        if (payload.department?.trim()) created.department = payload.department.trim();
       }
 
       await persistInventory();
@@ -3366,6 +3401,34 @@ app.whenReady().then(async () => {
     applyEdit((s) => createRectangularRoom(s, width, height, unitSystem())),
   );
 
+  handle('plan:room-create-circle', (_event, diameter: number) =>
+    applyEdit((s) => createCircularRoom(s, diameter, unitSystem())),
+  );
+
+  handle('plan:room-create-polygon', (_event, points: Array<{ x: number; y: number }>) =>
+    applyEdit((s) => createPolygonalRoom(s, points, unitSystem())),
+  );
+
+  handle('plan:room-corner-move', (_event, index: number, x: number, y: number) =>
+    applyEdit((s) => moveRoomCorner(s, index, x, y, unitSystem())),
+  );
+
+  handle('plan:room-corner-add', (_event, wallIndex: number) =>
+    applyEdit((s) => addRoomCorner(s, wallIndex, unitSystem())),
+  );
+
+  handle('plan:room-corner-remove', (_event, index: number) =>
+    applyEdit((s) => removeRoomCorner(s, index, unitSystem())),
+  );
+
+  handle('plan:room-corner-round', (_event, index: number, radius: number) =>
+    applyEdit((s) => roundRoomCorner(s, index, radius, unitSystem())),
+  );
+
+  handle('plan:room-corners-round-all', (_event, radius: number) =>
+    applyEdit((s) => roundAllRoomCorners(s, radius, unitSystem())),
+  );
+
   handle('plan:room-reshape', (
     _event,
     op: 'union' | 'difference',
@@ -3385,10 +3448,22 @@ app.whenReady().then(async () => {
 
   handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
 
-  handle('plan:room-meta', (_event, patch: { name?: string; ceilingHeight?: number }) => {
+  handle('plan:room-meta', async (_event, patch: { name?: string; ceilingHeight?: number }) => {
     if (!session) return { ok: false, reason: 'no plan is open' };
     const result = updateRoomMeta(session, patch ?? {}, unitSystem());
-    return result;
+    if (!result.ok) return result;
+    // Companion-only: persist immediately so name/ceiling survive quit without a
+    // plan-body edit marking the session dirty.
+    try {
+      await savePlanModel(session.path, session.body());
+      grantPath(companionPathFor(session.path));
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'the room details could not be saved',
+      };
+    }
+    return { ok: true, note: 'Room details saved' };
   });
 
   handle('plan:av-summary', () => (session ? avSummary(session, unitSystem()) : null), null);
@@ -3729,19 +3804,40 @@ app.whenReady().then(async () => {
       applyEdit((s) => {
         const node = s.index.byId.get(nodeId);
         if (!node) return { ok: false, reason: 'that object is gone' };
+        const oldA = node.points[0];
+        const oldB = node.points[1];
+        if (!oldA || !oldB) return { ok: false, reason: 'the dimension line has no writable geometry' };
+        const oldMidX = (oldA.x + oldB.x) / 2;
+        const oldMidY = (oldA.y + oldB.y) / 2;
+
         const geometry = setDimensionLengthAngle(s.loaded.document, node, length, angleDegrees);
         if (!geometry.ok) return geometry;
-        // Refresh the measurement label beside the line when one exists nearby.
-        const midX = (node.points[0]!.x + node.points[1]!.x) / 2;
-        const midY = (node.points[0]!.y + node.points[1]!.y) / 2;
-        for (const candidate of s.loaded.document.roots) {
+
+        const newA = node.points[0]!;
+        const newB = node.points[1]!;
+        const newMidX = (newA.x + newB.x) / 2;
+        const newMidY = (newA.y + newB.y) / 2;
+        const text = formatDistance(length, unitSystem());
+
+        // Prefer the label that was beside the old midpoint — large length
+        // changes move the new midpoint too far for a naive search.
+        let best: (typeof node) | null = null;
+        let bestDist = Infinity;
+        for (const candidate of walk(s.loaded.document)) {
           if (candidate.cls !== 'RVLabel') continue;
           const cx = (candidate.bounds.left + candidate.bounds.right) / 2;
           const cy = (candidate.bounds.top + candidate.bounds.bottom) / 2;
-          if (Math.hypot(cx - midX, cy - midY) < 240) {
-            renameNode(s.loaded.document, candidate, formatLengthUnits(length, unitSystem()));
-            break;
+          const dist = Math.hypot(cx - oldMidX, cy - oldMidY);
+          if (dist < bestDist) {
+            best = candidate;
+            bestDist = dist;
           }
+        }
+        if (best && bestDist < 720) {
+          renameNode(s.loaded.document, best, text);
+          const cx = (best.bounds.left + best.bounds.right) / 2;
+          const cy = (best.bounds.top + best.bounds.bottom) / 2;
+          moveNode(s.loaded.document, best, newMidX - cx, newMidY - cy);
         }
         return { ok: true };
       }),

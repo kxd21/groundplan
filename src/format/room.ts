@@ -341,6 +341,32 @@ export function rectangularRoom(width: number, height: number, name = 'Room', or
 }
 
 /**
+ * A true circular room, kept as four exact quarter-circle wall arcs.
+ *
+ * Using four arcs instead of a many-sided polygon matters downstream: area and
+ * perimeter stay exact, the Room panel reports four curved walls rather than
+ * dozens of tiny straight ones, and DXF export can retain the curves.
+ */
+export function circularRoom(diameter: number, name = 'Room', origin: Point = { x: 0, y: 0 }): RoomModel {
+  const radius = diameter / 2;
+  const centre = { x: origin.x + radius, y: origin.y + radius };
+  const points: Point[] = [
+    { x: centre.x, y: origin.y },
+    { x: origin.x + diameter, y: centre.y },
+    { x: centre.x, y: origin.y + diameter },
+    { x: origin.x, y: centre.y },
+  ];
+  // tan(90° / 4), the DXF bulge for a quarter circle.
+  const quarterCircle = Math.tan(Math.PI / 8);
+  return {
+    id: nextId('room'),
+    name,
+    walls: points.map((start, index) => wall(start, points[(index + 1) % points.length], quarterCircle)),
+    holes: [],
+  };
+}
+
+/**
  * Drops corners that are not corners.
  *
  * Tracing a boundary out of grid cells — which is how the boolean operations

@@ -2,7 +2,7 @@
  * In-app hierarchical Insert picker (mirrors the Electron Insert menu).
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import {
   INSERT_TREE,
@@ -37,6 +37,8 @@ function groupRoot(group: InsertGroupId | null | undefined): InsertBranch[] {
     staging: 'risers',
     tables: 'tables',
     chairs: 'chairs',
+    drape: 'drape',
+    misc: 'misc',
   };
   const id = map[group];
   if (!id) return INSERT_TREE;
@@ -48,6 +50,12 @@ export default function InsertPicker({ open, items, initialGroup, onClose, onPic
   const roots = useMemo(() => groupRoot(initialGroup), [initialGroup]);
   const [path, setPath] = useState<InsertBranch[]>([]);
   const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setPath([]);
+    setQuery('');
+  }, [open, initialGroup]);
 
   const branch = path.length ? path[path.length - 1]! : null;
   const children = branch ? branch.children : roots;
@@ -117,7 +125,11 @@ export default function InsertPicker({ open, items, initialGroup, onClose, onPic
                 Back
               </button>
               <span className="hint" style={{ margin: 0 }}>
-                {path.length === 0 ? 'Browse' : path.map((b) => b.label).join(' › ')}
+                {path.length === 0
+                  ? initialGroup
+                    ? roots[0]?.label ?? 'Browse'
+                    : 'Browse'
+                  : path.map((b) => b.label).join(' › ')}
               </span>
             </div>
           )}
@@ -167,6 +179,9 @@ export default function InsertPicker({ open, items, initialGroup, onClose, onPic
                   );
                 })}
           </ul>
+          {!query.trim() && children.length === 0 && (
+            <p className="hint">Nothing in this category yet.</p>
+          )}
         </div>
       </div>
     </div>

@@ -228,6 +228,23 @@ export const INSERT_TREE: InsertBranch[] = [
       leaf('stack-chair', 'Stack chair', ['Stack Chair', 'Chair'], ['chair']),
     ],
   },
+  {
+    id: 'drape',
+    label: 'Drape',
+    children: [
+      leaf('drape-panel', 'Pipe and drape', ['Pipe and Drape', 'Drape Panel', 'Drape'], ['drape']),
+      leaf('drape-upright', 'Drape upright', ['Drape Upright', 'Upright'], ['drape-upright']),
+    ],
+  },
+  {
+    id: 'misc',
+    label: 'Misc / ADA',
+    children: [
+      leaf('lectern', 'Lectern / podium', ['Lectern', 'Podium'], ['podium']),
+      leaf('ada', 'ADA access', ['ADA', 'Wheelchair', 'Ramp'], ['person', 'lift']),
+      leaf('plant', 'Plant', ['Plant', 'Potted'], ['not-drawn']),
+    ],
+  },
 ];
 
 export function isInsertLeaf(node: InsertBranch | InsertLeaf): node is InsertLeaf {
@@ -261,10 +278,17 @@ export function matchInsertItem<T extends { id: string; name: string; category?:
       const name = item.name.toLowerCase();
       let score = 0;
       if (leaf.categories?.length && item.category && leaf.categories.includes(item.category)) {
-        score += 10;
+        score += 8;
       }
       for (const key of lowered) {
-        if (name.includes(key.toLowerCase())) score += 5 + Math.min(key.length, 12);
+        if (key.length < 3) {
+          // Short tokens (PAR, TV, sub) need a word boundary so "adapter" does not win.
+          const re = new RegExp(`(?:^|[^a-z0-9])${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^a-z0-9]|$)`, 'i');
+          if (re.test(name)) score += 6;
+          continue;
+        }
+        if (name === key) score += 20;
+        else if (name.includes(key)) score += 5 + Math.min(key.length, 16);
       }
       return { item, score };
     })

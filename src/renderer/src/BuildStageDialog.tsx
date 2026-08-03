@@ -2,7 +2,7 @@
  * Build a Stage — riser stock sizes with W / D / H, then place via stageAdd.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { DECK_SIZES } from '../../format/stage.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
@@ -24,7 +24,7 @@ interface Props {
   origin: { x: number; y: number };
   disabled?: boolean;
   onClose: () => void;
-  onBuilt: (doc?: unknown) => void;
+  onBuilt: (doc?: unknown, created?: number[]) => void;
   onError: (message: string) => void;
   onStatus: (message: string) => void;
 }
@@ -45,13 +45,21 @@ export default function BuildStageDialog({
   const [heightText, setHeightText] = useState(() => formatLength(24 * UNITS_PER_INCH, units));
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    if (!open) return;
+    setPreset(RISER_PRESETS[0]!.id);
+    setWidthText(formatLength(24 * UNITS_PER_FOOT, units));
+    setDepthText(formatLength(16 * UNITS_PER_FOOT, units));
+    setHeightText(formatLength(24 * UNITS_PER_INCH, units));
+    setBusy(false);
+  }, [open, units]);
+
   if (!open) return null;
 
   const applyPreset = (id: string) => {
     setPreset(id);
     const row = RISER_PRESETS.find((p) => p.id === id);
     if (!row) return;
-    // A single deck as the stage footprint; crew can grow W/D after.
     setWidthText(formatLength(row.width, units));
     setDepthText(formatLength(row.depth, units));
   };
@@ -72,7 +80,7 @@ export default function BuildStageDialog({
         return;
       }
       onStatus(reply.note ?? 'Stage added');
-      onBuilt(reply.doc);
+      onBuilt(reply.doc, reply.created);
       onClose();
     } finally {
       setBusy(false);

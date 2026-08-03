@@ -30,6 +30,7 @@ export interface ToolApi {
     endNodeId?: number,
   ): Promise<EditLike & { text?: string }>;
   draw(shape: 'line' | 'rect' | 'ellipse', x1: number, y1: number, x2: number, y2: number): Promise<EditLike>;
+  roomCreatePolygon(points: Array<{ x: number; y: number }>): Promise<EditLike>;
 }
 
 interface EditLike {
@@ -90,6 +91,13 @@ export async function runEffect(effect: PendingEffect, api: ToolApi): Promise<Ef
         status: reply.ok
           ? `Drew a ${effect.shape === 'rect' ? 'rectangle' : effect.shape}`
           : undefined,
+      };
+    }
+    case 'createRoom': {
+      const reply = await api.roomCreatePolygon(effect.points.map(({ x, y }) => ({ x, y })));
+      return {
+        ...reply,
+        status: reply.ok ? `Created a custom room with ${effect.points.length} corners` : undefined,
       };
     }
     case 'addDimension': {

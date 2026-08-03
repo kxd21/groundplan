@@ -302,6 +302,19 @@ export function IconDrawEllipse({ size = 16, className }: IconProps) {
   );
 }
 
+export function IconDrawPolygon({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" className={className} aria-hidden="true">
+      <path d="M3 12.5L2.5 5.5L7 2.5L13.5 5L11.5 13L3 12.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <circle cx="3" cy="12.5" r="1.2" fill="currentColor" />
+      <circle cx="2.5" cy="5.5" r="1.2" fill="currentColor" />
+      <circle cx="7" cy="2.5" r="1.2" fill="currentColor" />
+      <circle cx="13.5" cy="5" r="1.2" fill="currentColor" />
+      <circle cx="11.5" cy="13" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** The pointer, for leaving a draw tool and going back to selecting. */
 export function IconPointer({ size = 16, className }: IconProps) {
   return (
