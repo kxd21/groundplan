@@ -229,7 +229,7 @@ console.log('\ncapacity\n');
 // ---------------------------------------------------------------------------
 console.log('\nderiving a room from a plan\n');
 
-const FIXTURE = fixturePlanBuffer();
+const FIXTURE = fixturePlanBuffer({ walls: false });
 
 {
   const doc = loadBuffer(FIXTURE, 'fixture.rv4').document;

@@ -59,7 +59,7 @@ async function open(): Promise<Session> {
   resetPlanModel();
   // The sidecar too: every block starts from a plan Groundplan has never seen.
   rmSync(companionPathFor(planPath), { force: true });
-  writeFileSync(planPath, fixturePlanBuffer());
+  writeFileSync(planPath, fixturePlanBuffer({ walls: false }));
   const session = new Session(planPath, readFileSync(planPath));
   await openPlanModel(planPath, session.loaded.document, 'imperial');
   return session;
