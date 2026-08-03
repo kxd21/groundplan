@@ -36,6 +36,7 @@ import {
   roomArea,
   roomBounds,
   roomPerimeter,
+  roomPolygon,
   wallLength,
   type RoomModel,
 } from '../format/room.js';
@@ -435,6 +436,66 @@ export function dimensionTheRoom(session: Session, units: UnitSystem): ModelEdit
   const drawn = renderDimensions(doc, drawings);
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
   return { ok: true, created: drawn.created, note: `${drawings.length} dimensions added.` };
+}
+
+/**
+ * Rings the room in pipe and drape.
+ *
+ * A real show masks the walls with a run of drape, which the corpus stores as a
+ * line of "Pipe and Drape" panels — Card Party has 51 of them. Placing those by
+ * hand, one panel at a time, is what makes draping a room from scratch
+ * impractical, so this lays the whole run along the room outline in one step:
+ * each wall is divided into panels of roughly `panelWidth`, and each panel is a
+ * thin rectangle named so it counts in the inventory like the real thing.
+ */
+export function drapePerimeter(session: Session, panelWidth = 5 * UNITS_PER_FOOT): ModelEdit {
+  const doc = session.loaded.document;
+  const room = currentRoom(doc);
+  if (!room) return { ok: false, reason: 'there is no room outline to drape' };
+
+  const poly = roomPolygon(room.walls);
+  if (poly.length < 2) return { ok: false, reason: 'this room has no walls to drape' };
+
+  const panel = Math.max(2 * UNITS_PER_FOOT, panelWidth);
+  const thickness = UNITS_PER_FOOT; // reads as a ~1 ft deep masking line on the plan
+  const host = stageHost(doc);
+  const created: number[] = [];
+
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1) continue;
+    const ux = (b.x - a.x) / len;
+    const uy = (b.y - a.y) / len;
+    const nx = -uy;
+    const ny = ux;
+    const count = Math.max(1, Math.round(len / panel));
+    const panelLen = len / count;
+
+    for (let k = 0; k < count; k++) {
+      const t = (k + 0.5) * panelLen;
+      const cx = a.x + ux * t;
+      const cy = a.y + uy * t;
+      const hl = panelLen / 2;
+      const ht = thickness / 2;
+      const corners = [
+        { x: -ux * hl - nx * ht, y: -uy * hl - ny * ht },
+        { x: ux * hl - nx * ht, y: uy * hl - ny * ht },
+        { x: ux * hl + nx * ht, y: uy * hl + ny * ht },
+        { x: -ux * hl + nx * ht, y: -uy * hl + ny * ht },
+        { x: -ux * hl - nx * ht, y: -uy * hl - ny * ht },
+      ];
+      const shape = createShape(doc, { name: 'Pipe and Drape', x: cx, y: cy, outline: [corners] });
+      if (!shape.ok || !shape.node) return { ok: false, reason: shape.reason };
+      const added = host ? appendChild(doc, host, shape.node) : addRoot(doc, shape.node);
+      if (!added.ok) return { ok: false, reason: added.reason };
+      created.push(shape.node.id);
+    }
+  }
+
+  if (!created.length) return { ok: false, reason: 'the room outline was too small to drape' };
+  return { ok: true, created, note: `${created.length} drape panels around the room.` };
 }
 
 // ---------------------------------------------------------------------------

@@ -138,6 +138,7 @@ import {
   curveRoomWall,
   drawShape,
   dimensionTheRoom,
+  drapePerimeter,
   openPlanModel,
   planAllocation,
   planModelView,
@@ -3023,6 +3024,8 @@ app.whenReady().then(async () => {
   );
 
   handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
+
+  handle('plan:drape-perimeter', () => applyEdit((s) => drapePerimeter(s)));
 
   /** Solves without drawing, so the panel can show the count as it is tuned. */
   handle(
