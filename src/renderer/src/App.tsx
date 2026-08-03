@@ -2862,6 +2862,8 @@ export function App() {
                 planPath={doc?.path}
                 gearPath={gear.path}
                 gearDirty={gear.dirty}
+                onDoc={(next) => setDoc(next as Doc)}
+                onStatus={showStatus}
               />
             ) : (
               <div className="section">

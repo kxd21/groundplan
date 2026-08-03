@@ -400,6 +400,8 @@ const api = {
   ): Promise<{ ok: boolean; reason?: string; show?: ShowLinkState }> =>
     ipcRenderer.invoke('show:link-current', listIndex),
   gearReconcile: (listIndex: number): Promise<unknown | null> => ipcRenderer.invoke('gear:reconcile', listIndex),
+  gearPlaceAll: (listIndex: number): Promise<EditReply & { note?: string; placed?: number }> =>
+    ipcRenderer.invoke('gear:place-all', listIndex),
   gearExportCsv: (listIndex: number): Promise<string | null> => ipcRenderer.invoke('gear:export-csv', listIndex),
   gearUpdate: (
     listIndex: number,

@@ -138,6 +138,7 @@ import {
   curveRoomWall,
   drawShape,
   dimensionTheRoom,
+  placeGearList,
   openPlanModel,
   planAllocation,
   planModelView,
@@ -945,10 +946,11 @@ function handle(
   });
 }
 
-function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: string; created?: number[] }): {
+function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: string; note?: string; created?: number[] }): {
   ok: boolean;
   reason?: string;
   text?: string;
+  note?: string;
   created?: number[];
   doc?: OpenResult;
 } {
@@ -960,7 +962,7 @@ function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: s
 
   const associationsBefore = cloneDimensionAssociations();
   s.checkpoint();
-  let result: { ok: boolean; reason?: string; text?: string; created?: number[] };
+  let result: { ok: boolean; reason?: string; text?: string; note?: string; created?: number[] };
   try {
     result = run(s);
     if (!result.ok) {
@@ -990,7 +992,7 @@ function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: s
     commitDimensionHistory(associationsBefore);
     if (associatedUpdates > 0) persistDimensionAssociations(s.path);
     schedulePlanRecovery(s);
-    return { ok: true, text: result.text, created: result.created, doc: describe(s) };
+    return { ok: true, text: result.text, note: result.note, created: result.created, doc: describe(s) };
   } catch (err) {
     // Roll back rather than undo: an edit that threw must not be offered as a
     // redo, or Redo would re-apply the half-finished change.
@@ -2838,6 +2840,12 @@ app.whenReady().then(async () => {
       planRevision: session.revision,
       planPath: session.path,
     });
+  });
+
+  handle('gear:place-all', (_event, listIndex: number) => {
+    const list = gear?.lists[listIndex];
+    if (!list) return { ok: false, reason: 'no gear list is open' };
+    return applyEdit((s) => placeGearList(s, list));
   });
 
   handle('gear:export-csv', async (_event, listIndex: number) => {
