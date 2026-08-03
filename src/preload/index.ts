@@ -246,6 +246,7 @@ const api = {
   roomCurve: (wallIndex: number, radius: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-curve', wallIndex, radius),
   roomDimension: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:room-dimension'),
+  drapePerimeter: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:drape-perimeter'),
 
   seatingPreview: (request: SeatingRequestView): Promise<SeatingPreview | null> =>
     ipcRenderer.invoke('plan:seating-preview', request),
@@ -400,6 +401,8 @@ const api = {
   ): Promise<{ ok: boolean; reason?: string; show?: ShowLinkState }> =>
     ipcRenderer.invoke('show:link-current', listIndex),
   gearReconcile: (listIndex: number): Promise<unknown | null> => ipcRenderer.invoke('gear:reconcile', listIndex),
+  gearPlaceAll: (listIndex: number): Promise<EditReply & { note?: string; placed?: number }> =>
+    ipcRenderer.invoke('gear:place-all', listIndex),
   gearExportCsv: (listIndex: number): Promise<string | null> => ipcRenderer.invoke('gear:export-csv', listIndex),
   gearUpdate: (
     listIndex: number,

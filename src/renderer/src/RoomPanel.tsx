@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import type { Doc } from './App.js';
+import { selectableIds } from './selection.js';
 import { IconPlus, IconRuler, IconWarning } from './icons.js';
 
 const api = window.groundplan;
@@ -123,7 +124,10 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           return false;
         }
         if (reply.doc) onDoc(reply.doc as Doc);
-        if (reply.created?.length) onSelect(reply.created);
+        if (reply.created?.length) {
+          const scene = (reply.doc as Doc | undefined)?.scene;
+          onSelect(scene ? selectableIds(reply.created, scene) : reply.created);
+        }
         onStatus(reply.note ? `${what}. ${reply.note}` : what);
         await refresh();
         return true;
@@ -140,6 +144,21 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   // ---- Room ---------------------------------------------------------------
   const width = useLength(40 * 120, units);
   const depth = useLength(30 * 120, units);
+
+  // Seed the draw-room fields from the room actually on the plan, so "Redraw
+  // room" starts from its real size rather than silently resetting it to the
+  // 40 × 30 default. Only once per open plan, so a mid-edit value is not fought.
+  const [roomSeeded, setRoomSeeded] = useState(false);
+  useEffect(() => {
+    setRoomSeeded(false);
+  }, [doc.path]);
+  useEffect(() => {
+    if (!room || roomSeeded) return;
+    width.setText(formatLength(room.width, units));
+    depth.setText(formatLength(room.height, units));
+    setRoomSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, units, roomSeeded]);
 
   // ---- Reshape / curve ----------------------------------------------------
   const [reshapeOp, setReshapeOp] = useState<'union' | 'difference'>('union');
@@ -185,11 +204,13 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const [table, setTable] = useState('');
   const [stagger, setStagger] = useState(true);
   const [splay, setSplay] = useState(0);
+  const [blocksAcross, setBlocksAcross] = useState(1);
   const [rowsPerBlock, setRowsPerBlock] = useState(0);
   const seatSpacing = useLength(20 * 10, units);
   const rowSpacing = useLength(36 * 10, units);
   const frontClearance = useLength(8 * 120, units);
   const centreAisle = useLength(0, units);
+  const seatingDepth = useLength(0, units);
   const [preview, setPreview] = useState<SeatingPreview | null>(null);
 
   const styleInfo = model?.seatingStyles.find((s) => s.id === style);
@@ -211,12 +232,14 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
       seatSpacing: seatSpacing.value ?? undefined,
       rowSpacing: rowSpacing.value ?? undefined,
       front: frontClearance.value ?? undefined,
+      depth: seatingDepth.value ?? undefined,
       centreAisle: centreAisle.value ?? 0,
       rowsPerBlock,
       stagger,
       splay,
+      blocksAcross,
     }),
-    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, centreAisle.value, rowsPerBlock, stagger, splay],
+    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, seatingDepth.value, centreAisle.value, rowsPerBlock, stagger, splay, blocksAcross],
   );
 
   // Live count. Solving is pure and cheap, so this runs on every change —
@@ -240,7 +263,35 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const stageDepth = useLength(16 * 120, units);
   const stageHeight = useLength(24 * 10, units);
 
-  const names = doc.scene.inventory.map((i) => i.name);
+  // Chairs and tables to place come from the plan's own shapes *and* from the
+  // persistent equipment library — the library being "what new plans get built
+  // from" — so a brand-new plan, which has drawn nothing yet, can still seat
+  // from the company's stock instead of offering an empty list.
+  const [libraryNames, setLibraryNames] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .inventoryList('', null, null)
+      .then((state) => {
+        if (!cancelled) setLibraryNames(state.items.map((item) => item.name));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.path]);
+
+  const names = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const name of [...doc.scene.inventory.map((i) => i.name), ...libraryNames]) {
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        out.push(name);
+      }
+    }
+    return out;
+  }, [doc.scene.inventory, libraryNames]);
 
   if (!model) {
     return (
@@ -324,6 +375,14 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           >
             <IconRuler size={14} />
             Dimension
+          </button>
+          <button
+            onClick={() => void run('Room draped', () => api.drapePerimeter())}
+            disabled={!editable || !room}
+            title="Ring the room in pipe and drape"
+          >
+            <IconPlus size={14} />
+            Drape perimeter
           </button>
         </div>
         <p className="hint">
@@ -504,6 +563,10 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           <LengthField id="front-clearance" label="Front clearance" field={frontClearance} disabled={!editable} />
           <LengthField id="centre-aisle" label="Centre aisle" field={centreAisle} disabled={!editable} />
         </div>
+        <div className="field-row">
+          <LengthField id="seating-depth" label="Seating depth (0 = fill)" field={seatingDepth} disabled={!editable} />
+          <div className="field" aria-hidden="true" />
+        </div>
 
         <div className="field-row">
           <div className="field">
@@ -530,6 +593,22 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
               onChange={(e) => setSplay(Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
             />
           </div>
+        </div>
+
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="blocks-across">Blocks across</label>
+            <input
+              id="blocks-across"
+              type="number"
+              min={1}
+              max={12}
+              value={blocksAcross}
+              disabled={!editable}
+              onChange={(e) => setBlocksAcross(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
+            />
+          </div>
+          <div className="field" aria-hidden="true" />
         </div>
 
         <label className="check">

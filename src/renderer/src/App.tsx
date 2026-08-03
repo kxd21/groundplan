@@ -41,6 +41,7 @@ import {
   IconSendBack,
 } from './icons.js';
 import type { Layer, Scene } from '../../format/scene.js';
+import { selectableIds } from './selection.js';
 import RoomPanel from './RoomPanel.js';
 import NewPlanDialog from './NewPlanDialog.js';
 import type { GearList, GearTotals } from '../../gear/model.js';
@@ -784,10 +785,7 @@ export function App() {
   }, []);
 
   const armLabel = useCallback(() => {
-    if (!doc?.annotationCapabilities?.label) {
-      notify('This plan has no compatible label template. Existing labels can still be edited.');
-      return;
-    }
+    if (!doc?.editable) return;
     const text = annotationDraft.trim();
     if (!text) {
       notify('Enter label text first.');
@@ -802,7 +800,7 @@ export function App() {
     setDimensioning(false);
     setDimensionFrom(null);
     setArmed(`label “${text}”`);
-  }, [annotationDraft, doc?.annotationCapabilities?.label, notify]);
+  }, [annotationDraft, doc?.editable, notify]);
 
   const toggleMeasure = useCallback(() => {
     cancelPlacement();
@@ -818,10 +816,7 @@ export function App() {
   }, [cancelPlacement]);
 
   const toggleDimension = useCallback(() => {
-    if (!doc?.annotationCapabilities?.dimension) {
-      notify('This plan has no compatible dimension templates. Temporary Measure is still available.');
-      return;
-    }
+    if (!doc?.editable) return;
     cancelPlacement();
     setMeasuring(false);
     setMeasureFrom(null);
@@ -830,7 +825,7 @@ export function App() {
       if (active) setDimensionFrom(null);
       return !active;
     });
-  }, [cancelPlacement, doc?.annotationCapabilities?.dimension, notify]);
+  }, [cancelPlacement, doc?.editable]);
 
   const importGear = useCallback(async () => {
     setBusy(true);
@@ -902,7 +897,7 @@ export function App() {
       if (reply.ok && reply.doc) {
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          setSelectedIds(selectableIds(reply.created, (reply.doc as Doc).scene));
           setSelection(null);
         }
         const placedCount = (reply as { placed?: number }).placed;
@@ -932,7 +927,7 @@ export function App() {
         setDoc(reply.doc);
         setError(null);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          setSelectedIds(selectableIds(reply.created, reply.doc.scene));
           setSelection(null);
         }
       } else if (reply.reason) {
@@ -945,10 +940,6 @@ export function App() {
   /** Turns the temporary two-point readout into real plan annotation. */
   const keepMeasurement = useCallback(async () => {
     if (!measurement || !doc?.editable) return;
-    if (!doc.annotationCapabilities?.dimension) {
-      notify('This plan cannot store a persistent dimension. The temporary measurement remains on screen.');
-      return;
-    }
     const reply = await api.addDimension(
       measurement.from.x,
       measurement.from.y,
@@ -962,7 +953,7 @@ export function App() {
     setMeasurement(null);
     setMeasureFrom(null);
     showStatus(reply.text ? `Saved ${reply.text} as a dimension` : 'Saved dimension on the plan');
-  }, [measurement, doc?.editable, doc?.annotationCapabilities?.dimension, applied, notify, showStatus]);
+  }, [measurement, doc?.editable, applied, showStatus]);
 
   /**
    * Hands the drawing to CAD as reusable symbols.
@@ -1053,7 +1044,7 @@ export function App() {
       if (reply.ok && reply.doc) {
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          setSelectedIds(selectableIds(reply.created, (reply.doc as Doc).scene));
           setSelection(null);
         }
         showStatus(
@@ -1407,10 +1398,6 @@ export function App() {
       }
       if (e.key.toLowerCase() === 't' && !mod && doc?.editable) {
         e.preventDefault();
-        if (!doc.annotationCapabilities?.label) {
-          notify('This plan has no compatible label template. Existing labels can still be edited.');
-          return;
-        }
         setInspectorOpen(true);
         setInspectorTab('create');
         window.setTimeout(() => annotationInputRef.current?.focus(), 0);
@@ -1553,15 +1540,19 @@ export function App() {
     !!selection && !singleIsAnnotation && selection.widthUnits > 0 && selection.heightUnits > 0;
   /** Absolute X/Y is single-selection only — multi-select keeps stale drafts otherwise. */
   const canPositionSelection = !!selection && selectedIds.length === 1 && !singleIsAnnotation;
-  const canCreateLabel = !!doc?.editable && !!doc.annotationCapabilities?.label;
-  const canCreateDimension = !!doc?.editable && !!doc.annotationCapabilities?.dimension;
+  // Annotation is always available on an editable plan: when the plan has no
+  // label or dimension of its own to clone, Groundplan synthesizes one from
+  // scratch. The capability flags now only decide whether new annotation
+  // matches the sheet's existing styling or falls back to the built-in default.
+  const canCreateLabel = !!doc?.editable;
+  const canCreateDimension = !!doc?.editable;
   const annotationCapabilityHint =
-    doc && (!doc.annotationCapabilities?.label || !doc.annotationCapabilities?.dimension)
+    doc?.editable && (!doc.annotationCapabilities?.label || !doc.annotationCapabilities?.dimension)
       ? !doc.annotationCapabilities?.label && !doc.annotationCapabilities?.dimension
-        ? 'This plan has no compatible label or dimension templates. Temporary Measure still works, and existing annotations remain editable.'
+        ? 'This plan has no labels or dimensions to match, so new ones use Groundplan’s default styling.'
         : !doc.annotationCapabilities?.label
-          ? 'This plan has no compatible label template. Dimensions remain available.'
-          : 'This plan has no compatible dimension templates. Temporary Measure still works.'
+          ? 'This plan has no label to match, so new labels use Groundplan’s default styling.'
+          : 'This plan has no dimension to match, so new dimensions use Groundplan’s default styling.'
       : null;
   const shortcut = (key: string, shift = false) =>
     api.platform === 'darwin' ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
@@ -1753,7 +1744,7 @@ export function App() {
                   canCreateDimension
                     ? 'Saved dimension (D). Draws a persistent annotation on the plan.'
                     : doc
-                      ? 'Unavailable: this plan has no compatible dimension templates. Use Measure for a temporary distance.'
+                      ? 'Unavailable: this plan is read-only. Use Measure for a temporary distance.'
                       : 'Open an editable plan to draw a saved dimension.'
                 }
                 aria-pressed={dimensioning}
@@ -2731,7 +2722,7 @@ export function App() {
                   title={
                     canCreateDimension
                       ? 'Keep this distance as an object-linked plan dimension'
-                      : 'This plan has no compatible dimension templates'
+                      : 'This plan is read-only'
                   }
                 >
                   Save dimension
@@ -2862,6 +2853,8 @@ export function App() {
                 planPath={doc?.path}
                 gearPath={gear.path}
                 gearDirty={gear.dirty}
+                onDoc={(next) => setDoc(next as Doc)}
+                onStatus={showStatus}
               />
             ) : (
               <div className="section">
@@ -3313,7 +3306,7 @@ export function App() {
                     title={
                       canCreateLabel
                         ? 'Place this label on the plan'
-                        : 'Unavailable: this plan has no compatible label template'
+                        : 'Unavailable: this plan is read-only'
                     }
                   >
                     <IconPlus size={14} />
@@ -3326,7 +3319,7 @@ export function App() {
                     title={
                       canCreateDimension
                         ? 'Draw an object-linked dimension (D)'
-                        : 'Unavailable: this plan has no compatible dimension templates'
+                        : 'Unavailable: this plan is read-only'
                     }
                   >
                     <IconRuler size={14} />
@@ -3342,7 +3335,7 @@ export function App() {
                     </>
                   ) : (
                     <>
-                      Use <kbd>M</kbd> for a temporary distance. This plan cannot store new dimensions.
+                      Use <kbd>M</kbd> for a temporary distance. This plan is read-only, so it cannot store new dimensions.
                     </>
                   )}{' '}
                   {canCreateLabel ? (
@@ -3350,7 +3343,7 @@ export function App() {
                       Press <kbd>T</kbd> to place a label.
                     </>
                   ) : (
-                    'New labels are unavailable in this plan.'
+                    'New labels need an editable plan.'
                   )}
                 </p>
               </div>
