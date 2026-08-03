@@ -26,7 +26,7 @@
     "scan": "tsx tools/scan-corpus.ts",
     "inspect": "tsx tools/inspect.ts",
     "roundtrip": "tsx tools/roundtrip.ts",
-    "test": "tsx tools/catalog-test.ts && tsx tools/hermetic-test.ts && tsx tools/gear-inventory-safety-test.ts && tsx tools/synthesize-test.ts && tsx tools/room-test.ts && tsx tools/definition-test.ts && tsx tools/room-authoring-test.ts && tsx tools/curve-test.ts && tsx tools/dimension-test.ts && tsx tools/seating-plan-test.ts && tsx tools/stage-av-test.ts && tsx tools/report-test.ts && tsx tools/plan-model-test.ts && tsx tools/usb-update-test.ts && tsx tools/edit-test.ts --fixture",
+    "test": "tsx tools/catalog-test.ts && tsx tools/hermetic-test.ts && tsx tools/gear-inventory-safety-test.ts && tsx tools/synthesize-test.ts && tsx tools/room-test.ts && tsx tools/definition-test.ts && tsx tools/room-authoring-test.ts && tsx tools/curve-test.ts && tsx tools/dimension-test.ts && tsx tools/seating-plan-test.ts && tsx tools/seating-footprint-test.ts && tsx tools/stage-av-test.ts && tsx tools/report-test.ts && tsx tools/plan-model-test.ts && tsx tools/usb-update-test.ts && tsx tools/edit-test.ts --fixture",
     "test:corpus": "tsx tools/edit-test.ts",
     "test:synthesis": "tsx tools/synthesize-test.ts",
     "test:room": "tsx tools/room-test.ts",

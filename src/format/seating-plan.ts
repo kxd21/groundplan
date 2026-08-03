@@ -81,6 +81,13 @@ export interface Clearances {
   rear: number;
   /** Between the front wall and the stage — not the same as `front`. */
   frontWall: number;
+  /**
+   * How deep the seating block is allowed to run, front to back, in logical
+   * units. Zero or unset fills the room. Set it to confine seating to a defined
+   * house — the real Card Party seats a 78 ft block inside a 130 ft room —
+   * rather than flooding every foot of floor.
+   */
+  depth?: number;
 }
 
 /**
@@ -436,11 +443,17 @@ function solveRows(plan: SeatingPlan, room: RoomModel, acc: Accumulator): number
   const sections: Section[] = sectionsFor(plan);
   const half = plan.clearances.centreAisle / 2;
 
+  // A confined house stops the block at a set depth; the first row already sits
+  // frontWall + front back, so the limit is measured from there.
+  const startDepth = plan.clearances.frontWall + plan.clearances.front;
+  const maxDepth = plan.clearances.depth && plan.clearances.depth > 0 ? plan.clearances.depth : 0;
+
   let rows = 0;
 
   for (let row = 0; row < maxRows && !acc.full; row++) {
     const depth = rowDepth(plan, row);
     if (depth > span) break;
+    if (maxDepth > 0 && depth - startDepth > maxDepth) break;
     let placedInRow = 0;
 
     sections.forEach((section, s) => {
@@ -492,11 +505,14 @@ function solveCurvedRows(plan: SeatingPlan, room: RoomModel, acc: Accumulator): 
   const heading = Math.atan2(-forward.y, -forward.x);
   const span = reach(room, plan.focus);
   const maxRows = Math.max(1, Math.ceil(span / plan.rowSpacing) + 2);
+  const startDepth = plan.clearances.frontWall + plan.clearances.front;
+  const maxDepth = plan.clearances.depth && plan.clearances.depth > 0 ? plan.clearances.depth : 0;
   let rows = 0;
 
   for (let row = 0; row < maxRows && !acc.full; row++) {
     const radius = rowDepth(plan, row);
     if (radius > span) break;
+    if (maxDepth > 0 && radius - startDepth > maxDepth) break;
 
     // Seat spacing is an arc length, so rows keep their spacing as they widen.
     const step = plan.seatSpacing / radius;

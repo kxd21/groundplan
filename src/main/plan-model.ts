@@ -448,6 +448,7 @@ export interface SeatingRequestView {
   seatSpacing?: number;
   rowSpacing?: number;
   front?: number;
+  depth?: number;
   perimeter?: number;
   aisle?: number;
   rowsPerBlock?: number;
@@ -464,6 +465,7 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
   if (request.seatSpacing && request.seatSpacing > 0) plan.seatSpacing = request.seatSpacing;
   if (request.rowSpacing && request.rowSpacing > 0) plan.rowSpacing = request.rowSpacing;
   if (request.front != null) plan.clearances.front = Math.max(0, request.front);
+  if (request.depth != null) plan.clearances.depth = Math.max(0, request.depth);
   if (request.perimeter != null) plan.clearances.perimeter = Math.max(0, request.perimeter);
   if (request.aisle != null) plan.clearances.aisle = Math.max(0, request.aisle);
   if (request.rowsPerBlock != null) plan.clearances.rowsPerBlock = Math.max(0, Math.floor(request.rowsPerBlock));
