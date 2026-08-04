@@ -5,26 +5,30 @@ Installers for first-time setup. After install, Groundplan can update itself
 
 ### What’s new in this release
 
+**Edit walls**
+- Top-bar **Edit walls** mode with Push, Curve, and Length
+- Click a wall on the plan (furniture no longer steals the click)
+- Drag the mid-wall handle to push/pull, bow a curve, or stretch length
+- Curves follow the handle so bowing out no longer flips inward
+
+**Safer saves**
+- Atomic Save / Save As with `.bak` backups across plan and companion files
+- Stronger recovery for unsaved rooms, dimensions, and linked data
+- Repaired plans use a fresh container instead of risky in-place overwrite
+
+**Authoring polish**
+- SnappySlider controls where stepped values help
+- Room outline and wall tools refined for everyday plan work
+- Starter inventory and plan workspace improvements
+
+### Also in 1.2.x
+
 **Event Room Data (Room Viewer–style)**
-- Room tab with **Seating | Spacing | A/V | Design Options**
-- Room name and ceiling height save with the plan
-- Clearances, chair/table choices, Optimum and Crescent options
-- Status bar shows chair/table counts and aisle clearances (C / S / W / F / R)
+- Room tab with Seating | Spacing | A/V | Design Options
+- Clearances, Optimum/Crescent options, status-bar counts
 
-**Insert library**
-- Hierarchical Insert menu and in-app picker
-- Object palette beside the plan for fast placement
-
-**Authoring tools**
-- Shape Editor Wizard (named inventory shapes, trace or box outline)
-- Build Stage dialog
-- Dimension length/angle and scale-to-dimension
-
-**Room builder**
-- Freeform / custom room outlines that **save correctly** after New Plan
-- Click near the first corner (or press Enter) to finish a freeform room
-- Outline editor: add/cut area, move corners, set line length, **curve walls**, round corners
-- Clearer refusals when a curved wall cannot be lengthened or split
+**Insert library & room builder**
+- Hierarchical Insert menu, Build Stage, freeform rooms, curve/round walls
 
 ### Download page
 

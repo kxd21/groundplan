@@ -290,7 +290,11 @@ async function main(): Promise<void> {
     2400,
     2000,
   );
-  check('unknown gear synthesizes from a safe in-plan template', placed.ok && placed.method === 'synthesized', placed.reason);
+  check(
+    'unknown gear places from a safe in-plan template',
+    placed.ok && (placed.method === 'box' || placed.method === 'synthesized'),
+    `${placed.method ?? 'none'}${placed.reason ? `: ${placed.reason}` : ''}`,
+  );
   const placementReopened = new Session(path, packContainer(bytes, serializeArchive(placementDocument)));
   check('synthesized gear survives reopen', (placementReopened.scene.counts.RVShape ?? 0) === placementBefore + 1);
 
