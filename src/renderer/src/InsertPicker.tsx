@@ -25,7 +25,12 @@ interface Props {
   items: InventoryRow[];
   initialGroup?: InsertGroupId | null;
   onClose: () => void;
+  /** Inventory match — preferred when the shop has this item. */
   onPick: (id: string, name: string) => void;
+  /** Catalog leaf when there is no inventory match (stock-size fallback). */
+  onPickLeaf?: (leafId: string) => void;
+  /** Called when a leaf cannot be armed (no inventory match and no stock). */
+  onUnavailable?: (label: string) => void;
 }
 
 function groupRoot(group: InsertGroupId | null | undefined): InsertBranch[] {
@@ -38,7 +43,7 @@ function groupRoot(group: InsertGroupId | null | undefined): InsertBranch[] {
     tables: 'tables',
     chairs: 'chairs',
     drape: 'drape',
-    misc: 'misc',
+    misc: 'venue',
   };
   const id = map[group];
   if (!id) return INSERT_TREE;
@@ -46,7 +51,67 @@ function groupRoot(group: InsertGroupId | null | undefined): InsertBranch[] {
   return found ? [found] : INSERT_TREE;
 }
 
-export default function InsertPicker({ open, items, initialGroup, onClose, onPick }: Props) {
+function leafStatus(leaf: InsertLeaf, items: InventoryRow[]): {
+  kind: 'inventory' | 'stock' | 'unavailable';
+  detail: string;
+} {
+  const match = matchInsertItem(leaf, items);
+  if (match) return { kind: 'inventory', detail: match.name };
+  if (leaf.stockName) return { kind: 'stock', detail: leaf.stockName };
+  if (leaf.keywords.length) return { kind: 'stock', detail: 'stock size' };
+  return { kind: 'unavailable', detail: 'unavailable' };
+}
+
+function LeafRow({
+  leaf,
+  items,
+  onChoose,
+}: {
+  leaf: InsertLeaf;
+  items: InventoryRow[];
+  onChoose: (leaf: InsertLeaf) => void;
+}) {
+  const status = leafStatus(leaf, items);
+  const available = status.kind !== 'unavailable';
+  const match = matchInsertItem(leaf, items);
+  return (
+    <li>
+      <button
+        type="button"
+        className={`insert-leaf${available ? '' : ' is-unavailable'}`}
+        disabled={!available}
+        onClick={() => onChoose(leaf)}
+        title={
+          match
+            ? match.name
+            : leaf.stockName
+              ? `Place stock ${leaf.stockName}`
+              : available
+                ? 'Arm stock size from keywords'
+                : 'Not in inventory and no stock size — add it in Inventory first'
+        }
+      >
+        <span className="insert-leaf-main">
+          <span className="fname">{leaf.label}</span>
+          <span className="muted">{status.detail}</span>
+        </span>
+        <span className={`insert-badge insert-badge-${status.kind}`}>
+          {status.kind === 'inventory' ? 'In shop' : status.kind === 'stock' ? 'Stock' : 'Missing'}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+export default function InsertPicker({
+  open,
+  items,
+  initialGroup,
+  onClose,
+  onPick,
+  onPickLeaf,
+  onUnavailable,
+}: Props) {
   const roots = useMemo(() => groupRoot(initialGroup), [initialGroup]);
   const [path, setPath] = useState<InsertBranch[]>([]);
   const [query, setQuery] = useState('');
@@ -81,29 +146,46 @@ export default function InsertPicker({ open, items, initialGroup, onClose, onPic
 
   const chooseLeaf = (leaf: InsertLeaf) => {
     const match = matchInsertItem(leaf, items);
-    if (!match) return;
-    onPick(match.id, match.name);
-    onClose();
+    if (match) {
+      onPick(match.id, match.name);
+      onClose();
+      return;
+    }
+    if (onPickLeaf && (leaf.stockName || leaf.keywords.length)) {
+      onPickLeaf(leaf.id);
+      onClose();
+      return;
+    }
+    onUnavailable?.(leaf.label);
   };
+
+  const crumb =
+    path.length === 0
+      ? initialGroup
+        ? roots[0]?.label ?? 'Browse'
+        : 'All categories'
+      : path.map((b) => b.label).join(' › ');
 
   return (
     <div className="sheet-backdrop" role="presentation" onClick={onClose}>
       <div
-        className="sheet"
+        className="sheet insert-sheet"
         role="dialog"
         aria-modal="true"
         aria-label="Insert"
         onClick={(e) => e.stopPropagation()}
-        style={{ width: 420, maxWidth: '92vw' }}
       >
         <div className="sheet-title">
-          <h2>Insert</h2>
+          <div className="insert-sheet-heading">
+            <h2>Insert</h2>
+            <p>Browse the catalog · prefer inventory when it matches</p>
+          </div>
           <button type="button" className="btn-outline" onClick={onClose}>
             Close
           </button>
         </div>
         <div className="sheet-body">
-          <div className="field inv-search" style={{ position: 'relative' }}>
+          <div className="field inv-search insert-search">
             <IconSearch size={14} />
             <input
               type="search"
@@ -115,7 +197,7 @@ export default function InsertPicker({ open, items, initialGroup, onClose, onPic
           </div>
 
           {!query.trim() && (
-            <div className="actions-row" style={{ marginBottom: 8 }}>
+            <div className="insert-crumb">
               <button
                 type="button"
                 className="btn-outline"
@@ -124,56 +206,28 @@ export default function InsertPicker({ open, items, initialGroup, onClose, onPic
               >
                 Back
               </button>
-              <span className="hint" style={{ margin: 0 }}>
-                {path.length === 0
-                  ? initialGroup
-                    ? roots[0]?.label ?? 'Browse'
-                    : 'Browse'
-                  : path.map((b) => b.label).join(' › ')}
+              <span className="insert-crumb-path" title={crumb}>
+                {crumb}
               </span>
             </div>
           )}
 
-          <ul className="file-list">
+          <ul className="file-list insert-list">
             {query.trim()
-              ? filteredLeaves.map((leaf) => {
-                  const match = matchInsertItem(leaf, items);
-                  return (
-                    <li key={leaf.id}>
-                      <button
-                        type="button"
-                        disabled={!match}
-                        onClick={() => chooseLeaf(leaf)}
-                        title={match ? match.name : 'No matching inventory item'}
-                      >
-                        <span className="fname">{leaf.label}</span>
-                        <span className="muted">{match ? match.name : 'not in inventory'}</span>
-                      </button>
-                    </li>
-                  );
-                })
+              ? filteredLeaves.map((leaf) => (
+                  <LeafRow key={leaf.id} leaf={leaf} items={items} onChoose={chooseLeaf} />
+                ))
               : children.map((node) => {
                   if (isInsertLeaf(node)) {
-                    const match = matchInsertItem(node, items);
-                    return (
-                      <li key={node.id}>
-                        <button
-                          type="button"
-                          disabled={!match}
-                          onClick={() => chooseLeaf(node)}
-                          title={match ? match.name : 'No matching inventory item'}
-                        >
-                          <span className="fname">{node.label}</span>
-                          <span className="muted">{match ? match.name : 'not in inventory'}</span>
-                        </button>
-                      </li>
-                    );
+                    return <LeafRow key={node.id} leaf={node} items={items} onChoose={chooseLeaf} />;
                   }
                   return (
                     <li key={node.id}>
-                      <button type="button" onClick={() => setPath((p) => [...p, node])}>
+                      <button type="button" className="insert-folder" onClick={() => setPath((p) => [...p, node])}>
                         <span className="fname">{node.label}</span>
-                        <span className="muted">›</span>
+                        <span className="insert-folder-chevron" aria-hidden>
+                          ›
+                        </span>
                       </button>
                     </li>
                   );
@@ -181,6 +235,9 @@ export default function InsertPicker({ open, items, initialGroup, onClose, onPic
           </ul>
           {!query.trim() && children.length === 0 && (
             <p className="hint">Nothing in this category yet.</p>
+          )}
+          {query.trim() && filteredLeaves.length === 0 && (
+            <p className="hint">No catalog matches for “{query.trim()}”.</p>
           )}
         </div>
       </div>

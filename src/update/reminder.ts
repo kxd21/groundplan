@@ -7,8 +7,11 @@
  * "Check for updates" ignores the reminder and offers again.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+
+import { atomicWriteJson } from '../main/storage.js';
 
 export const REMINDER_FILENAME = 'app-update-reminder.json';
 
@@ -67,7 +70,9 @@ export async function saveReminder(userDataDir: string, reminder: AppUpdateRemin
   const path = reminderPath(userDataDir);
   await mkdir(dirname(path), { recursive: true });
   const cleaned = parseReminder(reminder);
-  await writeFile(path, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8');
+  await atomicWriteJson(path, cleaned, {
+    backupPath: existsSync(path) ? `${path}.bak` : undefined,
+  });
 }
 
 export async function clearReminder(userDataDir: string): Promise<void> {

@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+import { SnappySlider } from './SnappySlider.js';
 
 const api = window.groundplan;
 const FOOT = 120;
@@ -6,7 +8,18 @@ const FOOT = 120;
 interface Settings {
   print: { scale: string; paper: string; landscape: boolean; subtitle: string };
   dxf: { includeSchedule: boolean; visibleLayersOnly: boolean };
-  drawing: { units: 'imperial' | 'metric'; snapStep: number; showGrid: boolean; bulkDeleteWarning: number };
+  drawing: {
+    units: 'imperial' | 'metric';
+    snapStep: number;
+    objectSnap: boolean;
+    showGrid: boolean;
+    paperSheet: boolean;
+    autoFitOnOpen: boolean;
+    openPropertiesOnSelect: boolean;
+    nudgeStep: number;
+    fineNudgeStep: number;
+    bulkDeleteWarning: number;
+  };
   catalog: {
     policy: 'automatic' | 'automatic-small' | 'notify' | 'manual';
     smallUpdateLimitMb: number;
@@ -16,14 +29,18 @@ interface Settings {
   inventory: { autoAbsorbGear: boolean; autoMatchShapes: boolean };
 }
 
-type Panel = 'export' | 'drawing' | 'inventory' | 'updates';
+export interface SettingsAppPreferences {
+  appearance: 'light' | 'dark' | 'system';
+  density: 'comfortable' | 'compact';
+  showTooltips: boolean;
+  railOpen: boolean;
+  inspectorOpen: boolean;
+  toolDockOpen: boolean;
+  toolDockCompact: boolean;
+  toolDockSide: 'left' | 'right' | 'floating';
+}
 
-const PANELS: Array<{ id: Panel; label: string; blurb: string }> = [
-  { id: 'export', label: 'Export', blurb: 'What a printed sheet and a CAD file start out as.' },
-  { id: 'drawing', label: 'Drawing', blurb: 'How the canvas behaves while you work.' },
-  { id: 'inventory', label: 'Inventory', blurb: 'What happens when gear arrives.' },
-  { id: 'updates', label: 'Updates', blurb: 'The equipment catalog and the application itself.' },
-];
+type Section = 'plan' | 'app';
 
 const SCALES = [
   ['1/16', '1/16" = 1\'-0"'],
@@ -45,19 +62,48 @@ const SNAP_STEPS = [
   [FOOT * 5, '5 feet'],
 ] as const;
 
-/**
- * Settings.
- *
- * Grouped by when a person thinks about them rather than by which module owns
- * them: everything that shapes a deliverable is under Export, everything that
- * shapes the drawing surface is under Drawing. Each change saves immediately —
- * there is no OK button, because a settings window with an unsaved state is a
- * settings window that loses work.
- */
-export function SettingsDialog({ onClose, onError }: { onClose: () => void; onError: (m: string) => void }) {
-  const [panel, setPanel] = useState<Panel>('export');
+const PLAN_DEFAULTS: Pick<Settings, 'print' | 'dxf' | 'drawing'> = {
+  print: { scale: '1/8', paper: 'Tabloid', landscape: true, subtitle: '' },
+  dxf: { includeSchedule: true, visibleLayersOnly: true },
+  drawing: {
+    units: 'imperial',
+    snapStep: FOOT,
+    objectSnap: true,
+    showGrid: true,
+    paperSheet: true,
+    autoFitOnOpen: true,
+    openPropertiesOnSelect: true,
+    nudgeStep: FOOT,
+    fineNudgeStep: 10,
+    bulkDeleteWarning: 25,
+  },
+};
+
+const APP_DEFAULTS: SettingsAppPreferences = {
+  appearance: 'system',
+  density: 'comfortable',
+  showTooltips: true,
+  railOpen: true,
+  inspectorOpen: true,
+  toolDockOpen: true,
+  toolDockCompact: false,
+  toolDockSide: 'left',
+};
+
+interface Props {
+  appPreferences: SettingsAppPreferences;
+  onAppPreferences: (patch: Partial<SettingsAppPreferences>) => void;
+  onClose: () => void;
+  onError: (message: string) => void;
+}
+
+/** Two-level settings hub: plan behaviour and application behaviour. */
+export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onError }: Props) {
+  const [section, setSection] = useState<Section>('plan');
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const saveSequence = useRef(0);
+  const saveTimer = useRef<number | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -67,21 +113,27 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
       .catch(() => onError('Settings could not be loaded.'));
     return () => {
       live = false;
+      if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
     };
   }, [onError]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      e.preventDefault();
-      e.stopPropagation();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
       onClose();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
 
-  // Every change is written straight away, and the confirmation is quiet.
+  const settleSaveState = (state: 'saved' | 'error') => {
+    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    setSaveState(state);
+    saveTimer.current = window.setTimeout(() => setSaveState('idle'), state === 'saved' ? 1400 : 3200);
+  };
+
   const patch = async (change: Partial<Settings>) => {
     if (!settings) return;
     const next = { ...settings } as Settings;
@@ -89,323 +141,330 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
       next[key] = { ...(settings[key] as object), ...(change[key] as object) } as never;
     }
     setSettings(next);
+    const sequence = ++saveSequence.current;
+    setSaveState('saving');
+    try {
+      const reply = await api.settingsPatch(change);
+      if (sequence !== saveSequence.current) return;
+      if (reply.ok) settleSaveState('saved');
+      else {
+        settleSaveState('error');
+        onError('That setting could not be saved.');
+      }
+    } catch {
+      if (sequence !== saveSequence.current) return;
+      settleSaveState('error');
+      onError('That setting could not be saved.');
+    }
+  };
 
-    const reply = await api.settingsPatch(change);
-    if (reply.ok) {
-      setSaved(true);
-      window.setTimeout(() => setSaved(false), 1400);
-    } else onError('That setting could not be saved.');
+  const patchApp = (change: Partial<SettingsAppPreferences>) => {
+    onAppPreferences(change);
+    settleSaveState('saved');
   };
 
   if (!settings) {
     return (
       <div className="sheet-backdrop" onClick={onClose}>
-        <div className="sheet settings-sheet" onClick={(e) => e.stopPropagation()}>
-          <p className="hint" style={{ padding: 24 }}>
-            Loading settings…
-          </p>
+        <div className="sheet settings-sheet settings-sheet-expanded" onClick={(event) => event.stopPropagation()}>
+          <p className="hint settings-loading">Loading settings…</p>
         </div>
       </div>
     );
   }
 
+  const drawing = settings.drawing;
+  const snapLabel = SNAP_STEPS.find(([value]) => value === drawing.snapStep)?.[1] ?? 'Custom';
+  const openPanelCount = [appPreferences.railOpen, appPreferences.inspectorOpen, appPreferences.toolDockOpen]
+    .filter(Boolean).length;
+
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet settings-sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="settings-body">
-          <nav className="settings-nav">
-            {PANELS.map((p) => (
-              <button
-                key={p.id}
-                className={panel === p.id ? 'active' : ''}
-                onClick={() => setPanel(p.id)}
-              >
-                {p.label}
-              </button>
-            ))}
+      <section
+        className="sheet settings-sheet settings-sheet-expanded"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="settings-header">
+          <span>
+            <small>Groundplan preferences</small>
+            <strong id="settings-title">Settings</strong>
+          </span>
+          <span
+            className={`settings-saved is-${saveState}${saveState !== 'idle' ? ' is-on' : ''}`}
+            role="status"
+            aria-live="polite"
+          >
+            {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save issue' : 'Saved'}
+          </span>
+          <button type="button" onClick={onClose} aria-label="Close settings">×</button>
+        </header>
+
+        <div className="settings-body settings-body-expanded">
+          <nav className="settings-nav settings-primary-nav" aria-label="Settings level">
+            <button className={section === 'plan' ? 'active' : ''} onClick={() => setSection('plan')}>
+              <strong>Plan settings</strong>
+              <small>Drawing, editing, print and CAD defaults</small>
+            </button>
+            <button className={section === 'app' ? 'active' : ''} onClick={() => setSection('app')}>
+              <strong>App settings</strong>
+              <small>Appearance, panels, toolbar and automation</small>
+            </button>
           </nav>
 
-          <div className="settings-panel">
-            <p className="settings-blurb">{PANELS.find((p) => p.id === panel)?.blurb}</p>
-
-            {panel === 'export' && (
+          <main className="settings-panel settings-panel-expanded">
+            {section === 'plan' ? (
               <>
-                <div className="setting">
-                  <label htmlFor="s-scale">Print scale</label>
-                  <select
-                    id="s-scale"
-                    value={settings.print.scale}
-                    onChange={(e) => void patch({ print: { ...settings.print, scale: e.target.value } })}
-                  >
-                    {SCALES.map(([id, label]) => (
-                      <option key={id} value={id}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
+                <div className="settings-level-heading">
+                  <span><small>Plan level</small><strong>Drawing and document defaults</strong></span>
+                  <button type="button" onClick={() => void patch(PLAN_DEFAULTS)}>Restore plan defaults</button>
                 </div>
 
-                <div className="setting">
-                  <label htmlFor="s-paper">Paper</label>
-                  <select
-                    id="s-paper"
-                    value={settings.print.paper}
-                    onChange={(e) => void patch({ print: { ...settings.print, paper: e.target.value } })}
-                  >
-                    {PAPERS.map((p) => (
-                      <option key={p} value={p}>
-                        {p}
-                      </option>
-                    ))}
-                  </select>
+                <div className="settings-health-strip" aria-label="Current plan settings summary">
+                  <span><small>Units</small><strong>{drawing.units === 'metric' ? 'Metric' : 'Imperial'}</strong></span>
+                  <span><small>Grid snap</small><strong>{snapLabel}</strong></span>
+                  <span><small>Bulk safety</small><strong>{drawing.bulkDeleteWarning ? `${drawing.bulkDeleteWarning}+ items` : 'Off'}</strong></span>
                 </div>
 
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={settings.print.landscape}
-                    onChange={(e) => void patch({ print: { ...settings.print, landscape: e.target.checked } })}
-                  />
-                  <span>Landscape</span>
-                </label>
-
-                <div className="setting">
-                  <label htmlFor="s-subtitle">Title block job line</label>
-                  <input
-                    id="s-subtitle"
-                    value={settings.print.subtitle}
-                    placeholder="e.g. your company name"
-                    onChange={(e) => void patch({ print: { ...settings.print, subtitle: e.target.value } })}
-                  />
-                </div>
-                <p className="hint">
-                  Printed in the title block when a plan carries no job number of its own.
-                </p>
-
-                <div className="settings-divider" />
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={settings.dxf.includeSchedule}
-                    onChange={(e) => void patch({ dxf: { ...settings.dxf, includeSchedule: e.target.checked } })}
-                  />
-                  <span>Write the item schedule beside a DXF export</span>
-                </label>
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={settings.dxf.visibleLayersOnly}
-                    onChange={(e) =>
-                      void patch({ dxf: { ...settings.dxf, visibleLayersOnly: e.target.checked } })
-                    }
-                  />
-                  <span>Export only the layers currently shown</span>
-                </label>
-                <p className="hint">
-                  Repeated gear exports as one reusable symbol plus its placements, so a 2,000-seat plan
-                  becomes a handful of blocks to swap for 3D rather than 2,000 outlines.
-                </p>
-              </>
-            )}
-
-            {panel === 'drawing' && (
-              <>
-                <div className="setting">
-                  <label htmlFor="s-units">Measurements</label>
-                  <select
-                    id="s-units"
-                    value={settings.drawing.units}
-                    onChange={(e) =>
-                      void patch({
-                        drawing: {
-                          ...settings.drawing,
-                          units: e.target.value === 'metric' ? 'metric' : 'imperial',
-                        },
-                      })
-                    }
-                  >
-                    <option value="imperial">Feet and inches</option>
-                    <option value="metric">Metres and centimetres</option>
-                  </select>
-                </div>
-                <p className="settings-note">
-                  Changes how lengths and areas are shown and typed. Bare numbers mean feet in imperial and metres in
-                  metric; you can always type cm, mm, ft, or inches with a suffix. Plans stay in tenths of an inch on
-                  disk — switching units does not alter a drawing.
-                </p>
-
-                <div className="setting">
-                  <label htmlFor="s-snap">Snap to</label>
-                  <select
-                    id="s-snap"
-                    value={settings.drawing.snapStep}
-                    onChange={(e) =>
-                      void patch({ drawing: { ...settings.drawing, snapStep: Number(e.target.value) } })
-                    }
-                  >
-                    {SNAP_STEPS.map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <p className="hint">Objects also snap to line up with what is already on the plan.</p>
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={settings.drawing.showGrid}
-                    onChange={(e) => void patch({ drawing: { ...settings.drawing, showGrid: e.target.checked } })}
-                  />
-                  <span>Show the grid</span>
-                </label>
-
-                <div className="setting">
-                  <label htmlFor="s-bulk">Warn before deleting</label>
-                  <div className="setting-inline">
-                    <input
-                      id="s-bulk"
-                      className="num"
-                      value={settings.drawing.bulkDeleteWarning}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        if (Number.isFinite(n) && n >= 0) {
-                          void patch({ drawing: { ...settings.drawing, bulkDeleteWarning: n } });
-                        }
-                      }}
-                    />
-                    <span className="hint">objects or more at once</span>
+                <section className="settings-card">
+                  <div className="settings-card-title">
+                    <strong>Canvas and measurements</strong>
+                    <span>How every plan looks and reads when it opens.</span>
                   </div>
-                </div>
-              </>
-            )}
-
-            {panel === 'inventory' && (
-              <>
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={settings.inventory.autoAbsorbGear}
-                    onChange={(e) =>
-                      void patch({ inventory: { ...settings.inventory, autoAbsorbGear: e.target.checked } })
-                    }
-                  />
-                  <span>Add gear to the inventory when a gear list is imported</span>
-                </label>
-                <p className="hint">
-                  That only updates this computer. To push new stock to the rest of the shop, use Inventory →
-                  Export pack…, put the folder on a USB stick or shared drive, then Import pack… on each machine.
-                </p>
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={settings.inventory.autoMatchShapes}
-                    onChange={(e) =>
-                      void patch({ inventory: { ...settings.inventory, autoMatchShapes: e.target.checked } })
-                    }
-                  />
-                  <span>Give new items the closest drawn shape automatically</span>
-                </label>
-                <p className="hint">
-                  A matched item borrows another shape, and says so with a ≈ next to its name. Your own
-                  drawn symbols always win over a borrowed one.
-                </p>
-              </>
-            )}
-
-            {panel === 'updates' && (
-              <>
-                <div className="setting">
-                  <label htmlFor="s-policy">Equipment catalog</label>
-                  <select
-                    id="s-policy"
-                    value={settings.catalog.policy}
-                    onChange={(e) =>
-                      void patch({
-                        catalog: { ...settings.catalog, policy: e.target.value as Settings['catalog']['policy'] },
-                      })
-                    }
-                  >
-                    <option value="automatic">Download and install everything</option>
-                    <option value="automatic-small">Install small updates quietly</option>
-                    <option value="notify">Tell me, and ask first</option>
-                    <option value="manual">Only when I check</option>
-                  </select>
-                </div>
-
-                {settings.catalog.policy === 'automatic-small' && (
-                  <div className="setting">
-                    <label htmlFor="s-small">Small means under</label>
-                    <div className="setting-inline">
-                      <input
-                        id="s-small"
-                        className="num"
-                        value={settings.catalog.smallUpdateLimitMb}
-                        onChange={(e) => {
-                          const n = Number(e.target.value);
-                          if (Number.isFinite(n) && n > 0) {
-                            void patch({ catalog: { ...settings.catalog, smallUpdateLimitMb: n } });
-                          }
-                        }}
-                      />
-                      <span className="hint">MB</span>
+                  <div className="settings-grid two">
+                    <div className="setting">
+                      <label htmlFor="s-units">Measurement system</label>
+                      <select
+                        id="s-units"
+                        value={drawing.units}
+                        onChange={(event) => void patch({ drawing: { ...drawing, units: event.target.value === 'metric' ? 'metric' : 'imperial' } })}
+                      >
+                        <option value="imperial">Feet and inches</option>
+                        <option value="metric">Metres and centimetres</option>
+                      </select>
+                    </div>
+                    <div className="setting">
+                      <label htmlFor="s-sheet">Default sheet</label>
+                      <select
+                        id="s-sheet"
+                        value={drawing.paperSheet ? 'paper' : 'dark'}
+                        onChange={(event) => void patch({ drawing: { ...drawing, paperSheet: event.target.value === 'paper' } })}
+                      >
+                        <option value="paper">White paper</option>
+                        <option value="dark">Dark drafting sheet</option>
+                      </select>
                     </div>
                   </div>
-                )}
-
-                <div className="setting">
-                  <label htmlFor="s-interval">Check every</label>
-                  <div className="setting-inline">
-                    <input
-                      id="s-interval"
-                      className="num"
-                      value={settings.catalog.checkIntervalHours}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        if (Number.isFinite(n) && n > 0) {
-                          void patch({ catalog: { ...settings.catalog, checkIntervalHours: n } });
-                        }
-                      }}
-                    />
-                    <span className="hint">hours while the application is open</span>
+                  <div className="settings-check-grid">
+                    <label className="setting-check">
+                      <input type="checkbox" checked={drawing.showGrid} onChange={(event) => void patch({ drawing: { ...drawing, showGrid: event.target.checked } })} />
+                      <span><strong>Show grid</strong><small>Display the drafting grid when a plan opens.</small></span>
+                    </label>
+                    <label className="setting-check">
+                      <input type="checkbox" checked={drawing.autoFitOnOpen} onChange={(event) => void patch({ drawing: { ...drawing, autoFitOnOpen: event.target.checked } })} />
+                      <span><strong>Zoom to fit on open</strong><small>Frame the room automatically after loading.</small></span>
+                    </label>
                   </div>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title">
+                    <strong>Snap, movement and selection</strong>
+                    <span>Precision, keyboard movement and edit safety.</span>
+                  </div>
+                  <div className="settings-slider-stack">
+                    <SnappySlider
+                      label="Grid snap"
+                      values={SNAP_STEPS.map(([value]) => value)}
+                      defaultValue={FOOT}
+                      min={0}
+                      max={FOOT * 5}
+                      step={10}
+                      compact
+                      value={drawing.snapStep}
+                      config={{
+                        snappingThreshold: 8,
+                        labelFormatter: (value) =>
+                          SNAP_STEPS.find(([step]) => step === value)?.[1] ?? `${value}`,
+                      }}
+                      onChange={(next) => void patch({ drawing: { ...drawing, snapStep: next } })}
+                    />
+                    <SnappySlider
+                      label="Arrow-key nudge"
+                      values={SNAP_STEPS.slice(1).map(([value]) => value)}
+                      defaultValue={FOOT}
+                      min={10}
+                      max={FOOT * 5}
+                      step={10}
+                      compact
+                      value={drawing.nudgeStep}
+                      config={{
+                        snappingThreshold: 8,
+                        labelFormatter: (value) =>
+                          SNAP_STEPS.find(([step]) => step === value)?.[1] ?? `${value}`,
+                      }}
+                      onChange={(next) => void patch({ drawing: { ...drawing, nudgeStep: next } })}
+                    />
+                    <SnappySlider
+                      label="Shift + arrow nudge"
+                      values={SNAP_STEPS.slice(1, 5).map(([value]) => value)}
+                      defaultValue={10}
+                      min={10}
+                      max={FOOT}
+                      step={10}
+                      compact
+                      value={drawing.fineNudgeStep}
+                      config={{
+                        snappingThreshold: 8,
+                        labelFormatter: (value) =>
+                          SNAP_STEPS.find(([step]) => step === value)?.[1] ?? `${value}`,
+                      }}
+                      onChange={(next) => void patch({ drawing: { ...drawing, fineNudgeStep: next } })}
+                    />
+                    <SnappySlider
+                      label="Warn before bulk delete"
+                      values={[0, 10, 25, 50, 100]}
+                      defaultValue={25}
+                      min={0}
+                      max={100}
+                      step={1}
+                      suffix=" objs"
+                      compact
+                      value={drawing.bulkDeleteWarning}
+                      onChange={(next) => void patch({ drawing: { ...drawing, bulkDeleteWarning: next } })}
+                    />
+                  </div>
+                  <div className="settings-check-grid">
+                    <label className="setting-check">
+                      <input type="checkbox" checked={drawing.objectSnap} onChange={(event) => void patch({ drawing: { ...drawing, objectSnap: event.target.checked } })} />
+                      <span><strong>Snap to nearby objects</strong><small>Align centres and edges while dragging.</small></span>
+                    </label>
+                    <label className="setting-check">
+                      <input type="checkbox" checked={drawing.openPropertiesOnSelect} onChange={(event) => void patch({ drawing: { ...drawing, openPropertiesOnSelect: event.target.checked } })} />
+                      <span><strong>Open Properties on selection</strong><small>Bring the inspector to the selected item.</small></span>
+                    </label>
+                  </div>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title"><strong>Print defaults</strong><span>Starting values for Print to PDF.</span></div>
+                  <div className="settings-grid three">
+                    <div className="setting"><label htmlFor="s-scale">Scale</label><select id="s-scale" value={settings.print.scale} onChange={(event) => void patch({ print: { ...settings.print, scale: event.target.value } })}>{SCALES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></div>
+                    <div className="setting"><label htmlFor="s-paper">Paper</label><select id="s-paper" value={settings.print.paper} onChange={(event) => void patch({ print: { ...settings.print, paper: event.target.value } })}>{PAPERS.map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
+                    <div className="setting"><label htmlFor="s-orientation">Orientation</label><select id="s-orientation" value={settings.print.landscape ? 'landscape' : 'portrait'} onChange={(event) => void patch({ print: { ...settings.print, landscape: event.target.value === 'landscape' } })}><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></div>
+                  </div>
+                  <div className="setting"><label htmlFor="s-subtitle">Default title-block job line</label><input id="s-subtitle" value={settings.print.subtitle} placeholder="Company, client, or project line" onChange={(event) => void patch({ print: { ...settings.print, subtitle: event.target.value } })} /></div>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title"><strong>CAD export defaults</strong><span>Control what accompanies DXF output.</span></div>
+                  <div className="settings-check-grid">
+                    <label className="setting-check"><input type="checkbox" checked={settings.dxf.includeSchedule} onChange={(event) => void patch({ dxf: { ...settings.dxf, includeSchedule: event.target.checked } })} /><span><strong>Write item schedule</strong><small>Export a schedule beside the DXF.</small></span></label>
+                    <label className="setting-check"><input type="checkbox" checked={settings.dxf.visibleLayersOnly} onChange={(event) => void patch({ dxf: { ...settings.dxf, visibleLayersOnly: event.target.checked } })} /><span><strong>Visible layers only</strong><small>Leave hidden plan layers out of CAD exports.</small></span></label>
+                  </div>
+                </section>
+              </>
+            ) : (
+              <>
+                <div className="settings-level-heading">
+                  <span><small>Application level</small><strong>Workspace and automation</strong></span>
+                  <button type="button" onClick={() => { patchApp(APP_DEFAULTS); void patch({ app: { checkOnLaunch: true }, catalog: { policy: 'notify', smallUpdateLimitMb: 5, checkIntervalHours: 12 }, inventory: { autoAbsorbGear: false, autoMatchShapes: false } }); }}>Restore app defaults</button>
                 </div>
 
-                <div className="settings-divider" />
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={settings.app.checkOnLaunch}
-                    onChange={(e) => void patch({ app: { ...settings.app, checkOnLaunch: e.target.checked } })}
-                  />
-                  <span>Look for a new version of Groundplan at launch</span>
-                </label>
-
-                <div className="settings-actions">
-                  <button onClick={() => void api.checkAppUpdate()}>Check for updates now</button>
+                <div className="settings-health-strip" aria-label="Current application settings summary">
+                  <span><small>Theme</small><strong>{appPreferences.appearance === 'system' ? 'System' : appPreferences.appearance === 'dark' ? 'Dark' : 'Light'}</strong></span>
+                  <span><small>Density</small><strong>{appPreferences.density === 'compact' ? 'Compact' : 'Comfortable'}</strong></span>
+                  <span><small>Panels open</small><strong>{openPanelCount}/3</strong></span>
                 </div>
-                <p className="hint">
-                  When a new Groundplan build is available you can update now, later, or schedule a
-                  reminder — and save open work before the restart. Checking also looks for a signed
-                  equipment catalog. Both are verified before anything is installed, and the copy you
-                  have is kept until the new one is in place.
-                </p>
+
+                <section className="settings-card">
+                  <div className="settings-card-title"><strong>Appearance</strong><span>Theme, information density and help cues.</span></div>
+                  <div className="settings-grid two">
+                    <div className="setting"><label htmlFor="s-theme">Interface theme</label><select id="s-theme" value={appPreferences.appearance} onChange={(event) => patchApp({ appearance: event.target.value as SettingsAppPreferences['appearance'] })}><option value="system">Follow system</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+                    <div className="setting"><label htmlFor="s-density">Panel density</label><select id="s-density" value={appPreferences.density} onChange={(event) => patchApp({ density: event.target.value === 'compact' ? 'compact' : 'comfortable' })}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div>
+                  </div>
+                  <label className="setting-check"><input type="checkbox" checked={appPreferences.showTooltips} onChange={(event) => patchApp({ showTooltips: event.target.checked })} /><span><strong>Show tool names on hover</strong><small>Display toolbar and control explanations.</small></span></label>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title"><strong>Workspace panels</strong><span>Choose the surfaces that stay visible while planning.</span></div>
+                  <div className="settings-check-grid three">
+                    <label className="setting-check"><input type="checkbox" checked={appPreferences.railOpen} onChange={(event) => patchApp({ railOpen: event.target.checked })} /><span><strong>Left browser</strong><small>Plans, equipment and inventory.</small></span></label>
+                    <label className="setting-check"><input type="checkbox" checked={appPreferences.inspectorOpen} onChange={(event) => patchApp({ inspectorOpen: event.target.checked })} /><span><strong>Right inspector</strong><small>Properties, rooms and layers.</small></span></label>
+                    <label className="setting-check"><input type="checkbox" checked={appPreferences.toolDockOpen} onChange={(event) => patchApp({ toolDockOpen: event.target.checked })} /><span><strong>Side tools</strong><small>Movable drawing-tool palette.</small></span></label>
+                  </div>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title"><strong>Side toolbar</strong><span>Default position and footprint of the movable tool palette.</span></div>
+                  <div className="settings-grid two">
+                    <div className="setting"><label htmlFor="s-dock-side">Dock position</label><select id="s-dock-side" value={appPreferences.toolDockSide} disabled={!appPreferences.toolDockOpen} onChange={(event) => patchApp({ toolDockSide: event.target.value as SettingsAppPreferences['toolDockSide'] })}><option value="left">Left</option><option value="right">Right</option><option value="floating">Floating</option></select></div>
+                    <div className="setting"><label htmlFor="s-dock-size">Toolbar size</label><select id="s-dock-size" value={appPreferences.toolDockCompact ? 'compact' : 'standard'} disabled={!appPreferences.toolDockOpen} onChange={(event) => patchApp({ toolDockCompact: event.target.value === 'compact' })}><option value="standard">Standard</option><option value="compact">Compact</option></select></div>
+                  </div>
+                  <p className={`settings-note${appPreferences.toolDockOpen ? '' : ' is-dependency-warning'}`}>
+                    {appPreferences.toolDockOpen
+                      ? 'Tool order and hidden tools remain available from the gear button on the side toolbar.'
+                      : 'Turn on Side tools under Workspace panels to change its position or size.'}
+                  </p>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title"><strong>Inventory automation</strong><span>Decide how imported gear becomes reusable plan objects.</span></div>
+                  <div className="settings-check-grid">
+                    <label className="setting-check"><input type="checkbox" checked={settings.inventory.autoAbsorbGear} onChange={(event) => void patch({ inventory: { ...settings.inventory, autoAbsorbGear: event.target.checked } })} /><span><strong>Absorb imported gear</strong><small>Add new gear-list items to this computer’s inventory.</small></span></label>
+                    <label className="setting-check"><input type="checkbox" checked={settings.inventory.autoMatchShapes} onChange={(event) => void patch({ inventory: { ...settings.inventory, autoMatchShapes: event.target.checked } })} /><span><strong>Auto-match drawn shapes</strong><small>Give unshaped items the closest known symbol.</small></span></label>
+                  </div>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title"><strong>Updates</strong><span>Application and equipment-catalog update behaviour.</span></div>
+                  <div className="settings-grid three">
+                    <div className="setting"><label htmlFor="s-policy">Catalog updates</label><select id="s-policy" value={settings.catalog.policy} onChange={(event) => void patch({ catalog: { ...settings.catalog, policy: event.target.value as Settings['catalog']['policy'] } })}><option value="automatic">Install automatically</option><option value="automatic-small">Install small updates</option><option value="notify">Notify and ask</option><option value="manual">Manual only</option></select></div>
+                  </div>
+                  <div className="settings-slider-stack">
+                    <SnappySlider
+                      label="Small update limit"
+                      values={[1, 5, 10, 25, 50]}
+                      defaultValue={5}
+                      min={1}
+                      max={50}
+                      step={1}
+                      suffix=" MB"
+                      compact
+                      disabled={settings.catalog.policy !== 'automatic-small'}
+                      value={settings.catalog.smallUpdateLimitMb}
+                      onChange={(next) => void patch({ catalog: { ...settings.catalog, smallUpdateLimitMb: next } })}
+                    />
+                    <SnappySlider
+                      label="Check interval"
+                      values={[1, 6, 12, 24, 48, 72]}
+                      defaultValue={12}
+                      min={1}
+                      max={72}
+                      step={1}
+                      suffix=" h"
+                      compact
+                      value={settings.catalog.checkIntervalHours}
+                      onChange={(next) => void patch({ catalog: { ...settings.catalog, checkIntervalHours: next } })}
+                    />
+                  </div>
+                  <div className="settings-actions-row">
+                    <label className="setting-check"><input type="checkbox" checked={settings.app.checkOnLaunch} onChange={(event) => void patch({ app: { checkOnLaunch: event.target.checked } })} /><span><strong>Check at launch</strong><small>Look for a new Groundplan build shortly after startup.</small></span></label>
+                    <button type="button" onClick={() => void api.checkAppUpdate()}>Check now</button>
+                  </div>
+                </section>
               </>
             )}
-          </div>
+          </main>
         </div>
 
-        <div className="sheet-actions settings-footer">
-          <span className={`settings-saved${saved ? ' is-on' : ''}`}>Saved</span>
-          <button className="btn-primary" onClick={onClose}>
-            Done
-          </button>
-        </div>
-      </div>
+        <footer className="sheet-actions settings-footer">
+          <span>Changes save automatically</span>
+          <button className="btn-primary" onClick={onClose}>Done</button>
+        </footer>
+      </section>
     </div>
   );
 }

@@ -9,7 +9,9 @@
  */
 
 import { BrowserWindow } from 'electron';
-import { writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+
+import { atomicWriteFile } from './storage.js';
 
 /** Architectural scales, as the fraction of an inch that represents one foot. */
 export const SCALES = [
@@ -192,7 +194,9 @@ export async function printPlanToPdf(
       margins: { marginType: 'none' },
       pageRanges: '1',
     });
-    await writeFile(target, pdf);
+    await atomicWriteFile(target, pdf, {
+      backupPath: existsSync(target) ? `${target}.bak` : undefined,
+    });
     return fitCheck(request);
   } finally {
     win.destroy();

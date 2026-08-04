@@ -113,6 +113,11 @@ export interface InventoryItem {
    * a datasheet or a photograph rather than from something someone drew.
    */
   tracedIcon?: { paths: Array<{ points: number[]; closed: boolean }>; width: number; height: number };
+  /**
+   * Small photo preview (JPEG/PNG data URL) shown when there is no traced or
+   * harvested symbol — so a missing icon can be replaced with a picture.
+   */
+  photoDataUrl?: string;
   addedAt: string;
 }
 
@@ -173,6 +178,7 @@ export interface IncomingItem {
   mapReason?: string;
   notes?: string;
   tracedIcon?: InventoryItem['tracedIcon'];
+  photoDataUrl?: string;
   symbolAsset?: InventorySymbolAsset;
 }
 
@@ -294,6 +300,7 @@ export function mergeItems(
         mapReason: item.mapReason,
         notes: item.notes,
         tracedIcon: item.tracedIcon,
+        photoDataUrl: item.photoDataUrl,
         timesSeen: 0,
         legacyTimesSeen: provenanceId ? 0 : 1,
         provenanceIds: provenanceId ? [provenanceId] : [],
@@ -319,21 +326,28 @@ export function mergeItems(
       existing.department = item.department;
       changed = true;
     }
-    // A real symbol always beats a name-only entry.
-    if (item.symbolPath && item.symbolPath !== existing.symbolPath) {
-      existing.symbolPath = item.symbolPath;
-      changed = true;
-    }
-    if (item.symbolAsset && item.symbolAsset.hash !== existing.symbolAsset?.hash) {
-      existing.symbolAsset = item.symbolAsset;
-      changed = true;
-    }
-    if (item.symbolName && item.symbolName !== existing.symbolName) {
-      existing.symbolName = item.symbolName;
-      changed = true;
+    // A real symbol always beats a name-only entry — except a hand map the
+    // user chose in the editor; harvest/import must not redirect that.
+    if (existing.mappedBy !== 'user') {
+      if (item.symbolPath && item.symbolPath !== existing.symbolPath) {
+        existing.symbolPath = item.symbolPath;
+        changed = true;
+      }
+      if (item.symbolAsset && item.symbolAsset.hash !== existing.symbolAsset?.hash) {
+        existing.symbolAsset = item.symbolAsset;
+        changed = true;
+      }
+      if (item.symbolName && item.symbolName !== existing.symbolName) {
+        existing.symbolName = item.symbolName;
+        changed = true;
+      }
     }
     if (item.tracedIcon && !existing.tracedIcon) {
       existing.tracedIcon = item.tracedIcon;
+      changed = true;
+    }
+    if (item.photoDataUrl && !existing.photoDataUrl) {
+      existing.photoDataUrl = item.photoDataUrl;
       changed = true;
     }
     if (item.mappedBy && !existing.mappedBy) {
@@ -367,6 +381,10 @@ export interface InventoryItemPatch {
   notes?: string;
   width?: number;
   height?: number;
+  /** Set or replace the traced outline; pass null to clear it. */
+  tracedIcon?: InventoryItem['tracedIcon'] | null;
+  /** Set or replace the photo preview; pass null to clear it. */
+  photoDataUrl?: string | null;
 }
 
 export interface RemovedInventoryItem {
@@ -423,15 +441,48 @@ export function updateInventoryItem(
 
   const department = patch.department === undefined ? item.department : patch.department.trim() || undefined;
   const notes = patch.notes === undefined ? item.notes : patch.notes.trim() || undefined;
+
+  let tracedChanged = false;
+  if (patch.tracedIcon !== undefined) {
+    if (patch.tracedIcon === null) {
+      tracedChanged = item.tracedIcon != null;
+    } else {
+      const next = patch.tracedIcon;
+      const prev = item.tracedIcon;
+      tracedChanged =
+        !prev ||
+        prev.width !== next.width ||
+        prev.height !== next.height ||
+        prev.paths.length !== next.paths.length ||
+        JSON.stringify(prev.paths) !== JSON.stringify(next.paths);
+    }
+  }
+  let photoChanged = false;
+  if (patch.photoDataUrl !== undefined) {
+    if (patch.photoDataUrl === null) {
+      photoChanged = item.photoDataUrl != null;
+    } else if (typeof patch.photoDataUrl === 'string' && patch.photoDataUrl.startsWith('data:image/')) {
+      photoChanged = patch.photoDataUrl !== item.photoDataUrl;
+    } else {
+      return { ok: false, reason: 'photo must be an image data URL' };
+    }
+  }
+
   const changed =
     wantedName !== item.name ||
     department !== item.department ||
     notes !== item.notes ||
+    tracedChanged ||
+    photoChanged ||
     (hasWidth && (patch.width !== item.width || patch.height !== item.height || item.sizeSource !== 'user'));
 
   if (!changed) return { ok: true, changed: false, value: item };
 
   if (wantedName !== item.name) {
+    // Keep the file-side symbol label so rename does not break placement.
+    if (item.symbolPath && !item.symbolName) {
+      item.symbolName = item.name;
+    }
     item.name = wantedName;
     item.category = classify(wantedName).category;
   }
@@ -441,6 +492,27 @@ export function updateInventoryItem(
     item.width = patch.width;
     item.height = patch.height;
     item.sizeSource = 'user';
+  }
+  if (patch.tracedIcon === null) {
+    delete item.tracedIcon;
+    if (item.mappedBy === 'user' && item.mapReason?.includes('photo')) {
+      delete item.mappedBy;
+      delete item.mapReason;
+    }
+  } else if (patch.tracedIcon && tracedChanged) {
+    item.tracedIcon = patch.tracedIcon;
+    item.mappedBy = 'user';
+    item.mapReason = 'traced from uploaded photo';
+    if (!hasWidth && patch.tracedIcon.width > 0 && patch.tracedIcon.height > 0) {
+      item.width = patch.tracedIcon.width;
+      item.height = patch.tracedIcon.height;
+      item.sizeSource = 'user';
+    }
+  }
+  if (patch.photoDataUrl === null) {
+    delete item.photoDataUrl;
+  } else if (typeof patch.photoDataUrl === 'string' && photoChanged) {
+    item.photoDataUrl = patch.photoDataUrl;
   }
   return { ok: true, changed: true, value: item };
 }

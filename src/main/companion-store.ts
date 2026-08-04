@@ -106,7 +106,7 @@ export async function loadCompanion(
     companion,
     freshness: status.freshness,
     damaged: false,
-    derived: false,
+    derived: companion.roomIsDerived === true,
     reason: status.reason,
   };
 }

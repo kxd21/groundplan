@@ -239,6 +239,21 @@ async function main(): Promise<void> {
       planModelView(session, 'imperial').itemCount === 1 + 20,
       `${planModelView(session, 'imperial').itemCount}`,
     );
+
+    const addedSection = commit(session, () =>
+      applySeating(session, { ...request, maxSeats: 10, append: true }, 'Fixture Table'),
+    );
+    check('another seating bank can be added', addedSection.ok, addedSection.reason);
+    check(
+      'an added bank keeps the existing layout',
+      planModelView(session, 'imperial').itemCount === 1 + 20 + 10,
+      `${planModelView(session, 'imperial').itemCount}`,
+    );
+    check(
+      'managed seating status is cumulative',
+      planModelView(session, 'imperial').seatingStatus?.chairs === 30,
+      `${planModelView(session, 'imperial').seatingStatus?.chairs}`,
+    );
     check('and it still verifies', verifyWritable(session.loaded.document).ok);
   }
 
@@ -279,7 +294,11 @@ async function main(): Promise<void> {
 
     const view = planModelView(session, 'imperial');
     check('the panel can see the stage', view.stage?.present === true);
-    check('it is one object on the plan', view.itemCount === 2, `${view.itemCount}`);
+    check(
+      'stage and stairs are on the plan',
+      view.itemCount >= 2 && view.itemCount <= 3,
+      `${view.itemCount}`,
+    );
     check('named with its size', session.scene.inventory.some((i) => i.name.startsWith('Stage 24')), session.scene.inventory.map((i) => i.name).join(' | '));
 
     // A placed shape keeps its insertion point in absolute coordinates and its

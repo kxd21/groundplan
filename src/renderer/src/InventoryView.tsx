@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
-import { IconPlus, IconTrash, IconFit, IconExport, IconWarning, IconFolder } from './icons.js';
+import { IconPlus, IconTrash, IconFit, IconExport, IconWarning, IconFolder, IconEdit } from './icons.js';
+import InventoryItemEditor from './InventoryItemEditor.js';
 
 const api = window.groundplan;
 const PAGE_SIZE = 200;
@@ -18,6 +19,10 @@ interface InventoryItem {
   symbolName?: string;
   mappedBy?: 'auto' | 'user';
   mapReason?: string;
+  tracedIcon?: { paths: Array<{ points: number[]; closed: boolean }>; width: number; height: number };
+  photoDataUrl?: string;
+  /** True when a photo exists but was omitted from the list payload. */
+  hasPhoto?: boolean;
   timesSeen: number;
   peakQuantity: number;
   notes?: string;
@@ -93,6 +98,7 @@ export function InventoryView({
 }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [editorId, setEditorId] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [wDraft, setWDraft] = useState('');
   const [hDraft, setHDraft] = useState('');
@@ -100,6 +106,7 @@ export function InventoryView({
   const [newName, setNewName] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [harvestProgress, setHarvestProgress] = useState<HarvestProgress | null>(null);
+  const [photos, setPhotos] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     setEditing(null);
@@ -110,7 +117,30 @@ export function InventoryView({
 
   const items = inventory?.items ?? [];
   const shownItems = items.slice(0, visibleCount);
+
+  useEffect(() => {
+    const wanted = shownItems.filter((i) => i.hasPhoto && !(i.id in photos)).map((i) => i.id);
+    if (wanted.length === 0) return;
+    let live = true;
+    void Promise.all(
+      wanted.slice(0, 60).map(async (id) => {
+        const reply = await api.inventoryGetPhoto(id);
+        return [id, reply.ok && reply.photoDataUrl ? reply.photoDataUrl : null] as const;
+      }),
+    ).then((pairs) => {
+      if (!live) return;
+      setPhotos((prev) => {
+        const next = { ...prev };
+        for (const [id, url] of pairs) next[id] = url;
+        return next;
+      });
+    });
+    return () => {
+      live = false;
+    };
+  }, [shownItems, photos]);
   const sized = useMemo(() => items.filter((i) => i.width && i.height).length, [items]);
+  const editorItem = editorId ? items.find((i) => i.id === editorId) ?? null : null;
 
   const beginSizeEdit = (item: InventoryItem) => {
     setEditing(item.id);
@@ -127,7 +157,7 @@ export function InventoryView({
       return;
     }
     const reply = await api.inventoryUpdate(item.id, { width, height });
-    if (reply.ok && reply.inventory) {
+    if (reply.ok) {
       onChanged();
       onStatus(`${item.name} is now ${sizeLabel(width, height, units)}`);
     } else if (reply.reason) onError(reply.reason);
@@ -138,7 +168,7 @@ export function InventoryView({
     setRenaming(null);
     if (!wanted || wanted === item.name) return;
     const reply = await api.inventoryUpdate(item.id, { name: wanted });
-    if (reply.ok && reply.inventory) {
+    if (reply.ok) {
       onChanged();
       onStatus(`Renamed to ${wanted}`);
     } else if (reply.reason) onError(reply.reason);
@@ -147,7 +177,7 @@ export function InventoryView({
   /** Copies an item so variations of the same thing can live side by side. */
   const duplicate = async (item: InventoryItem) => {
     const reply = await api.inventoryDuplicate(item.id);
-    if (reply.ok && reply.inventory) {
+    if (reply.ok) {
       onChanged();
       onStatus(`Copied ${item.name} — rename the copy to tell them apart`);
       if (reply.id) {
@@ -247,7 +277,7 @@ export function InventoryView({
     setNewName('');
     if (!name) return;
     const reply = await api.inventoryAdd(name, department ?? undefined);
-    if (reply.ok && reply.inventory) {
+    if (reply.ok) {
       onChanged();
       onStatus(`Added ${name}`);
     } else if (reply.reason) onError(reply.reason);
@@ -435,6 +465,17 @@ export function InventoryView({
         ) : (
           shownItems.map((item) => (
             <div className="gear-row inv-row" key={item.id}>
+              <span className="inv-thumb" aria-hidden>
+                {photos[item.id] ? (
+                  <img src={photos[item.id]!} alt="" />
+                ) : item.tracedIcon?.paths?.length ? (
+                  <span className="inv-thumb-dot has-icon" title="Has outline" />
+                ) : item.symbolPath ? (
+                  <span className="inv-thumb-dot has-symbol" title="Has plan symbol" />
+                ) : (
+                  <span className="inv-thumb-dot missing" title="No icon" />
+                )}
+              </span>
               {renaming === item.id ? (
                 <input
                   autoFocus
@@ -536,6 +577,14 @@ export function InventoryView({
               <span className="gear-actions">
                 <button
                   className="icon-btn"
+                  title="Edit name, size, and icon"
+                  aria-label={`Edit ${item.name}`}
+                  onClick={() => setEditorId(item.id)}
+                >
+                  <IconEdit size={13} />
+                </button>
+                <button
+                  className="icon-btn"
                   disabled={!canPlace}
                   title={canPlace ? 'Place on the plan' : 'Open a plan first'}
                   aria-label={`Place ${item.name} on the plan`}
@@ -572,6 +621,17 @@ export function InventoryView({
           </div>
         )}
       </div>
+
+      {editorItem && (
+        <InventoryItemEditor
+          item={editorItem}
+          units={units}
+          onClose={() => setEditorId(null)}
+          onSaved={onChanged}
+          onError={onError}
+          onStatus={onStatus}
+        />
+      )}
     </div>
   );
 }

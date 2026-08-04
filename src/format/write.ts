@@ -362,3 +362,15 @@ export function packContainer(original: Buffer, body: Buffer): Buffer {
   const out = CFB.write(cf, { type: 'buffer' }) as Uint8Array;
   return Buffer.from(out);
 }
+
+/**
+ * Builds a clean OLE compound that only carries Contents.
+ *
+ * Used when the source file was carved/repaired on open — re-reading that
+ * damaged compound for packContainer is unsafe.
+ */
+export function packFreshContainer(body: Buffer): Buffer {
+  const compound = CFB.utils.cfb_new();
+  CFB.utils.cfb_add(compound, 'Contents', body);
+  return Buffer.from(CFB.write(compound, { type: 'buffer' }) as Uint8Array);
+}

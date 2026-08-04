@@ -46,6 +46,7 @@ import {
   UNITS_PER_METRE,
 } from '../src/format/units.js';
 import { fixturePlanBuffer } from './test-fixture.js';
+import { buildNewRoom, type NewRoomCurveMethod } from '../src/format/new-room.js';
 
 let passed = 0;
 let failed = 0;
@@ -209,6 +210,64 @@ console.log('\nroom geometry\n');
 }
 
 // ---------------------------------------------------------------------------
+console.log('\nnew-plan room builder\n');
+
+{
+  const width = 60 * UNITS_PER_FOOT;
+  const depth = 40 * UNITS_PER_FOOT;
+  const rounded = buildNewRoom({
+    shape: 'rounded',
+    width,
+    depth,
+    cornerRadius: 4 * UNITS_PER_FOOT,
+  });
+  check('New Plan builds a true rounded rectangle', rounded.ok && rounded.room?.walls.length === 8, rounded.reason);
+  check('the rounded room holds four exact corner arcs', rounded.room?.walls.filter((run) => run.bulge).length === 4);
+
+  const circle = buildNewRoom({ shape: 'circle', diameter: 50 * UNITS_PER_FOOT });
+  check('New Plan builds an exact circle', Boolean(circle.ok && circle.room?.walls.every((run) => !!run.bulge)), circle.reason);
+
+  const stadium = buildNewRoom({ shape: 'stadium', width, depth });
+  check('New Plan builds a stadium with two semicircular ends', stadium.ok && stadium.room?.walls.filter((run) => run.bulge).length === 2, stadium.reason);
+
+  const lRoom = buildNewRoom({
+    shape: 'l-shape',
+    width,
+    depth,
+    notchWidth: 20 * UNITS_PER_FOOT,
+    notchDepth: 15 * UNITS_PER_FOOT,
+  });
+  check('New Plan builds a six-run L room', lRoom.ok && lRoom.room?.walls.length === 6, lRoom.reason);
+  check('the L-room recess removes exact floor area', near(roomArea(lRoom.room!), (60 * 40 - 20 * 15) * UNITS_PER_FOOT ** 2));
+
+  const uRoom = buildNewRoom({
+    shape: 'u-shape',
+    width,
+    depth,
+    notchWidth: 20 * UNITS_PER_FOOT,
+    notchDepth: 15 * UNITS_PER_FOOT,
+  });
+  check('New Plan builds an eight-run U room', uRoom.ok && uRoom.room?.walls.length === 8, uRoom.reason);
+  check('an impossible recess is explained instead of clipped', !buildNewRoom({ shape: 'l-shape', width, depth, notchWidth: width, notchDepth: 10 }).ok);
+
+  const curveValues: Record<NewRoomCurveMethod, number> = {
+    radius: 40 * UNITS_PER_FOOT,
+    sagitta: 5 * UNITS_PER_FOOT,
+    angle: 90,
+    'arc-length': 70 * UNITS_PER_FOOT,
+  };
+  for (const method of Object.keys(curveValues) as NewRoomCurveMethod[]) {
+    const curved = buildNewRoom({
+      shape: 'rectangle',
+      width,
+      depth,
+      curve: { wallIndex: 0, method, value: curveValues[method], outward: true },
+    });
+    check(`New Plan curves a wall by ${method}`, curved.ok && !!curved.room?.walls[0].bulge, curved.reason);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('\ncapacity\n');
 
 {
@@ -308,6 +367,40 @@ console.log('\ncompanion document\n');
     'the area is unchanged by the round trip',
     Math.round(roomArea(round!.rooms[0])) === Math.round(roomArea(room)),
   );
+
+  companion.background = {
+    name: 'venue-map.png',
+    dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    visible: true,
+    opacity: 0.42,
+    x: -120,
+    y: 240,
+    width: 4800,
+    height: 3600,
+    rotation: 7.5,
+    flipX: false,
+    flipY: false,
+    locked: false,
+    includeInExport: true,
+    blendMode: 'multiply',
+    brightness: 1,
+    contrast: 1.1,
+    saturation: 0.8,
+    grayscale: 0,
+  };
+  companion.roomIsDerived = true;
+  const withBackground = parseCompanion(JSON.parse(JSON.stringify(companion)));
+  check('a background image survives the companion round trip', withBackground?.background?.name === 'venue-map.png');
+  check(
+    'background opacity and placement survive',
+    withBackground?.background?.opacity === 0.42 && withBackground.background.x === -120,
+  );
+  check('a background-only companion keeps its room marked derived', withBackground?.roomIsDerived === true);
+  const unsafeBackground = parseCompanion({
+    ...companion,
+    background: { ...companion.background, dataUrl: 'https://example.com/tracker.png' },
+  });
+  check('a remote background URL is dropped', !!unsafeBackground && unsafeBackground.background == null);
 
   // Staleness: the plan changed underneath the companion.
   const edited = loadBuffer(FIXTURE, 'fixture.rv4').document;

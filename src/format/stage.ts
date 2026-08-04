@@ -22,6 +22,8 @@ const IN = UNITS_PER_INCH;
 /** Deck sizes the trade stocks, longest edge first. */
 export const DECK_SIZES: Array<{ label: string; width: number; depth: number }> = [
   { label: "4' x 8'", width: 8 * FT, depth: 4 * FT },
+  { label: "6' x 8'", width: 6 * FT, depth: 8 * FT },
+  { label: "8' x 6'", width: 8 * FT, depth: 6 * FT },
   { label: "4' x 6'", width: 6 * FT, depth: 4 * FT },
   { label: "4' x 4'", width: 4 * FT, depth: 4 * FT },
   { label: "2' x 8'", width: 8 * FT, depth: 2 * FT },
@@ -104,9 +106,50 @@ function tileLevel(level: StageLevel, index: number, notes: string[]): Deck[] {
   let shortDepth = 0;
   let shortWidth = 0;
 
+  /** Prefer a stock size that tiles the level with no remainder; keep 4×8 primary when it fits. */
+  const pickDepth = (remaining: number, fullWidth: number) => {
+    const fits = DECK_SIZES.filter((d) => d.depth <= remaining + 1e-6);
+    if (!fits.length) return undefined;
+    const exact = fits.filter((d) => Math.abs(remaining % d.depth) < 1e-6);
+    const widthFor = (depth: number) =>
+      DECK_SIZES.filter((s) => s.depth === depth && Math.abs(fullWidth % s.width) < 1e-6).sort(
+        (a, b) => b.width - a.width,
+      )[0];
+    const perfect = exact.filter((d) => widthFor(d.depth));
+    if (perfect.length) {
+      // Classic 4×8 wins when it tiles both axes — keep existing stage builds stable.
+      const primaryWidthOk =
+        Math.abs(fullWidth % primary.width) < 1e-6 &&
+        Math.abs(remaining % primary.depth) < 1e-6;
+      if (primaryWidthOk) {
+        const primaryPerfect = perfect.find((d) => Math.abs(d.depth - primary.depth) < 1e-6);
+        if (primaryPerfect) return primaryPerfect;
+      }
+      // Otherwise prefer the tiling with the fewest decks (e.g. 7×6×8 over 14×4×6).
+      return perfect.sort((a, b) => {
+        const aDecks = (fullWidth / widthFor(a.depth)!.width) * (remaining / a.depth);
+        const bDecks = (fullWidth / widthFor(b.depth)!.width) * (remaining / b.depth);
+        return aDecks - bDecks || b.depth - a.depth;
+      })[0];
+    }
+    if (exact.length) {
+      const primaryExact = exact.find((d) => Math.abs(d.depth - primary.depth) < 1e-6);
+      if (primaryExact) return primaryExact;
+      return exact.sort((a, b) => b.depth - a.depth)[0];
+    }
+    return fits.sort((a, b) => b.depth - a.depth)[0];
+  };
+  const pickWidth = (remaining: number, depth: number) => {
+    const fits = DECK_SIZES.filter((d) => d.depth === depth && d.width <= remaining + 1e-6);
+    if (!fits.length) return undefined;
+    const exact = fits.filter((d) => Math.abs(remaining % d.width) < 1e-6).sort((a, b) => b.width - a.width);
+    if (exact.length) return exact[0];
+    return fits.sort((a, b) => b.width - a.width)[0];
+  };
+
   for (let y = 0; y < level.depth - 1e-6; ) {
     const remainingDepth = level.depth - y;
-    const depthChoice = DECK_SIZES.filter((d) => d.depth <= remainingDepth + 1e-6).sort((a, b) => b.depth - a.depth)[0];
+    const depthChoice = pickDepth(remainingDepth, level.width);
     if (!depthChoice) {
       shortDepth = remainingDepth;
       break;
@@ -114,10 +157,7 @@ function tileLevel(level: StageLevel, index: number, notes: string[]): Deck[] {
 
     for (let x = 0; x < level.width - 1e-6; ) {
       const remainingWidth = level.width - x;
-      const choice = DECK_SIZES.filter(
-        (d) => d.depth === depthChoice.depth && d.width <= remainingWidth + 1e-6,
-      ).sort((a, b) => b.width - a.width)[0];
-
+      const choice = pickWidth(remainingWidth, depthChoice.depth);
       if (!choice) {
         shortWidth = Math.max(shortWidth, remainingWidth);
         break;
@@ -351,24 +391,125 @@ export function simpleStage(
   depth: number,
   height = 24 * IN,
   name = 'Stage',
+  stairEdges: StairEdge[] = ['front'],
 ): StageBuild {
+  const stairs: Stair[] = stairEdges.map((edge) => ({
+    id: nextId('stair'),
+    level: 0,
+    edge,
+    offset: edge === 'left' || edge === 'right' ? depth / 2 - 2 * FT : width / 2 - 2 * FT,
+    width: 4 * FT,
+    riserHeight: 8 * IN,
+    handrail: height > 30 * IN,
+  }));
+
   return {
     id: nextId('stage'),
     name,
     levels: [{ x, y, width, depth, height, label: name }],
-    stairs: [
-      {
-        id: nextId('stair'),
-        level: 0,
-        edge: 'front',
-        offset: width / 2 - 2 * FT,
-        width: 4 * FT,
-        riserHeight: 8 * IN,
-        handrail: height > 30 * IN,
-      },
-    ],
+    stairs,
     skirted: true,
   };
+}
+
+/**
+ * Two house-riser tiers stacked front-to-back — the Card Party / banquet
+ * house-riser pattern (e.g. 8'×42' at 32" in front of 8'×42' at 24").
+ */
+export function tieredStage(
+  x: number,
+  y: number,
+  width: number,
+  front: { depth: number; height: number; label?: string },
+  back: { depth: number; height: number; label?: string },
+  stairEdges: StairEdge[] = ['left', 'right'],
+): StageBuild {
+  const frontLevel: StageLevel = {
+    x,
+    y: y + back.depth,
+    width,
+    depth: front.depth,
+    height: front.height,
+    label: front.label ?? `House Riser ${(front.depth / FT).toFixed(0)}' X ${(width / FT).toFixed(0)}' at ${(front.height / IN).toFixed(0)}" Height`,
+  };
+  const backLevel: StageLevel = {
+    x,
+    y,
+    width,
+    depth: back.depth,
+    height: back.height,
+    label: back.label ?? `House Riser ${(back.depth / FT).toFixed(0)}' X ${(width / FT).toFixed(0)}' at ${(back.height / IN).toFixed(0)}" Height`,
+  };
+  // Stairs attach to the taller (usually front) level.
+  const climbLevel = front.height >= back.height ? 0 : 1;
+  const climb = climbLevel === 0 ? frontLevel : backLevel;
+  const stairs: Stair[] = stairEdges.map((edge) => ({
+    id: nextId('stair'),
+    level: climbLevel,
+    edge,
+    offset: edge === 'left' || edge === 'right' ? climb.depth / 2 - 2 * FT : width / 2 - 2 * FT,
+    width: 4 * FT,
+    riserHeight: 8 * IN,
+    handrail: climb.height > 30 * IN,
+  }));
+
+  return {
+    id: nextId('stage'),
+    name: 'Tiered stage',
+    // Front listed first so stair level index 0 matches the climb level when
+    // the front is taller (the common case).
+    levels: [frontLevel, backLevel],
+    stairs,
+    skirted: true,
+  };
+}
+
+/** Tread rectangles for drawing a stair unit on the plan. */
+export function stairDeckOutlines(build: StageBuild): Point[][] {
+  const out: Point[][] = [];
+  for (const stair of build.stairs) {
+    const level = build.levels[stair.level];
+    if (!level) continue;
+    const steps = stairSteps(level.height, stair.riserHeight);
+    const tread = 11 * IN;
+    for (let i = 0; i < steps.count; i++) {
+      const run = (i + 1) * tread;
+      let x = 0;
+      let y = 0;
+      let w = stair.width;
+      let d = tread;
+      switch (stair.edge) {
+        case 'front':
+          x = level.x + stair.offset;
+          y = level.y + level.depth + i * tread;
+          break;
+        case 'back':
+          x = level.x + stair.offset;
+          y = level.y - run;
+          break;
+        case 'left':
+          x = level.x - run;
+          y = level.y + stair.offset;
+          w = tread;
+          d = stair.width;
+          break;
+        case 'right':
+          x = level.x + level.width + i * tread;
+          y = level.y + stair.offset;
+          w = tread;
+          d = stair.width;
+          break;
+      }
+      out.push([
+        { x, y },
+        { x: x + w, y },
+        { x: x + w, y: y + d },
+        { x, y: y + d },
+        { x, y },
+      ]);
+    }
+  }
+  return out;
 }
 
 /** Room-shaped outline of a level, for containment tests. */

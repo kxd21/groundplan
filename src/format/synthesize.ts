@@ -601,15 +601,34 @@ export function createLabel(doc: RVDocument, spec: LabelSpec): SynthesisResult {
       { x: spec.x, y: spec.y },
     ],
     angle: spec.angle ?? 0,
+    color: (spec.color ?? DEFAULT_COLOR) >>> 0,
     bold: fontBlock.readInt32LE(16) >= 600,
+    font: {
+      family: face || 'Arial',
+      height: fontBlock.readInt32LE(0),
+      width: fontBlock.readInt32LE(4),
+      weight: fontBlock.readInt32LE(16),
+      italic: fontBlock.readUInt8(20) !== 0,
+      underline: fontBlock.readUInt8(21) !== 0,
+      strikeOut: fontBlock.readUInt8(22) !== 0,
+    },
     labels: face ? [face, text] : [text],
     children: [],
     fields: {
       boundsAt: 4,
       placementAt: LABEL_PLACEMENT,
       angleAt: LABEL_ANGLE,
+      fontHeightAt: LABEL_FONT,
+      fontWidthAt: LABEL_FONT + 4,
+      fontWeightAt: LABEL_FONT + 16,
+      fontItalicAt: LABEL_FONT + 20,
+      fontUnderlineAt: LABEL_FONT + 21,
+      fontStrikeOutAt: LABEL_FONT + 22,
+      fontFaceAt: LABEL_FONT + LOGFONT_FIXED_BYTES,
+      fontFaceLen: faceLen,
       textAt,
       textLen: encoded.length,
+      colorAt: textAt + 1 + encoded.length,
     },
     headerOverride: header,
     trailerOverride: Buffer.alloc(0),
@@ -911,6 +930,22 @@ export function circleOutline(diameter: number, segments = 48): Point[][] {
     const angle = (i / segments) * 2 * Math.PI;
     points.push({ x: r * Math.cos(angle), y: r * Math.sin(angle) });
   }
+  return [points];
+}
+
+/**
+ * A quarter-circle deck filling the bounding box (LEMG-style curved corner).
+ * Arc runs from +X through to +Y; straight edges close back to the origin corner.
+ */
+export function quarterCircleOutline(width: number, height: number, segments = 24): Point[][] {
+  const hw = width / 2;
+  const hh = height / 2;
+  const points: Point[] = [{ x: -hw, y: -hh }];
+  for (let i = 0; i <= segments; i++) {
+    const angle = (i / segments) * (Math.PI / 2);
+    points.push({ x: -hw + width * Math.cos(angle), y: -hh + height * Math.sin(angle) });
+  }
+  points.push({ x: -hw, y: -hh });
   return [points];
 }
 

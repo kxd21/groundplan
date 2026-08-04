@@ -13,7 +13,7 @@
 
 import { loadBuffer, type LoadedFile } from '../format/index.js';
 import { buildScene, type Scene } from '../format/scene.js';
-import { serializeArchive, roundTrip, packContainer } from '../format/write.js';
+import { serializeArchive, roundTrip, packContainer, packFreshContainer } from '../format/write.js';
 import { indexDocument, type DocumentIndex } from '../format/edit.js';
 import { createHash } from 'node:crypto';
 
@@ -90,7 +90,18 @@ export class Session {
 
   /** A complete file, ready to write. */
   file(): Buffer {
+    // Repaired opens came from a carved/damaged compound — do not re-parse it.
+    if (this.loaded.repaired) return packFreshContainer(this.body());
     return packContainer(this.originalFile, this.body());
+  }
+
+  /**
+   * Archive body last known to match disk (or the open revision).
+   * Companion fingerprints must use this when the session is dirty so a
+   * sidecar never claims freshness against bytes that never reached disk.
+   */
+  savedArchiveBody(): Buffer {
+    return this.savedBody;
   }
 
   /** Call before mutating, so the change can be undone. */
@@ -117,7 +128,10 @@ export class Session {
   }
 
   private restore(body: Buffer): void {
-    this.adopt(loadBuffer(packContainer(this.originalFile, body), this.path));
+    const packed = this.loaded.repaired
+      ? packFreshContainer(body)
+      : packContainer(this.originalFile, body);
+    this.adopt(loadBuffer(packed, this.path));
   }
 
   canUndo(): boolean {

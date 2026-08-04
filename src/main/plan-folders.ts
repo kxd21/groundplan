@@ -26,12 +26,20 @@ export interface PlanFolder {
   parentId: string | null;
   createdAt: string;
   updatedAt: string;
+  description?: string;
+  color?: string;
+  favorite?: boolean;
 }
+
+export type PlanWorkflowStatus = 'active' | 'review' | 'approved' | 'archived';
 
 export interface PlanFolderMembership {
   folderId: string;
   path: string;
   addedAt: string;
+  status?: PlanWorkflowStatus;
+  starred?: boolean;
+  note?: string;
 }
 
 export interface PlanFolderLibrary {
@@ -102,6 +110,13 @@ function parsePlanFolders(value: unknown): PlanFolderLibrary {
       parentId: typeof folder.parentId === 'string' && folder.parentId.trim() ? folder.parentId : null,
       createdAt: optionalDate(folder.createdAt),
       updatedAt: optionalDate(folder.updatedAt),
+      ...(typeof folder.description === 'string' && folder.description.trim()
+        ? { description: folder.description.trim().slice(0, 240) }
+        : {}),
+      ...(typeof folder.color === 'string' && /^#[0-9a-f]{6}$/i.test(folder.color)
+        ? { color: folder.color.toLowerCase() }
+        : {}),
+      ...(folder.favorite === true ? { favorite: true } : {}),
     });
   }
 
@@ -142,6 +157,13 @@ function parsePlanFolders(value: unknown): PlanFolderLibrary {
       folderId: membership.folderId,
       path,
       addedAt: optionalDate(membership.addedAt),
+      ...(membership.status === 'review' || membership.status === 'approved' || membership.status === 'archived'
+        ? { status: membership.status }
+        : {}),
+      ...(membership.starred === true ? { starred: true } : {}),
+      ...(typeof membership.note === 'string' && membership.note.trim()
+        ? { note: membership.note.trim().slice(0, 500) }
+        : {}),
     });
   }
 
@@ -271,6 +293,68 @@ export function renamePlanFolder(
   return folder;
 }
 
+export function updatePlanFolder(
+  library: PlanFolderLibrary,
+  id: string,
+  patch: { name?: string; description?: string; color?: string; favorite?: boolean },
+  now = new Date().toISOString(),
+): PlanFolder {
+  const folder = requireFolder(library, id);
+  if (patch.name != null) folder.name = validateSiblingName(library, patch.name, folder.parentId, id);
+  if (patch.description != null) {
+    const description = patch.description.trim();
+    folder.description = description ? description.slice(0, 240) : undefined;
+  }
+  if (patch.color != null) {
+    if (patch.color && !/^#[0-9a-f]{6}$/i.test(patch.color)) throw new Error('choose a valid folder colour');
+    folder.color = patch.color ? patch.color.toLowerCase() : undefined;
+  }
+  if (patch.favorite != null) folder.favorite = patch.favorite || undefined;
+  folder.updatedAt = now;
+  return folder;
+}
+
+function folderDepth(library: PlanFolderLibrary, id: string): number {
+  let depth = 1;
+  let current = requireFolder(library, id);
+  while (current.parentId) {
+    depth++;
+    current = requireFolder(library, current.parentId);
+  }
+  return depth;
+}
+
+function subtreeHeight(library: PlanFolderLibrary, id: string): number {
+  const children = library.folders.filter((folder) => folder.parentId === id);
+  return children.length ? 1 + Math.max(...children.map((folder) => subtreeHeight(library, folder.id))) : 1;
+}
+
+export function movePlanFolder(
+  library: PlanFolderLibrary,
+  id: string,
+  parentId: string | null,
+  now = new Date().toISOString(),
+): PlanFolder {
+  const folder = requireFolder(library, id);
+  if (parentId === id) throw new Error('a folder cannot contain itself');
+  if (parentId) {
+    requireFolder(library, parentId);
+    let ancestor: string | null = parentId;
+    while (ancestor) {
+      if (ancestor === id) throw new Error('a folder cannot be moved inside one of its subfolders');
+      ancestor = library.folders.find((candidate) => candidate.id === ancestor)?.parentId ?? null;
+    }
+  }
+  validateSiblingName(library, folder.name, parentId, id);
+  const destinationDepth = parentId ? folderDepth(library, parentId) + 1 : 1;
+  if (destinationDepth + subtreeHeight(library, id) - 1 > MAX_DEPTH) {
+    throw new Error(`plan folders can be nested up to ${MAX_DEPTH} levels`);
+  }
+  folder.parentId = parentId;
+  folder.updatedAt = now;
+  return folder;
+}
+
 export function removePlanFolder(
   library: PlanFolderLibrary,
   id: string,
@@ -336,4 +420,66 @@ export function removePlanFromFolder(
       membership.folderId !== folderId || pathIdentity(membership.path) !== identity,
   );
   return library.memberships.length !== before;
+}
+
+export function transferPlans(
+  library: PlanFolderLibrary,
+  sourceFolderId: string,
+  targetFolderId: string,
+  paths: string[],
+  mode: 'copy' | 'move',
+  now = new Date().toISOString(),
+): number {
+  requireFolder(library, sourceFolderId);
+  requireFolder(library, targetFolderId);
+  if (sourceFolderId === targetFolderId) return 0;
+  const wanted = new Set(paths.map((path) => pathIdentity(resolve(path))));
+  const source = library.memberships.filter(
+    (membership) => membership.folderId === sourceFolderId && wanted.has(pathIdentity(membership.path)),
+  );
+  const targetExisting = new Set(
+    library.memberships
+      .filter((membership) => membership.folderId === targetFolderId)
+      .map((membership) => pathIdentity(membership.path)),
+  );
+  const additions = source.filter((membership) => !targetExisting.has(pathIdentity(membership.path)));
+  if (library.memberships.length + additions.length > MAX_MEMBERSHIPS) {
+    throw new Error('the plan-folder item limit has been reached');
+  }
+  library.memberships.push(
+    ...additions.map((membership) => ({ ...membership, folderId: targetFolderId, addedAt: now })),
+  );
+  if (mode === 'move') {
+    library.memberships = library.memberships.filter(
+      (membership) =>
+        membership.folderId !== sourceFolderId || !wanted.has(pathIdentity(membership.path)),
+    );
+  }
+  return source.length;
+}
+
+export function updatePlanMembership(
+  library: PlanFolderLibrary,
+  folderId: string,
+  path: string,
+  patch: { status?: PlanWorkflowStatus; starred?: boolean; note?: string },
+): PlanFolderMembership {
+  requireFolder(library, folderId);
+  const identity = pathIdentity(resolve(path));
+  const membership = library.memberships.find(
+    (candidate) => candidate.folderId === folderId && pathIdentity(candidate.path) === identity,
+  );
+  if (!membership) throw new Error('that plan is no longer in this folder');
+  if (patch.status != null) {
+    if (!['active', 'review', 'approved', 'archived'].includes(patch.status)) {
+      throw new Error('choose a valid workflow status');
+    }
+    membership.status = patch.status === 'active' ? undefined : patch.status;
+  }
+  if (patch.starred != null) membership.starred = patch.starred || undefined;
+  if (patch.note != null) {
+    const note = patch.note.trim();
+    membership.note = note ? note.slice(0, 500) : undefined;
+  }
+  return membership;
 }

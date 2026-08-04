@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { traceImage, type TraceResult } from '../../catalog/trace.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { IconFit, IconPlus } from './icons.js';
+import { SnappySlider } from './SnappySlider.js';
 
 const api = window.groundplan;
 
@@ -223,29 +224,28 @@ export function TraceDialog({ units, onClose, onAdded, onError }: Props) {
         {image && (
           <>
             <div className="trace-controls">
-              <label>
-                <span>Threshold</span>
-                <input
-                  type="range"
-                  min={20}
-                  max={240}
-                  value={threshold}
-                  onChange={(e) => setThreshold(Number(e.target.value))}
-                />
-                <em className="num">{threshold}</em>
-              </label>
-              <label>
-                <span>Smoothing</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={12}
-                  step={0.5}
-                  value={smoothing}
-                  onChange={(e) => setSmoothing(Number(e.target.value))}
-                />
-                <em className="num">{smoothing}</em>
-              </label>
+              <SnappySlider
+                label="Threshold"
+                values={[20, 64, 128, 192, 240]}
+                defaultValue={128}
+                min={20}
+                max={240}
+                step={1}
+                compact
+                value={threshold}
+                onChange={setThreshold}
+              />
+              <SnappySlider
+                label="Smoothing"
+                values={[0, 2, 4, 8, 12]}
+                defaultValue={2}
+                min={0}
+                max={12}
+                step={0.5}
+                compact
+                value={smoothing}
+                onChange={setSmoothing}
+              />
               <label className="trace-invert">
                 <input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} />
                 <span>Light item on a dark background</span>

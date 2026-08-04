@@ -1,4 +1,5 @@
 import type { Layer, Scene, ScenePrimitive } from '../../format/scene.js';
+import type { PlanBackground } from '../../format/companion.js';
 import {
   pointsToUnits,
   resolveStyle,
@@ -14,7 +15,13 @@ import {
  * what is exported is what was on screen. Weights are stated in printed points
  * and converted here for the chosen scale; they are not sizes in the room.
  */
-export function toSvg(scene: Scene, visible: Set<Layer>, scaleId = '1/8'): string {
+export function toSvg(
+  scene: Scene,
+  visible: Set<Layer>,
+  scaleId = '1/8',
+  background: PlanBackground | null = null,
+): string {
+  const exportBackground = background?.visible && background.includeInExport ? background : null;
   const inchesPerFoot = SCALE_INCHES_PER_FOOT[scaleId] ?? SCALE_INCHES_PER_FOOT['1/8'];
   const units = (points: number) => pointsToUnits(points, inchesPerFoot);
 
@@ -32,6 +39,29 @@ export function toSvg(scene: Scene, visible: Set<Layer>, scaleId = '1/8'): strin
         if (y < extent.minY) extent.minY = y;
         if (x > extent.maxX) extent.maxX = x;
         if (y > extent.maxY) extent.maxY = y;
+      }
+    }
+  }
+  if (exportBackground) {
+    const cx = exportBackground.x + exportBackground.width / 2;
+    const cy = exportBackground.y + exportBackground.height / 2;
+    const radians = (exportBackground.rotation * Math.PI) / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    for (const [x, y] of [
+      [exportBackground.x, exportBackground.y],
+      [exportBackground.x + exportBackground.width, exportBackground.y],
+      [exportBackground.x + exportBackground.width, exportBackground.y + exportBackground.height],
+      [exportBackground.x, exportBackground.y + exportBackground.height],
+    ]) {
+      const rx = cx + (x - cx) * cosine - (y - cy) * sine;
+      const ry = cy + (x - cx) * sine + (y - cy) * cosine;
+      if (!extent) extent = { minX: rx, minY: ry, maxX: rx, maxY: ry };
+      else {
+        extent.minX = Math.min(extent.minX, rx);
+        extent.minY = Math.min(extent.minY, ry);
+        extent.maxX = Math.max(extent.maxX, rx);
+        extent.maxY = Math.max(extent.maxY, ry);
       }
     }
   }
@@ -109,8 +139,23 @@ export function toSvg(scene: Scene, visible: Set<Layer>, scaleId = '1/8'): strin
 
     if (p.type === 'text') {
       if (!p.text) continue;
+      const typography = p.textStyle;
+      const size = textSize * ((typography?.size ?? 9) / 9);
+      const family = esc(typography?.family || 'Arial');
+      const decorations = [typography?.underline ? 'underline' : '', typography?.strikeOut ? 'line-through' : '']
+        .filter(Boolean)
+        .join(' ');
+      const lines = p.text.replace(/\r/g, '').split('\n');
+      const lineHeight = size * 1.2;
+      const content = lines
+        .map((line, index) => `<tspan x="${n(p.pts[0])}" dy="${index === 0 ? n(-((lines.length - 1) * lineHeight) / 2) : n(lineHeight)}">${esc(line)}</tspan>`)
+        .join('');
       strokes.push(
-        `<text x="${n(p.pts[0])}" y="${n(p.pts[1])}" font-size="${n(textSize)}" font-family="Helvetica, Arial, sans-serif" fill="${stroke}" text-anchor="middle" dominant-baseline="middle">${esc(p.text)}</text>`,
+        `<text x="${n(p.pts[0])}" y="${n(p.pts[1])}" font-size="${n(size)}" ` +
+          `font-family="${family}, Arial, sans-serif" font-weight="${typography?.bold ? 700 : 400}" ` +
+          `font-style="${typography?.italic ? 'italic' : 'normal'}"${decorations ? ` text-decoration="${decorations}"` : ''} ` +
+          `fill="${stroke}" text-anchor="middle" dominant-baseline="middle" ` +
+          `transform="rotate(${n(typography?.angleDegrees ?? 0)} ${n(p.pts[0])} ${n(p.pts[1])})">${content}</text>`,
       );
       continue;
     }
@@ -145,6 +190,11 @@ export function toSvg(scene: Scene, visible: Set<Layer>, scaleId = '1/8'): strin
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(minX)} ${n(minY)} ${n(width)} ${n(height)}" width="${n(width / 10)}" height="${n(height / 10)}">`,
     `<rect x="${n(minX)}" y="${n(minY)}" width="${n(width)}" height="${n(height)}" fill="#ffffff"/>`,
+    ...(exportBackground
+      ? [
+          `<image href="${exportBackground.dataUrl}" x="${n(exportBackground.x)}" y="${n(exportBackground.y)}" width="${n(exportBackground.width)}" height="${n(exportBackground.height)}" opacity="${n(exportBackground.opacity)}" transform="translate(${n(exportBackground.x + exportBackground.width / 2)} ${n(exportBackground.y + exportBackground.height / 2)}) rotate(${n(exportBackground.rotation)}) scale(${exportBackground.flipX ? -1 : 1} ${exportBackground.flipY ? -1 : 1}) translate(${n(-(exportBackground.x + exportBackground.width / 2))} ${n(-(exportBackground.y + exportBackground.height / 2))})" preserveAspectRatio="none" style="mix-blend-mode:${exportBackground.blendMode};filter:brightness(${exportBackground.brightness}) contrast(${exportBackground.contrast}) saturate(${exportBackground.saturation}) grayscale(${exportBackground.grayscale})"/>`,
+        ]
+      : []),
     `<g stroke-linejoin="round" stroke-linecap="round" shape-rendering="geometricPrecision">`,
     ...fills,
     ...strokes,

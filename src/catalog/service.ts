@@ -16,13 +16,15 @@
  * for.
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { downloadPackage, fetchJson } from './download.js';
 import { installPackage, loadInstalled, repair, type CatalogPaths } from './install.js';
 import { planUpdate, type CatalogManifest, type UpdatePlan } from './manifest.js';
 import { CATALOG_MANIFEST_URL, CATALOG_PUBLIC_KEYS } from './keys.js';
+import { atomicWriteJson } from '../main/storage.js';
 
 export type UpdatePolicy =
   /** Download and install anything, without asking. */
@@ -94,8 +96,11 @@ export async function loadPreferences(root: string): Promise<CatalogPreferences>
 }
 
 export async function savePreferences(root: string, preferences: CatalogPreferences): Promise<void> {
-  await mkdir(dirname(preferencesPath(root)), { recursive: true });
-  await writeFile(preferencesPath(root), JSON.stringify(preferences, null, 2), 'utf8');
+  const path = preferencesPath(root);
+  await mkdir(dirname(path), { recursive: true });
+  await atomicWriteJson(path, preferences, {
+    backupPath: existsSync(path) ? `${path}.bak` : undefined,
+  });
 }
 
 /** Whether enough time has passed to look again. */

@@ -139,6 +139,8 @@ const MODELS: Array<[RegExp, Category, string]> = [
   [/\b(podium|lectern|acrylic podium)\b/i, 'podium', 'podium / lectern'],
   [/\b(registration desk|desk\b|counter\b)\b/i, 'desk', 'desk'],
   [/\bround\s*\d+/i, 'table-round', 'round table'],
+  [/\b\d+\s*(?:["″]|in(?:ch(?:es)?)?)\s*round\b/i, 'table-round', 'round table'],
+  [/\bcircular\s+deck\b/i, 'riser', 'circular deck'],
   [/\b(6|8)\s*['’]?\s*x\s*(18|30)\s*["”]?/i, 'table-rect', 'banquet table'],
   [/\b(table|banquet|cocktail|highboy|hi-?top)\b/i, 'table-rect', 'table'],
   [/\bchair\b|\bseat\b|\bstool\b/i, 'chair', 'chair'],

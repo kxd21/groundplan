@@ -18,6 +18,7 @@ import {
   appendChild,
   duplicateNode,
   moveNode,
+  recolorNode,
   relabelNode,
   type DocumentIndex,
   type EditResult,
@@ -178,6 +179,7 @@ export function createLabel(
   text: string,
   x: number,
   y: number,
+  options: { color?: number } = {},
 ): AnnotateResult {
   const trimmed = text.trim();
   if (!trimmed) return { ok: false, reason: 'enter some text' };
@@ -186,7 +188,7 @@ export function createLabel(
   if (!template) {
     // No label to copy: build one. This is the empty-plan case, and refusing
     // it was the single most common reason annotation was unavailable.
-    const built = synthesizeLabel(doc, { text: trimmed, x, y });
+    const built = synthesizeLabel(doc, { text: trimmed, x, y, color: options.color });
     if (!built.ok || !built.node) return { ok: false, reason: built.reason };
     const added = placeNew(doc, built.node);
     if (!added.ok) return added;
@@ -204,6 +206,11 @@ export function createLabel(
 
   const renamed = relabelNode(doc, node, trimmed.replace(/\r?\n/g, '\r\n'));
   if (!renamed.ok) return { ...renamed, created: copy.created };
+
+  if (options.color != null) {
+    const recolored = recolorNode(doc, node, options.color);
+    if (!recolored.ok) return { ...recolored, created: copy.created };
+  }
 
   return { ok: true, created: copy.created, text: trimmed };
 }

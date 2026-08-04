@@ -1,19 +1,27 @@
 /**
- * Starting a plan.
- *
- * Room Viewer opens Event Room Data on File → New: identity first, then the
- * room. Those are the questions that cannot wait — a plan with no name is hard
- * to find again, and a room with no size cannot be laid out, dimensioned, or
- * seated. Everything else can be decided later from the Room tab.
- *
- * Two steps keep that order visible. Jumping straight to a Save dialog after a
- * single thin form felt like a missing beat; the stepper names what is left.
+ * New Plan is the room's first authoring workspace, not only a Save prompt.
+ * The exact same pure builder powers this preview and the main process, so a
+ * circle, recess, fillet, or bowed wall shown here is what reaches the file.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
-import { IconDrawPolygon, IconDrawRect, IconPlus } from './icons.js';
+import {
+  buildNewRoom,
+  type NewRoomCurveMethod,
+  type NewRoomShape,
+  type NewRoomSpec,
+} from '../../format/new-room.js';
+import {
+  flattenWall,
+  roomArea,
+  roomBounds,
+  roomPerimeter,
+  type RoomModel,
+} from '../../format/room.js';
+import { formatArea, formatLength, parseLength, type UnitSystem } from '../../format/units.js';
+import { IconDrawEllipse, IconDrawPolygon, IconDrawRect, IconPlus, IconRuler } from './icons.js';
+import type { CustomRoomAngleLock, CustomRoomPrefs } from './custom-room.js';
 
 const api = window.groundplan;
 
@@ -26,7 +34,10 @@ interface Preset {
 
 interface Props {
   units: UnitSystem;
-  onCreated: (doc: unknown, options: { startRoomOutline: boolean }) => void;
+  onCreated: (
+    doc: unknown,
+    options: { startRoomOutline: boolean; customRoom?: CustomRoomPrefs },
+  ) => void;
   onCancel: () => void;
   onError: (message: string) => void;
 }
@@ -34,11 +45,166 @@ interface Props {
 const FT = 120;
 
 type Step = 'details' | 'room';
+type RoomChoice = NewRoomShape | 'custom';
+type WallTreatment = 'straight' | 'curve';
 
 const STEPS: Array<{ id: Step; label: string; blurb: string }> = [
-  { id: 'details', label: 'Event', blurb: 'What this plan is for' },
-  { id: 'room', label: 'Room', blurb: 'Choose or trace the floor' },
+  { id: 'details', label: 'Event', blurb: 'Name and show information' },
+  { id: 'room', label: 'Room builder', blurb: 'Shape, curves, and dimensions' },
 ];
+
+const SHAPES: Array<{
+  id: RoomChoice;
+  label: string;
+  detail: string;
+  icon: 'rect' | 'ellipse' | 'polygon';
+}> = [
+  { id: 'rectangle', label: 'Rectangle', detail: 'Exact width × depth', icon: 'rect' },
+  { id: 'rounded', label: 'Rounded', detail: 'True-radius corners', icon: 'rect' },
+  { id: 'circle', label: 'Circle', detail: 'Exact curved boundary', icon: 'ellipse' },
+  { id: 'stadium', label: 'Stadium', detail: 'Two semicircular ends', icon: 'ellipse' },
+  { id: 'l-shape', label: 'L-shaped', detail: 'One recessed corner', icon: 'polygon' },
+  { id: 'u-shape', label: 'U-shaped', detail: 'Centred floor recess', icon: 'polygon' },
+  { id: 'custom', label: 'Draw custom', detail: 'Trace any outline next', icon: 'polygon' },
+];
+
+const CURVE_METHODS: Array<{ id: NewRoomCurveMethod; label: string; short: string; help: string }> = [
+  { id: 'radius', label: 'Radius', short: 'Radius', help: 'Arc radius that meets both ends of the wall.' },
+  { id: 'sagitta', label: 'Bow depth', short: 'Bow', help: 'How far the wall bows off the straight chord.' },
+  { id: 'angle', label: 'Included angle', short: 'Angle', help: 'Degrees of turn — 90° is a quarter round.' },
+  { id: 'arc-length', label: 'Arc length', short: 'Arc', help: 'Finished length along the curve (must exceed the chord).' },
+];
+
+const RECT_WALL_LABELS = ['Top', 'Right', 'Bottom', 'Left'] as const;
+
+const ANGLE_LOCKS: Array<{ id: CustomRoomAngleLock; label: string; detail: string }> = [
+  { id: 'free', label: 'Free', detail: 'Any angle' },
+  { id: 'ortho', label: 'Ortho', detail: '90° walls' },
+  { id: '45', label: '45°', detail: 'Octagonal snap' },
+];
+
+const IconForShape = ({ kind }: { kind: (typeof SHAPES)[number]['icon'] }) =>
+  kind === 'ellipse' ? <IconDrawEllipse size={19} /> : kind === 'polygon' ? <IconDrawPolygon size={19} /> : <IconDrawRect size={19} />;
+
+function CustomRoomPreview({
+  width,
+  depth,
+  angleLock,
+  showGuide,
+}: {
+  width: number;
+  depth: number;
+  angleLock: CustomRoomAngleLock;
+  showGuide: boolean;
+}) {
+  const w = Math.max(1, width);
+  const d = Math.max(1, depth);
+  const pad = Math.max(w, d) * 0.16;
+  const viewBox = `${-w / 2 - pad} ${-d / 2 - pad} ${w + pad * 2} ${d + pad * 2}`;
+  // Illustrative irregular footprint inside the working bounds.
+  const sample = [
+    { x: -w * 0.42, y: -d * 0.38 },
+    { x: w * 0.28, y: -d * 0.42 },
+    { x: w * 0.44, y: d * 0.05 },
+    { x: w * 0.18, y: d * 0.4 },
+    { x: -w * 0.36, y: d * 0.34 },
+  ];
+  const samplePath = sample.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + ' Z';
+
+  return (
+    <svg className="new-plan-preview-svg" viewBox={viewBox} role="img" aria-label="Custom room drawing preview">
+      {showGuide && (
+        <rect
+          className="new-plan-preview-guide"
+          x={-w / 2}
+          y={-d / 2}
+          width={w}
+          height={d}
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+      <path className="new-plan-preview-fill" d={samplePath} />
+      <path className="new-plan-preview-wall is-sample" d={samplePath} fill="none" vectorEffect="non-scaling-stroke" />
+      {sample.map((point, index) => (
+        <circle
+          key={index}
+          className={index === 0 ? 'new-plan-preview-corner is-start' : 'new-plan-preview-corner'}
+          cx={point.x}
+          cy={point.y}
+          r={Math.max(w, d) * 0.014}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      <text className="new-plan-preview-lock-label" x={0} y={d / 2 + pad * 0.55} textAnchor="middle">
+        {angleLock === 'free' ? 'Free angles' : angleLock === 'ortho' ? 'Orthogonal walls' : '45° snap'}
+      </text>
+    </svg>
+  );
+}
+
+function RoomPreview({
+  room,
+  highlightedWall,
+  onSelectWall,
+}: {
+  room: RoomModel;
+  highlightedWall: number | null;
+  onSelectWall?: (index: number) => void;
+}) {
+  const bounds = roomBounds(room);
+  if (!bounds) return null;
+  const width = Math.max(1, bounds.maxX - bounds.minX);
+  const height = Math.max(1, bounds.maxY - bounds.minY);
+  const pad = Math.max(width, height) * 0.13;
+  const tolerance = Math.max(width, height) / 180;
+  const viewBox = `${bounds.minX - pad} ${bounds.minY - pad} ${width + pad * 2} ${height + pad * 2}`;
+
+  return (
+    <svg className="new-plan-preview-svg" viewBox={viewBox} role="img" aria-label="Room geometry preview">
+      <path
+        className="new-plan-preview-fill"
+        d={room.walls
+          .flatMap((segment, index) => {
+            const points = flattenWall(segment, tolerance);
+            return points.map((point, pointIndex) => `${index === 0 && pointIndex === 0 ? 'M' : 'L'} ${point.x} ${point.y}`);
+          })
+          .join(' ') + ' Z'}
+      />
+      {room.walls.map((segment, index) => (
+        <polyline
+          key={`${index}-${segment.start.x}-${segment.start.y}`}
+          className={index === highlightedWall ? 'new-plan-preview-wall is-highlighted' : 'new-plan-preview-wall'}
+          points={flattenWall(segment, tolerance).map((point) => `${point.x},${point.y}`).join(' ')}
+          vectorEffect="non-scaling-stroke"
+          role={onSelectWall ? 'button' : undefined}
+          tabIndex={onSelectWall ? 0 : undefined}
+          style={onSelectWall ? { cursor: 'pointer' } : undefined}
+          onClick={onSelectWall ? () => onSelectWall(index) : undefined}
+          onKeyDown={
+            onSelectWall
+              ? (event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectWall(index);
+                  }
+                }
+              : undefined
+          }
+        />
+      ))}
+      {room.walls.map((segment, index) => (
+        <circle
+          key={`corner-${index}`}
+          className="new-plan-preview-corner"
+          cx={segment.start.x}
+          cy={segment.start.y}
+          r={Math.max(width, height) * 0.012}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </svg>
+  );
+}
 
 export default function NewPlanDialog({ units, onCreated, onCancel, onError }: Props) {
   const [step, setStep] = useState<Step>('details');
@@ -48,9 +214,29 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [event, setEvent] = useState('');
   const [date, setDate] = useState('');
   const [contact, setContact] = useState('');
+
+  const [shape, setShape] = useState<RoomChoice>('rectangle');
   const [width, setWidth] = useState(() => formatLength(60 * FT, units));
   const [depth, setDepth] = useState(() => formatLength(40 * FT, units));
-  const [roomShape, setRoomShape] = useState<'rectangle' | 'custom'>('rectangle');
+  const [diameter, setDiameter] = useState(() => formatLength(50 * FT, units));
+  const [cornerRadius, setCornerRadius] = useState(() => formatLength(4 * FT, units));
+  const [notchWidth, setNotchWidth] = useState(() => formatLength(20 * FT, units));
+  const [notchDepth, setNotchDepth] = useState(() => formatLength(15 * FT, units));
+  const [wallTreatment, setWallTreatment] = useState<WallTreatment>('straight');
+  const [curveWall, setCurveWall] = useState(0);
+  const [curveMethod, setCurveMethod] = useState<NewRoomCurveMethod>('radius');
+  const [curveValues, setCurveValues] = useState<Record<NewRoomCurveMethod, string>>({
+    radius: formatLength(40 * FT, units),
+    sagitta: formatLength(5 * FT, units),
+    angle: '90',
+    'arc-length': formatLength(70 * FT, units),
+  });
+  const [curveOutward, setCurveOutward] = useState(true);
+  const [curveMajor, setCurveMajor] = useState(false);
+  const [autoDimensions, setAutoDimensions] = useState(true);
+  const [customAngleLock, setCustomAngleLock] = useState<CustomRoomAngleLock>('ortho');
+  const [customShowGuide, setCustomShowGuide] = useState(true);
+  const [customAutoDimensions, setCustomAutoDimensions] = useState(true);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -68,18 +254,82 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     return () => window.removeEventListener('keydown', onKey, true);
   }, [busy, onCancel]);
 
-  const widthUnits = parseLength(width, units);
-  const depthUnits = parseLength(depth, units);
+  const parsed = {
+    width: parseLength(width, units),
+    depth: parseLength(depth, units),
+    diameter: parseLength(diameter, units),
+    cornerRadius: parseLength(cornerRadius, units),
+    notchWidth: parseLength(notchWidth, units),
+    notchDepth: parseLength(notchDepth, units),
+  };
+  const curveValue = curveMethod === 'angle'
+    ? Number(curveValues.angle)
+    : parseLength(curveValues[curveMethod], units);
   const detailsReady = name.trim().length >= 2;
-  const customRoom = roomShape === 'custom';
-  const roomReady = customRoom || ((widthUnits ?? 0) > 0 && (depthUnits ?? 0) > 0);
+  const customRoom = shape === 'custom';
+  const curveEligible = shape === 'rectangle' || shape === 'l-shape' || shape === 'u-shape';
+
+  const baseSpec = useMemo<NewRoomSpec | null>(() => {
+    if (shape === 'custom') return null;
+    return {
+      shape,
+      width: parsed.width ?? undefined,
+      depth: parsed.depth ?? undefined,
+      diameter: parsed.diameter ?? undefined,
+      cornerRadius: parsed.cornerRadius ?? undefined,
+      notchWidth: parsed.notchWidth ?? undefined,
+      notchDepth: parsed.notchDepth ?? undefined,
+    };
+  }, [shape, parsed.width, parsed.depth, parsed.diameter, parsed.cornerRadius, parsed.notchWidth, parsed.notchDepth]);
+
+  const baseRoom = useMemo(
+    () => baseSpec ? buildNewRoom(baseSpec, name.trim() || 'Room') : null,
+    [baseSpec, name],
+  );
+  const wallCount = baseRoom?.room?.walls.length ?? 0;
+  const selectedWall = Math.min(curveWall, Math.max(0, wallCount - 1));
+
+  const roomSpec = useMemo<NewRoomSpec | null>(() => {
+    if (!baseSpec) return null;
+    if (!curveEligible || wallTreatment !== 'curve') return baseSpec;
+    return {
+      ...baseSpec,
+      curve: {
+        wallIndex: selectedWall,
+        method: curveMethod,
+        value: curveValue ?? 0,
+        outward: curveOutward,
+        major: curveMethod === 'radius' && curveMajor,
+      },
+    };
+  }, [baseSpec, curveEligible, wallTreatment, selectedWall, curveMethod, curveValue, curveOutward, curveMajor]);
+
+  const preview = useMemo(
+    () => roomSpec ? buildNewRoom(roomSpec, name.trim() || 'Room') : null,
+    [roomSpec, name],
+  );
+  const roomReady =
+    customRoom
+      ? Boolean((parsed.width ?? 0) > 0 && (parsed.depth ?? 0) > 0)
+      : Boolean(preview?.ok && preview.room);
+  const previewRoom = preview?.room ?? baseRoom?.room;
+  const highlightedWall = curveEligible && wallTreatment === 'curve' ? selectedWall : null;
+  const customGuideArea =
+    customRoom && (parsed.width ?? 0) > 0 && (parsed.depth ?? 0) > 0
+      ? (parsed.width! * parsed.depth!)
+      : 0;
+  const customGuidePerimeter =
+    customRoom && (parsed.width ?? 0) > 0 && (parsed.depth ?? 0) > 0
+      ? 2 * (parsed.width! + parsed.depth!)
+      : 0;
 
   const choose = (preset: Preset) => {
     if (preset.width <= 0 || preset.depth <= 0) {
-      setRoomShape('custom');
+      setShape('custom');
       return;
     }
-    setRoomShape('rectangle');
+    setShape('rectangle');
+    setWallTreatment('straight');
     setWidth(formatLength(preset.width * FT, units));
     setDepth(formatLength(preset.depth * FT, units));
   };
@@ -88,10 +338,23 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     if (!detailsReady || !roomReady) return;
     setBusy(true);
     try {
+      const customPrefs: CustomRoomPrefs | undefined =
+        customRoom && (parsed.width ?? 0) > 0 && (parsed.depth ?? 0) > 0
+          ? {
+              guideWidth: parsed.width!,
+              guideDepth: parsed.depth!,
+              angleLock: customAngleLock,
+              showGuide: customShowGuide,
+              autoDimensions: customAutoDimensions,
+            }
+          : undefined;
       const reply = await api.newPlan({
         name: name.trim() || 'Untitled plan',
-        width: customRoom ? 0 : (widthUnits ?? 0),
-        depth: customRoom ? 0 : (depthUnits ?? 0),
+        room: customRoom ? undefined : roomSpec ?? undefined,
+        sheetSize: customPrefs
+          ? { width: customPrefs.guideWidth, depth: customPrefs.guideDepth }
+          : undefined,
+        autoDimensions: !customRoom && autoDimensions,
         identity: {
           venue: venue.trim() || undefined,
           event: event.trim() || undefined,
@@ -104,7 +367,10 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         onError(reply.reason ?? 'the plan could not be created');
         return;
       }
-      onCreated(reply.doc, { startRoomOutline: customRoom });
+      onCreated(reply.doc, {
+        startRoomOutline: customRoom,
+        customRoom: customPrefs,
+      });
     } finally {
       setBusy(false);
     }
@@ -127,6 +393,22 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     else onCancel();
   };
 
+  const curveInputLabel = curveMethod === 'radius'
+    ? 'Arc radius'
+    : curveMethod === 'sagitta'
+      ? 'Bow depth at centre'
+      : curveMethod === 'angle'
+        ? 'Included angle (degrees)'
+        : 'Finished wall length';
+  const selectedWallChord = (() => {
+    const wall = baseRoom?.room?.walls[selectedWall];
+    if (!wall) return 0;
+    return Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
+  })();
+  const wallLabel = (index: number) =>
+    shape === 'rectangle' ? RECT_WALL_LABELS[index] ?? `Wall ${index + 1}` : `Wall ${index + 1}`;
+  const curveMethodMeta = CURVE_METHODS.find((method) => method.id === curveMethod);
+
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onCancel}>
       <div
@@ -137,8 +419,12 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="new-plan-head">
-          <h2 id="new-plan-title">New plan</h2>
-          <p>Name the show, choose how its room starts, then save a real plan file.</p>
+          <div>
+            <span className="new-plan-eyebrow">Plan setup</span>
+            <h2 id="new-plan-title">Create a new plan</h2>
+            <p>Set the show identity, build exact room geometry, and choose what should be drawn on day one.</p>
+          </div>
+          <span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>
         </div>
 
         <ol className="new-plan-steps" aria-label="New plan steps">
@@ -155,7 +441,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                     setStep(item.id);
                   }}
                 >
-                  <span className="new-plan-step-index">{index + 1}</span>
+                  <span className="new-plan-step-index">{done ? '✓' : index + 1}</span>
                   <span className="new-plan-step-copy">
                     <strong>{item.label}</strong>
                     <span>{item.blurb}</span>
@@ -166,10 +452,10 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           })}
         </ol>
 
-        <div className="new-plan-body">
+        <div className={step === 'room' ? 'new-plan-body is-room-builder' : 'new-plan-body'}>
           {step === 'details' ? (
-            <>
-              <div className="field">
+            <div className="new-plan-details-grid">
+              <div className="field new-plan-name-field">
                 <label htmlFor="new-plan-name">Plan / room name</label>
                 <input
                   id="new-plan-name"
@@ -185,178 +471,483 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                     }
                   }}
                 />
-                <span className="field-help">Shown on the drawing and used as the suggested file name.</span>
+                <span className="field-help">Used on the drawing and as the suggested `.rv4` file name.</span>
               </div>
 
               <div className="field">
                 <label htmlFor="new-plan-venue">Venue</label>
-                <input
-                  id="new-plan-venue"
-                  type="text"
-                  value={venue}
-                  placeholder="Optional"
-                  onChange={(e) => setVenue(e.target.value)}
-                />
+                <input id="new-plan-venue" value={venue} placeholder="Venue or building" onChange={(e) => setVenue(e.target.value)} />
               </div>
-
               <div className="field">
                 <label htmlFor="new-plan-event">Event</label>
-                <input
-                  id="new-plan-event"
-                  type="text"
-                  value={event}
-                  placeholder="Optional"
-                  onChange={(e) => setEvent(e.target.value)}
-                />
+                <input id="new-plan-event" value={event} placeholder="Show or event name" onChange={(e) => setEvent(e.target.value)} />
               </div>
-
-              <div className="field-row">
-                <div className="field">
-                  <label htmlFor="new-plan-date">Date</label>
-                  <input
-                    id="new-plan-date"
-                    type="text"
-                    value={date}
-                    placeholder="Optional"
-                    onChange={(e) => setDate(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label htmlFor="new-plan-contact">Contact</label>
-                  <input
-                    id="new-plan-contact"
-                    type="text"
-                    value={contact}
-                    placeholder="Optional"
-                    onChange={(e) => setContact(e.target.value)}
-                  />
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
               <div className="field">
-                <label>Starting room layout</label>
-                <div className="new-plan-room-shapes" role="radiogroup" aria-label="Starting room layout">
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={roomShape === 'rectangle'}
-                    className={roomShape === 'rectangle' ? 'active' : ''}
-                    onClick={() => setRoomShape('rectangle')}
-                  >
-                    <IconDrawRect size={19} />
-                    <span>
-                      <strong>Sized rectangle</strong>
-                      <small>Start from exact dimensions</small>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={roomShape === 'custom'}
-                    className={roomShape === 'custom' ? 'active' : ''}
-                    onClick={() => setRoomShape('custom')}
-                  >
-                    <IconDrawPolygon size={19} />
-                    <span>
-                      <strong>Custom outline</strong>
-                      <small>Trace any room shape next</small>
-                    </span>
-                  </button>
-                </div>
+                <label htmlFor="new-plan-date">Event date</label>
+                <input id="new-plan-date" value={date} placeholder="Optional" onChange={(e) => setDate(e.target.value)} />
+              </div>
+              <div className="field">
+                <label htmlFor="new-plan-contact">Client / contact</label>
+                <input id="new-plan-contact" value={contact} placeholder="Optional" onChange={(e) => setContact(e.target.value)} />
               </div>
 
-              {!customRoom ? (
-                <>
-                  <div className="field">
-                    <label>Common room sizes</label>
-                    <div className="preset-grid">
-                      {presets.filter((preset) => preset.width > 0 && preset.depth > 0).map((preset) => {
-                        const active =
-                          Math.abs((widthUnits ?? 0) - preset.width * FT) < 1 &&
-                          Math.abs((depthUnits ?? 0) - preset.depth * FT) < 1;
-                        return (
+              <div className="new-plan-details-note">
+                <strong>Saved with the plan</strong>
+                <span>This information follows the file into print setup, reports, recent shows, and title-block workflows.</span>
+              </div>
+            </div>
+          ) : (
+            <div className="new-plan-room-workspace">
+              <div className="new-plan-room-controls">
+                <section className="new-plan-builder-section">
+                  <div className="new-plan-section-title">
+                    <span>1</span>
+                    <div><strong>Choose the boundary</strong><small>Every option stays editable after creation.</small></div>
+                  </div>
+                  <div className="new-plan-shape-grid" role="radiogroup" aria-label="Starting room shape">
+                    {SHAPES.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={shape === item.id}
+                        className={shape === item.id ? 'active' : ''}
+                        onClick={() => {
+                          setShape(item.id);
+                          if (item.id !== 'rectangle' && item.id !== 'l-shape' && item.id !== 'u-shape') setWallTreatment('straight');
+                        }}
+                      >
+                        <IconForShape kind={item.icon} />
+                        <span><strong>{item.label}</strong><small>{item.detail}</small></span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                {customRoom ? (
+                  <>
+                    <section className="new-plan-builder-section">
+                      <div className="new-plan-section-title">
+                        <span>2</span>
+                        <div>
+                          <strong>Working size</strong>
+                          <small>Sizes the empty sheet and the dashed guide you trace against.</small>
+                        </div>
+                      </div>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="new-plan-custom-width">Guide width</label>
+                          <input
+                            id="new-plan-custom-width"
+                            value={width}
+                            aria-invalid={width.trim() !== '' && !((parsed.width ?? 0) > 0)}
+                            onChange={(e) => setWidth(e.target.value)}
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor="new-plan-custom-depth">Guide depth</label>
+                          <input
+                            id="new-plan-custom-depth"
+                            value={depth}
+                            aria-invalid={depth.trim() !== '' && !((parsed.depth ?? 0) > 0)}
+                            onChange={(e) => setDepth(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="field">
+                        <label>Common footprints</label>
+                        <div className="preset-grid is-compact">
+                          {presets
+                            .filter((preset) => preset.width > 0 && preset.depth > 0)
+                            .map((preset) => {
+                              const active =
+                                Math.abs((parsed.width ?? 0) - preset.width * FT) < 1 &&
+                                Math.abs((parsed.depth ?? 0) - preset.depth * FT) < 1;
+                              return (
+                                <button
+                                  key={preset.label}
+                                  type="button"
+                                  className={active ? 'preset active' : 'preset'}
+                                  onClick={() => {
+                                    setWidth(formatLength(preset.width * FT, units));
+                                    setDepth(formatLength(preset.depth * FT, units));
+                                  }}
+                                >
+                                  {preset.label}
+                                </button>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="new-plan-builder-section">
+                      <div className="new-plan-section-title">
+                        <span>3</span>
+                        <div>
+                          <strong>Corner constraints</strong>
+                          <small>Each click locks relative to the previous corner. Hold Shift for a temporary 90°.</small>
+                        </div>
+                      </div>
+                      <div className="seg tabs new-plan-angle-lock" role="radiogroup" aria-label="Corner angle lock">
+                        {ANGLE_LOCKS.map((lock) => (
                           <button
-                            key={preset.label}
+                            key={lock.id}
                             type="button"
-                            className={active ? 'preset active' : 'preset'}
-                            onClick={() => choose(preset)}
+                            role="radio"
+                            aria-checked={customAngleLock === lock.id}
+                            className={customAngleLock === lock.id ? 'active' : ''}
+                            onClick={() => setCustomAngleLock(lock.id)}
+                            title={lock.detail}
                           >
-                            {preset.label}
+                            <strong>{lock.label}</strong>
+                            <small>{lock.detail}</small>
                           </button>
-                        );
-                      })}
+                        ))}
+                      </div>
+                      <label className="setting-check new-plan-custom-check">
+                        <input
+                          type="checkbox"
+                          checked={customShowGuide}
+                          onChange={(e) => setCustomShowGuide(e.target.checked)}
+                        />
+                        <span>
+                          <strong>Show size guide on the plan</strong>
+                          <small>Dashed {formatLength(parsed.width ?? 0, units)} × {formatLength(parsed.depth ?? 0, units)} rectangle while you draw.</small>
+                        </span>
+                      </label>
+                    </section>
+
+                    <section className="new-plan-builder-section">
+                      <div className="new-plan-section-title">
+                        <span>4</span>
+                        <div>
+                          <strong>Finish behaviour</strong>
+                          <small>What happens after you close the outline.</small>
+                        </div>
+                      </div>
+                      <label className="new-plan-dimension-option">
+                        <input
+                          type="checkbox"
+                          checked={customAutoDimensions}
+                          onChange={(e) => setCustomAutoDimensions(e.target.checked)}
+                        />
+                        <IconRuler size={17} />
+                        <span>
+                          <strong>Dimension walls when finished</strong>
+                          <small>Adds a length call-out on every wall after Enter / close.</small>
+                        </span>
+                      </label>
+                      <div className="new-plan-custom-guide" role="status">
+                        <IconDrawPolygon size={22} />
+                        <span>
+                          <strong>Trace on the plan next</strong>
+                          <small>
+                            Click corners in order · click near the start or press Enter to finish · then use Edit Outline or Direct Selection for curves and fine points.
+                          </small>
+                          <span className="new-plan-capability-list">
+                            <b>Angled</b>
+                            <b>Concave</b>
+                            <b>Curved later</b>
+                            <b>Unlimited points</b>
+                          </span>
+                        </span>
+                      </div>
+                    </section>
+                  </>
+                ) : (
+                  <>
+                    <section className="new-plan-builder-section">
+                      <div className="new-plan-section-title">
+                        <span>2</span>
+                        <div><strong>Set the geometry</strong><small>Measurements accept feet/inches or metric entries.</small></div>
+                      </div>
+
+                      {shape === 'circle' ? (
+                        <div className="field">
+                          <label htmlFor="new-plan-diameter">Room diameter</label>
+                          <input id="new-plan-diameter" value={diameter} aria-invalid={diameter.trim() !== '' && !((parsed.diameter ?? 0) > 0)} onChange={(e) => setDiameter(e.target.value)} />
+                        </div>
+                      ) : (
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="new-plan-width">Outside width</label>
+                            <input id="new-plan-width" value={width} aria-invalid={width.trim() !== '' && !((parsed.width ?? 0) > 0)} onChange={(e) => setWidth(e.target.value)} />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="new-plan-depth">Outside depth</label>
+                            <input id="new-plan-depth" value={depth} aria-invalid={depth.trim() !== '' && !((parsed.depth ?? 0) > 0)} onChange={(e) => setDepth(e.target.value)} />
+                          </div>
+                        </div>
+                      )}
+
+                      {shape === 'rounded' && (
+                        <div className="field">
+                          <label htmlFor="new-plan-corner-radius">Corner radius</label>
+                          <input id="new-plan-corner-radius" value={cornerRadius} aria-invalid={cornerRadius.trim() !== '' && !((parsed.cornerRadius ?? 0) > 0)} onChange={(e) => setCornerRadius(e.target.value)} />
+                          <span className="field-help">Creates tangent fillets with a true build radius—not a visual-only effect.</span>
+                        </div>
+                      )}
+
+                      {(shape === 'l-shape' || shape === 'u-shape') && (
+                        <div className="field-row">
+                          <div className="field">
+                            <label htmlFor="new-plan-notch-width">Recess width</label>
+                            <input id="new-plan-notch-width" value={notchWidth} aria-invalid={notchWidth.trim() !== '' && !((parsed.notchWidth ?? 0) > 0)} onChange={(e) => setNotchWidth(e.target.value)} />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="new-plan-notch-depth">Recess depth</label>
+                            <input id="new-plan-notch-depth" value={notchDepth} aria-invalid={notchDepth.trim() !== '' && !((parsed.notchDepth ?? 0) > 0)} onChange={(e) => setNotchDepth(e.target.value)} />
+                          </div>
+                        </div>
+                      )}
+
+                      {shape === 'rectangle' && (
+                        <div className="field">
+                          <label>Common room sizes</label>
+                          <div className="preset-grid is-compact">
+                            {presets.filter((preset) => preset.width > 0 && preset.depth > 0).map((preset) => {
+                              const active = Math.abs((parsed.width ?? 0) - preset.width * FT) < 1 && Math.abs((parsed.depth ?? 0) - preset.depth * FT) < 1;
+                              return <button key={preset.label} type="button" className={active ? 'preset active' : 'preset'} onClick={() => choose(preset)}>{preset.label}</button>;
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {curveEligible && (
+                      <section className="new-plan-builder-section is-curve-section">
+                        <div className="new-plan-section-title">
+                          <span>3</span>
+                          <div>
+                            <strong>Curve a wall</strong>
+                            <small>Exact circular arc — click a wall in the preview or pick one below.</small>
+                          </div>
+                        </div>
+                        <div className="seg tabs new-plan-treatment" role="radiogroup" aria-label="Initial wall treatment">
+                          <button type="button" className={wallTreatment === 'straight' ? 'active' : ''} onClick={() => setWallTreatment('straight')}>
+                            Keep straight
+                          </button>
+                          <button type="button" className={wallTreatment === 'curve' ? 'active' : ''} onClick={() => setWallTreatment('curve')}>
+                            Curve one wall
+                          </button>
+                        </div>
+
+                        {wallTreatment === 'curve' && (
+                          <div className="new-plan-curve-panel">
+                            <div className="field">
+                              <label>Wall</label>
+                              <div className="new-plan-wall-chips" role="radiogroup" aria-label="Wall to curve">
+                                {Array.from({ length: wallCount }, (_, index) => (
+                                  <button
+                                    key={index}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={selectedWall === index}
+                                    className={selectedWall === index ? 'is-on' : ''}
+                                    onClick={() => setCurveWall(index)}
+                                  >
+                                    {wallLabel(index)}
+                                  </button>
+                                ))}
+                              </div>
+                              {selectedWallChord > 0 && (
+                                <span className="field-help">
+                                  Chord {formatLength(selectedWallChord, units)}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="field">
+                              <label>Define by</label>
+                              <div className="seg tabs new-plan-curve-methods" role="radiogroup" aria-label="Define curve by">
+                                {CURVE_METHODS.map((method) => (
+                                  <button
+                                    key={method.id}
+                                    type="button"
+                                    className={curveMethod === method.id ? 'active' : ''}
+                                    onClick={() => setCurveMethod(method.id)}
+                                    title={method.help}
+                                  >
+                                    {method.short}
+                                  </button>
+                                ))}
+                              </div>
+                              {curveMethodMeta && <span className="field-help">{curveMethodMeta.help}</span>}
+                            </div>
+
+                            <div className="field new-plan-curve-value">
+                              <label htmlFor="new-plan-curve-value">{curveInputLabel}</label>
+                              <input
+                                id="new-plan-curve-value"
+                                value={curveValues[curveMethod]}
+                                aria-invalid={curveValues[curveMethod].trim() !== '' && !((curveValue ?? 0) > 0)}
+                                onChange={(e) => setCurveValues((current) => ({ ...current, [curveMethod]: e.target.value }))}
+                              />
+                              {curveMethod === 'radius' && selectedWallChord > 0 && (
+                                <div className="new-plan-curve-presets" role="group" aria-label="Radius presets">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setCurveValues((current) => ({
+                                        ...current,
+                                        radius: formatLength(selectedWallChord / 2, units),
+                                      }))
+                                    }
+                                  >
+                                    ½ chord
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setCurveValues((current) => ({
+                                        ...current,
+                                        radius: formatLength(selectedWallChord, units),
+                                      }))
+                                    }
+                                  >
+                                    = chord
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setCurveValues((current) => ({
+                                        ...current,
+                                        radius: formatLength(selectedWallChord * 1.5, units),
+                                      }))
+                                    }
+                                  >
+                                    1.5×
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="field">
+                              <label>Direction</label>
+                              <div className="seg tabs new-plan-curve-direction" role="radiogroup" aria-label="Curve direction">
+                                <button type="button" className={curveOutward ? 'active' : ''} onClick={() => setCurveOutward(true)}>
+                                  <strong>Out of room</strong>
+                                  <small>Bay / bulge</small>
+                                </button>
+                                <button type="button" className={!curveOutward ? 'active' : ''} onClick={() => setCurveOutward(false)}>
+                                  <strong>Into room</strong>
+                                  <small>Gains floor</small>
+                                </button>
+                              </div>
+                            </div>
+
+                            {curveMethod === 'radius' && (
+                              <div className="field">
+                                <label>Arc path</label>
+                                <div className="seg tabs new-plan-curve-arc" role="radiogroup" aria-label="Minor or major arc">
+                                  <button type="button" className={!curveMajor ? 'active' : ''} onClick={() => setCurveMajor(false)}>
+                                    Short way
+                                  </button>
+                                  <button type="button" className={curveMajor ? 'active' : ''} onClick={() => setCurveMajor(true)}>
+                                    Long way
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            <p className="hint new-plan-curve-summary" role="status">
+                              {wallLabel(selectedWall)} · {curveMethodMeta?.label.toLowerCase() ?? 'curve'}{' '}
+                              {curveValues[curveMethod] || '…'} · {curveOutward ? 'outward' : 'inward'}
+                              {curveMethod === 'radius' && curveMajor ? ' · long way' : ''}
+                            </p>
+                          </div>
+                        )}
+                      </section>
+                    )}
+
+                    <label className="new-plan-dimension-option">
+                      <input type="checkbox" checked={autoDimensions} onChange={(e) => setAutoDimensions(e.target.checked)} />
+                      <IconRuler size={17} />
+                      <span><strong>Dimension the room automatically</strong><small>Add wall lengths and curve radii to the opening drawing.</small></span>
+                    </label>
+                  </>
+                )}
+              </div>
+
+              <aside className="new-plan-preview-panel">
+                <div className="new-plan-preview-heading">
+                  <span>Live room preview</span>
+                  <b>{shape === 'custom' ? (roomReady ? 'Ready to draw' : 'Set a size') : roomReady ? 'Ready' : 'Needs attention'}</b>
+                </div>
+                <div className={customRoom ? 'new-plan-preview-stage is-custom' : 'new-plan-preview-stage'}>
+                  {customRoom && roomReady ? (
+                    <CustomRoomPreview
+                      width={parsed.width!}
+                      depth={parsed.depth!}
+                      angleLock={customAngleLock}
+                      showGuide={customShowGuide}
+                    />
+                  ) : customRoom ? (
+                    <div className="new-plan-custom-preview">
+                      <IconDrawPolygon size={42} />
+                      <strong>Enter a working width and depth</strong>
+                      <span>The sheet opens around that footprint so tracing stays readable.</span>
                     </div>
+                  ) : previewRoom ? (
+                    <RoomPreview
+                      room={previewRoom}
+                      highlightedWall={highlightedWall}
+                      onSelectWall={
+                        curveEligible && wallTreatment === 'curve'
+                          ? (index) => {
+                              setCurveWall(index);
+                              setWallTreatment('curve');
+                            }
+                          : undefined
+                      }
+                    />
+                  ) : null}
+                </div>
+
+                {customRoom && roomReady && (
+                  <dl className="new-plan-room-stats">
+                    <div><dt>Guide area</dt><dd>{formatArea(customGuideArea, units)}</dd></div>
+                    <div><dt>Guide perimeter</dt><dd>{formatLength(customGuidePerimeter, units)}</dd></div>
+                    <div><dt>Angle lock</dt><dd>{customAngleLock === 'free' ? 'Free' : customAngleLock === 'ortho' ? 'Ortho' : '45°'}</dd></div>
+                    <div><dt>Guide</dt><dd>{customShowGuide ? 'On plan' : 'Hidden'}</dd></div>
+                  </dl>
+                )}
+
+                {!customRoom && previewRoom && (
+                  <dl className="new-plan-room-stats">
+                    <div><dt>Floor area</dt><dd>{formatArea(roomArea(previewRoom), units)}</dd></div>
+                    <div><dt>Perimeter</dt><dd>{formatLength(roomPerimeter(previewRoom), units)}</dd></div>
+                    <div><dt>Wall runs</dt><dd>{previewRoom.walls.length}</dd></div>
+                    <div><dt>Curved</dt><dd>{previewRoom.walls.filter((wall) => wall.bulge).length}</dd></div>
+                  </dl>
+                )}
+
+                {!customRoom && preview && !preview.ok && (
+                  <div className="new-plan-geometry-error" role="alert">
+                    <strong>Adjust the geometry</strong>
+                    <span>{preview.reason}</span>
                   </div>
-                  <div className="field-row">
-                    <div className="field">
-                      <label htmlFor="new-plan-width">Width</label>
-                      <input
-                        id="new-plan-width"
-                        type="text"
-                        value={width}
-                        autoFocus
-                        aria-invalid={width.trim() !== '' && !(widthUnits! > 0)}
-                        onChange={(e) => setWidth(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && roomReady && !busy) void create();
-                        }}
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor="new-plan-depth">Depth</label>
-                      <input
-                        id="new-plan-depth"
-                        type="text"
-                        value={depth}
-                        aria-invalid={depth.trim() !== '' && !(depthUnits! > 0)}
-                        onChange={(e) => setDepth(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && roomReady && !busy) void create();
-                        }}
-                      />
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="new-plan-custom-guide" role="status">
-                  <IconDrawPolygon size={20} />
+                )}
+
+                <div className="new-plan-after-create">
+                  <strong>{customRoom ? 'After you finish the outline' : 'Still editable after creation'}</strong>
                   <span>
-                    <strong>The custom room tool opens with the new plan</strong>
-                    <small>Click each corner in order, then press Enter or choose Finish room. The outline can be angled, concave, or irregular.</small>
+                    {customRoom
+                      ? 'Move corners, add or cut walls, round corners, or convert a wall to a true-radius curve from the Room panel.'
+                      : 'Move corners, add or remove plot lines, round individual corners, straighten arcs, or change a wall radius from the Room panel.'}
                   </span>
                 </div>
-              )}
-
-              <p className="hint">
-                {customRoom
-                  ? 'The Room panel opens automatically so layout editing starts immediately.'
-                  : 'The rectangular room is drawn immediately and remains fully adjustable from the Room panel.'}
-              </p>
-              <p className="hint">Next you will choose where to save the `.rv4` file, then the plan opens.</p>
-            </>
+              </aside>
+            </div>
           )}
         </div>
 
         <div className="new-plan-foot">
-          <button type="button" onClick={goBack} disabled={busy}>
-            {step === 'details' ? 'Cancel' : 'Back'}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={goNext}
-            disabled={busy || (step === 'details' ? !detailsReady : !roomReady)}
-          >
-            {step === 'details' ? (
-              'Continue'
-            ) : (
-              <>
-                <IconPlus size={14} />
-                {busy ? 'Creating…' : customRoom ? 'Create & draw…' : 'Create & save…'}
-              </>
-            )}
+          <span className="new-plan-foot-note">{step === 'room' ? 'A Save dialog opens next.' : 'Required fields are marked by validation.'}</span>
+          <button type="button" onClick={goBack} disabled={busy}>{step === 'details' ? 'Cancel' : 'Back'}</button>
+          <button type="button" className="primary" onClick={goNext} disabled={busy || (step === 'details' ? !detailsReady : !roomReady)}>
+            {step === 'details' ? 'Continue to room' : <><IconPlus size={14} />{busy ? 'Creating…' : customRoom ? 'Create & draw…' : 'Create plan…'}</>}
           </button>
         </div>
       </div>

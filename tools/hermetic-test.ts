@@ -24,10 +24,16 @@ import {
   relabelNode,
   resizeNode,
   rotateNode,
+  setLabelStyle,
 } from '../src/format/edit.js';
 import { loadBuffer, walk } from '../src/format/index.js';
 import { parseDimensions, placeGear } from '../src/format/place.js';
-import { importSymbol, listSymbols } from '../src/format/symbol.js';
+import { importDetachedObject, importSymbol, listSymbols } from '../src/format/symbol.js';
+import {
+  planObjectAtPath,
+  planObjectPath,
+  snapshotPlanSelection,
+} from '../src/format/plan-clipboard.js';
 import { createBlankPlan } from '../src/format/blank.js';
 import { isLibrary, readLibrary } from '../src/format/library.js';
 import { GRADE, MIN_STROKE_POINTS, pointsToUnits, resolveStyle } from '../src/format/style.js';
@@ -63,9 +69,13 @@ import {
   createPlanFolder,
   emptyPlanFolders,
   loadPlanFolders,
+  movePlanFolder,
   removePlanFolder,
   renamePlanFolder,
   savePlanFolders,
+  transferPlans,
+  updatePlanFolder,
+  updatePlanMembership,
 } from '../src/main/plan-folders.js';
 import { fixturePlanBuffer } from './test-fixture.js';
 
@@ -153,13 +163,58 @@ async function main(): Promise<void> {
   if (label) {
     session.checkpoint();
     check('label can be rewritten', relabelNode(session.loaded.document, label, 'Updated fixture').ok);
+    const styled = setLabelStyle(session.loaded.document, label, {
+      family: 'Courier New',
+      size: 18,
+      bold: true,
+      italic: true,
+      underline: true,
+      strikeOut: true,
+      angleDegrees: 25,
+    });
+    check('label typography can be rewritten in its native LOGFONT', styled.ok, styled.reason);
+    check(
+      'label text remains writable after the font name changes length',
+      relabelNode(session.loaded.document, label, 'Formatted fixture').ok,
+    );
     session.refresh();
+    const styledPrimitive = session.scene.primitives.find(
+      (primitive) => primitive.type === 'text' && primitive.nodeId === label.id,
+    );
+    check(
+      'the scene exposes saved typography to the canvas',
+      styledPrimitive?.textStyle?.family === 'Courier New' &&
+        styledPrimitive.textStyle.size === 18 &&
+        styledPrimitive.textStyle.bold &&
+        styledPrimitive.textStyle.italic &&
+        styledPrimitive.textStyle.underline &&
+        styledPrimitive.textStyle.strikeOut &&
+        Math.abs(styledPrimitive.textStyle.angleDegrees - 25) < 0.001,
+      JSON.stringify(styledPrimitive?.textStyle),
+    );
   }
 
   const beforeAnnotations = buildScene(session.loaded.document).primitives.length;
-  const labelReply = createLabel(session.loaded.document, session.index, 'Created in CI', 1400, 1700);
+  const requestedLabelColor = 0x00aa44;
+  const labelReply = createLabel(
+    session.loaded.document,
+    session.index,
+    'Created in CI',
+    1400,
+    1700,
+    { color: requestedLabelColor },
+  );
   check('label creation uses the fixture template', labelReply.ok, labelReply.reason);
   session.refresh();
+  check(
+    'label creation persists the requested text color',
+    buildScene(session.loaded.document).primitives.some(
+      (primitive) =>
+        primitive.type === 'text' &&
+        labelReply.created?.includes(primitive.nodeId) &&
+        primitive.color === requestedLabelColor,
+    ),
+  );
   const dimensionReply = createDimension(session.loaded.document, session.index, 700, 2400, 1900, 2400);
   check('dimension creation persists a line and value label', dimensionReply.ok, dimensionReply.reason);
   session.refresh();
@@ -197,6 +252,20 @@ async function main(): Promise<void> {
   check('edited fixture saves and reopens without diagnostics', reopened.loaded.document.warnings.length === 0);
   check('edited fixture remains round-trip stable', reopened.editable);
   check('created dimension survives reopen', (reopened.scene.counts.RVDimensionLine ?? 0) >= 2);
+  const reopenedFormattedLabel = reopened.scene.primitives.find(
+    (primitive) => primitive.type === 'text' && primitive.text === 'Formatted fixture',
+  );
+  check(
+    'font family, size, styles, rotation and text survive reopen',
+    reopenedFormattedLabel?.textStyle?.family === 'Courier New' &&
+      reopenedFormattedLabel.textStyle.size === 18 &&
+      reopenedFormattedLabel.textStyle.bold &&
+      reopenedFormattedLabel.textStyle.italic &&
+      reopenedFormattedLabel.textStyle.underline &&
+      reopenedFormattedLabel.textStyle.strikeOut &&
+      Math.abs(reopenedFormattedLabel.textStyle.angleDegrees - 25) < 0.001,
+    JSON.stringify(reopenedFormattedLabel?.textStyle),
+  );
 
   const transformDocument = loadBuffer(bytes, path).document;
   const transformShape = [...indexDocument(transformDocument).byId.values()].find((node) => node.cls === 'RVShape');
@@ -340,6 +409,55 @@ async function main(): Promise<void> {
       reloadedPlanFolders.library.folders.length === 3 &&
         reloadedPlanFolders.library.memberships[0]?.folderId === clientFolder.id,
     );
+
+    const workflowLibrary = emptyPlanFolders();
+    const workflowRoot = createPlanFolder(workflowLibrary, 'Production', null, 'workflow-root');
+    const workflowChild = createPlanFolder(workflowLibrary, 'Client Review', workflowRoot.id, 'workflow-child');
+    const workflowDestination = createPlanFolder(workflowLibrary, 'Delivered', null, 'workflow-destination');
+    updatePlanFolder(workflowLibrary, workflowChild.id, {
+      description: 'Plans awaiting client approval',
+      color: '#7357d8',
+      favorite: true,
+    });
+    check(
+      'folder metadata supports descriptions, colours, and favorites',
+      workflowChild.description === 'Plans awaiting client approval' &&
+        workflowChild.color === '#7357d8' &&
+        workflowChild.favorite === true,
+    );
+    addPlansToFolder(workflowLibrary, workflowChild.id, [linkedPlan]);
+    updatePlanMembership(workflowLibrary, workflowChild.id, linkedPlan, {
+      status: 'review',
+      starred: true,
+      note: 'Confirm ballroom revision with the client',
+    });
+    check(
+      'folder memberships retain workflow status, stars, and notes',
+      workflowLibrary.memberships[0]?.status === 'review' &&
+        workflowLibrary.memberships[0]?.starred === true &&
+        workflowLibrary.memberships[0]?.note?.includes('ballroom') === true,
+    );
+    check(
+      'batch copy preserves plan workflow metadata',
+      transferPlans(workflowLibrary, workflowChild.id, workflowDestination.id, [linkedPlan], 'copy') === 1 &&
+        workflowLibrary.memberships.find((membership) => membership.folderId === workflowDestination.id)?.status === 'review',
+    );
+    movePlanFolder(workflowLibrary, workflowChild.id, workflowDestination.id);
+    check('folders can be safely re-parented', workflowChild.parentId === workflowDestination.id);
+    let descendantMoveRejected = false;
+    try {
+      movePlanFolder(workflowLibrary, workflowDestination.id, workflowChild.id);
+    } catch {
+      descendantMoveRejected = true;
+    }
+    check('folders reject moves into their own descendants', descendantMoveRejected);
+    check(
+      'batch move removes the source membership and retains the destination membership',
+      transferPlans(workflowLibrary, workflowChild.id, workflowRoot.id, [linkedPlan], 'move') === 1 &&
+        !workflowLibrary.memberships.some((membership) => membership.folderId === workflowChild.id) &&
+        workflowLibrary.memberships.some((membership) => membership.folderId === workflowRoot.id),
+    );
+
     const removedPlanFolders = removePlanFolder(reloadedPlanFolders.library, yearFolder.id);
     check(
       'removing a plan folder recursively removes organization metadata',
@@ -558,6 +676,71 @@ async function main(): Promise<void> {
 
     const writable = verifyWritable(host);
     check('and the plan can still be saved afterwards', writable.ok, writable.reason);
+
+    const exactBlank = createBlankPlan({ roomName: 'clipboard host', room: { width: 60 * 120, depth: 40 * 120 } });
+    const exactHost = loadBuffer(exactBlank.file!, 'clipboard-host.rv4').document;
+    const donorObject = [...walk(donor)].find(
+      (node) => node.cls === 'RVShape' && node.labels.includes('Import Probe'),
+    );
+    check('the internal plan clipboard can resolve the exact selected object', !!donorObject);
+    const pasted = donorObject
+      ? importDetachedObject(exactHost, donor, donorObject, 120, 120)
+      : { ok: false, reason: 'missing donor object' };
+    check('an exact selected object pastes into another plan', pasted.ok, pasted.reason);
+    const pastedObject = [...walk(exactHost)].find(
+      (node) => node.cls === 'RVShape' && node.labels.includes('Import Probe'),
+    );
+    check(
+      'cross-plan paste preserves the object and applies the tab clipboard offset',
+      pastedObject?.points[0]?.x === 40 * 120 + 120 && pastedObject?.points[0]?.y === 30 * 120 + 120,
+      JSON.stringify(pastedObject?.points[0]),
+    );
+    const pastedWritable = verifyWritable(exactHost);
+    check('a plan remains writable after cross-plan paste', pastedWritable.ok, pastedWritable.reason);
+
+    // Node ids are local to a parse. Deleting an earlier object and then
+    // selecting a newly created one makes its live id differ after a snapshot
+    // reparse—the exact lifecycle used by Copy between two plan tabs.
+    const editedBytes = fixturePlanBuffer();
+    const edited = loadBuffer(editedBytes, 'edited-clipboard-source.rv4').document;
+    const removedBeforeCopy = placeGear(edited, indexDocument(edited), 'Clipboard Shift', 5 * 120, 5 * 120, {
+      width: 2 * 120,
+      height: 2 * 120,
+    });
+    const placed = placeGear(edited, indexDocument(edited), 'Clipboard Regression', 10 * 120, 10 * 120, {
+      width: 3 * 120,
+      height: 2 * 120,
+    });
+    const beforeDeleteIndex = indexDocument(edited);
+    const removedNode = removedBeforeCopy.created?.[0]
+      ? beforeDeleteIndex.byId.get(removedBeforeCopy.created[0])
+      : undefined;
+    const removed = removedNode
+      ? deleteNode(edited, beforeDeleteIndex, removedNode)
+      : { ok: false, reason: 'missing shift object' };
+    check('the clipboard regression fixture removes an earlier edited object', removed.ok, removed.reason);
+    const liveSelected = placed.created?.[0] ? indexDocument(edited).byId.get(placed.created[0]) : undefined;
+    check('the clipboard regression fixture creates a selectable edited object', !!liveSelected);
+    const liveIndex = indexDocument(edited);
+    const stablePath = liveSelected ? planObjectPath(edited, liveIndex, liveSelected) : null;
+    const snapshot = loadBuffer(
+      packContainer(editedBytes, serializeArchive(edited)),
+      'edited-clipboard-snapshot.rv4',
+    ).document;
+    const byPath = stablePath ? planObjectAtPath(snapshot, stablePath) : null;
+    check(
+      'the regression fixture changes the selected object parse id',
+      !!liveSelected && indexDocument(snapshot).byId.get(liveSelected.id) !== byPath,
+    );
+    const snapshotSelection = liveSelected
+      ? snapshotPlanSelection(edited, liveIndex, [liveSelected.id], snapshot)
+      : [];
+    check('edited plan selection resolves in the detached clipboard snapshot', snapshotSelection[0] === byPath);
+    check(
+      'clipboard snapshot keeps the exact selected object label',
+      snapshotSelection[0]?.labels.includes('Clipboard Regression') === true,
+      JSON.stringify(snapshotSelection[0]?.labels),
+    );
   }
 
   // --- the shape-library reader must not mistake a plan for a catalogue -----

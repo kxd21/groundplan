@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import type { Scene, Layer, ScenePrimitive } from '../../format/scene.js';
 import { resolveStyle, type DrawingStyle } from '../../format/style.js';
 import { formatLength, UNITS_PER_METRE, type UnitSystem } from '../../format/units.js';
 import { IconPlus, IconMinus, IconFit, IconHand } from './icons.js';
 import type { PlanPoint, PointerSpec } from './tool/machine.js';
+import type { EditablePointPath } from './PointEditor.js';
+import type { PlanBackground } from '../../format/companion.js';
+import { constrainRoomCorner, type CustomRoomAngleLock } from './custom-room.js';
+import type { WallEditSession } from './wall-edit.js';
 
 const UNITS_PER_FOOT = 120;
 /** Width of the ruler gutters along the top and left edges. */
@@ -24,6 +28,10 @@ interface Props {
   paper: boolean;
   /** When false, the drawing grid is hidden (rulers stay). */
   showGrid?: boolean;
+  /** When false, dragged objects only use grid snapping. */
+  objectSnap?: boolean;
+  /** Raster underlay rendered in plan coordinates below the editable geometry. */
+  background?: PlanBackground | null;
   fitToken: number;
   /** Selected object ids. Empty means nothing is selected. */
   selection: number[];
@@ -57,12 +65,35 @@ interface Props {
   spanFrom?: PlanPoint | null;
   /** Corners already clicked for a multi-point room outline. */
   pathPoints?: PlanPoint[];
+  /** Optional dashed W×D guide while tracing a custom room. */
+  pathGuide?: { width: number; depth: number } | null;
+  /** Corner angle lock while tracing a custom room. */
+  pathAngleLock?: CustomRoomAngleLock;
   /** The completed measure readout; stays visible until the tool is put down. */
   readout?: { from: PlanPoint; to: PlanPoint } | null;
   /** A click that the pointer mode says means something. Already snapped. */
   onCanvasClick?: (at: PlanPoint) => void;
   /** The Hand button and H both ask for the same tool, which App owns. */
   onToggleHand?: () => void;
+  /** Geometry exposed while the Direct Selection tool is active. */
+  directPaths?: EditablePointPath[];
+  /** Commits one dragged anchor/control point in plan coordinates. */
+  onMovePoint?: (pathNodeId: number, pointIndex: number, x: number, y: number) => void;
+  /** Active in-place editor opened by double-clicking a text label. */
+  textEditor?: { nodeId: number; value: string } | null;
+  onEditText?: (nodeId: number) => void;
+  onTextEditorChange?: (value: string) => void;
+  onTextEditorCommit?: () => void;
+  onTextEditorBlur?: () => void;
+  onTextEditorCancel?: () => void;
+  /**
+   * When set (Room → Outline → One wall), wall segments become clickable and
+   * show a mid-edge handle so furniture near the perimeter does not steal edits.
+   */
+  wallEdit?: WallEditSession | null;
+  onPickWall?: (index: number) => void;
+  /** Commit a push (perpendicular), curve (bow), or length (chord) drag on one wall. */
+  onWallGesture?: (index: number, gesture: 'push' | 'curve' | 'length', amount: number) => void;
 }
 
 /**
@@ -101,6 +132,49 @@ function distanceToSegment(px: number, py: number, x0: number, y0: number, x1: n
   let t = ((px - x0) * dx + (py - y0) * dy) / lengthSq;
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+}
+
+function wallChordMeta(wall: { startX: number; startY: number; endX: number; endY: number; bulge?: number }) {
+  const dx = wall.endX - wall.startX;
+  const dy = wall.endY - wall.startY;
+  const length = Math.hypot(dx, dy) || 1;
+  // Outward normal for CCW outlines (same convention as offsetWall).
+  const nx = dy / length;
+  const ny = -dx / length;
+  const midX = (wall.startX + wall.endX) / 2;
+  const midY = (wall.startY + wall.endY) / 2;
+  // Positive bulge bows along the left normal (= −outward). Sagitta = bulge × half-chord.
+  const bulge = wall.bulge ?? 0;
+  const existingOutward = bulge ? -(bulge * length) / 2 : 0;
+  return {
+    dx,
+    dy,
+    length,
+    nx,
+    ny,
+    midX,
+    midY,
+    handleX: midX + nx * existingOutward,
+    handleY: midY + ny * existingOutward,
+    existingOutward,
+  };
+}
+
+function hitTestWall(
+  walls: WallEditSession['walls'],
+  x: number,
+  y: number,
+  tolerance: number,
+): number | null {
+  let best: { index: number; distance: number } | null = null;
+  for (const wall of walls) {
+    const distance = distanceToSegment(x, y, wall.startX, wall.startY, wall.endX, wall.endY);
+    const meta = wallChordMeta(wall);
+    const handleDist = Math.hypot(x - meta.handleX, y - meta.handleY);
+    const d = Math.min(distance, handleDist);
+    if (d <= tolerance && (!best || d < best.distance)) best = { index: wall.index, distance: d };
+  }
+  return best?.index ?? null;
 }
 
 /** Even-odd polygon containment so filled equipment can be selected inside its outline. */
@@ -148,7 +222,11 @@ function hitTest(
       continue;
     }
 
-    if (p.type === 'text' || p.pts.length === 2) {
+    if (p.type === 'text') {
+      const dx = Math.max(item.minX - x, 0, x - item.maxX);
+      const dy = Math.max(item.minY - y, 0, y - item.maxY);
+      distance = Math.hypot(dx, dy);
+    } else if (p.pts.length === 2) {
       distance = Math.hypot(x - p.pts[0], y - p.pts[1]);
     } else {
       for (let i = 0; i + 3 < p.pts.length; i += 2) {
@@ -210,6 +288,8 @@ export function PlanCanvas({
   visibleLayers,
   paper,
   showGrid = true,
+  objectSnap = true,
+  background = null,
   fitToken,
   selection,
   onSelect,
@@ -224,16 +304,64 @@ export function PlanCanvas({
   pointerMode,
   spanFrom,
   pathPoints = [],
+  pathGuide = null,
+  pathAngleLock = 'free',
   readout,
   onCanvasClick,
   onToggleHand,
+  directPaths = [],
+  onMovePoint,
+  textEditor = null,
+  onEditText,
+  onTextEditorChange,
+  onTextEditorCommit,
+  onTextEditorBlur,
+  onTextEditorCancel,
+  wallEdit = null,
+  onPickWall,
+  onWallGesture,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [view, setView] = useState<View>({ scale: 0.05, offsetX: 0, offsetY: 0 });
   const [size, setSize] = useState({ width: 800, height: 600 });
+  const [backgroundImage, setBackgroundImage] = useState<HTMLImageElement | null>(null);
   const panRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const moveRef = useRef<{ startX: number; startY: number } | null>(null);
+  const pointMoveRef = useRef<{
+    pathNodeId: number;
+    pointIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const wallDragRef = useRef<{
+    index: number;
+    gesture: 'push' | 'curve' | 'length';
+    originX: number;
+    originY: number;
+    nx: number;
+    ny: number;
+    tx: number;
+    ty: number;
+    baseLength: number;
+    baseAmount: number;
+    amount: number;
+  } | null>(null);
+  const [wallDragPreview, setWallDragPreview] = useState<{
+    index: number;
+    amount: number;
+    nx: number;
+    ny: number;
+    tx: number;
+    ty: number;
+    gesture: 'push' | 'curve' | 'length';
+  } | null>(null);
+  const [pointPreview, setPointPreview] = useState<{
+    pathNodeId: number;
+    pointIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [nudge, setNudge] = useState<{ dx: number; dy: number } | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [dropping, setDropping] = useState<{
@@ -253,6 +381,7 @@ export function PlanCanvas({
    * effect because nothing enforced its exclusivity.
    */
   const [spaceHeld, setSpaceHeld] = useState(false);
+  const [shiftHeld, setShiftHeld] = useState(false);
   const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
   /** Rubber-band rectangle, in plan units, while dragging on empty space. */
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
@@ -281,6 +410,22 @@ export function PlanCanvas({
         minY = Math.min(minY, primitive.pts[i + 1]);
         maxX = Math.max(maxX, primitive.pts[i]);
         maxY = Math.max(maxY, primitive.pts[i + 1]);
+      }
+      if (primitive.type === 'text' && primitive.text && primitive.pts.length >= 2) {
+        const lines = primitive.text.replace(/\r/g, '').split('\n');
+        const height = Math.max(40, (primitive.textStyle?.size ?? 9) * 10);
+        const width = Math.max(
+          height,
+          ...lines.map((line) => Math.max(1, line.length) * height * 0.58),
+        );
+        const totalHeight = Math.max(height, lines.length * height * 1.2);
+        const angle = ((primitive.textStyle?.angleDegrees ?? 0) * Math.PI) / 180;
+        const rotatedWidth = Math.abs(width * Math.cos(angle)) + Math.abs(totalHeight * Math.sin(angle));
+        const rotatedHeight = Math.abs(width * Math.sin(angle)) + Math.abs(totalHeight * Math.cos(angle));
+        minX = primitive.pts[0] - rotatedWidth / 2;
+        maxX = primitive.pts[0] + rotatedWidth / 2;
+        minY = primitive.pts[1] - rotatedHeight / 2;
+        maxY = primitive.pts[1] + rotatedHeight / 2;
       }
       return {
         primitive,
@@ -324,6 +469,25 @@ export function PlanCanvas({
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
+
+  useEffect(() => {
+    if (!background?.dataUrl) {
+      setBackgroundImage(null);
+      return;
+    }
+    let live = true;
+    const image = new Image();
+    image.onload = () => {
+      if (live) setBackgroundImage(image);
+    };
+    image.onerror = () => {
+      if (live) setBackgroundImage(null);
+    };
+    image.src = background.dataUrl;
+    return () => {
+      live = false;
+    };
+  }, [background?.dataUrl]);
 
   /** Coalesce high-frequency input so React and the canvas render at most once per frame. */
   const scheduleView = useCallback((update: (current: View) => View) => {
@@ -502,6 +666,28 @@ export function PlanCanvas({
       maxY: (size.height - offsetY + 36) / scale,
     };
 
+    if (background?.visible && backgroundImage) {
+      const centreX = tx(background.x + background.width / 2);
+      const centreY = ty(background.y + background.height / 2);
+      ctx.save();
+      ctx.globalAlpha = background.opacity;
+      ctx.globalCompositeOperation = background.blendMode === 'normal' ? 'source-over' : background.blendMode;
+      ctx.filter =
+        `brightness(${background.brightness}) contrast(${background.contrast}) ` +
+        `saturate(${background.saturation}) grayscale(${background.grayscale})`;
+      ctx.translate(centreX, centreY);
+      ctx.rotate((background.rotation * Math.PI) / 180);
+      ctx.scale(background.flipX ? -1 : 1, background.flipY ? -1 : 1);
+      ctx.drawImage(
+        backgroundImage,
+        (-background.width * scale) / 2,
+        (-background.height * scale) / 2,
+        background.width * scale,
+        background.height * scale,
+      );
+      ctx.restore();
+    }
+
     drawGrid(ctx, size, view, paper, showGrid, units);
 
     ctx.lineJoin = 'round';
@@ -538,13 +724,37 @@ export function PlanCanvas({
 
       switch (p.type) {
         case 'text': {
-          if (!p.text) break;
-          const fontPx = Math.max(9, Math.min(21, 130 * scale));
-          if (fontPx < 7.5) break;
-          ctx.font = `${fontPx}px -apple-system, "Segoe UI", system-ui, sans-serif`;
+          if (!p.text || textEditor?.nodeId === p.nodeId) break;
+          const style = p.textStyle;
+          const fontPx = Math.max(7, Math.min(96, Math.max(9, 130 * scale) * ((style?.size ?? 9) / 9)));
+          const family = (style?.family || 'Arial').replace(/["\\]/g, '');
+          const lines = p.text.replace(/\r/g, '').split('\n');
+          const lineHeight = fontPx * 1.2;
+          ctx.save();
+          ctx.translate(tx(p.pts[0] + ox), ty(p.pts[1] + oy));
+          ctx.rotate(((style?.angleDegrees ?? 0) * Math.PI) / 180);
+          ctx.font = `${style?.italic ? 'italic ' : ''}${style?.bold ? '700' : '400'} ${fontPx}px "${family}", -apple-system, "Segoe UI", sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(p.text, tx(p.pts[0] + ox), ty(p.pts[1] + oy));
+          lines.forEach((line, index) => {
+            const y = (index - (lines.length - 1) / 2) * lineHeight;
+            ctx.fillText(line, 0, y);
+            if (style?.underline || style?.strikeOut) {
+              const half = ctx.measureText(line).width / 2;
+              ctx.beginPath();
+              ctx.lineWidth = Math.max(1, fontPx / 14);
+              if (style.underline) {
+                ctx.moveTo(-half, y + fontPx * 0.52);
+                ctx.lineTo(half, y + fontPx * 0.52);
+              }
+              if (style.strikeOut) {
+                ctx.moveTo(-half, y);
+                ctx.lineTo(half, y);
+              }
+              ctx.stroke();
+            }
+          });
+          ctx.restore();
           break;
         }
         case 'bezier': {
@@ -596,7 +806,126 @@ export function PlanCanvas({
 
     for (const id of selection) {
       const b = objectBounds.get(id);
-      if (b) drawSelectionFrame(ctx, b, view, nudge);
+      if (!b) continue;
+      // Crowded multi-select: light per-item frames only when the set is small.
+      if (selection.length === 1 || selection.length <= 12) {
+        drawSelectionFrame(ctx, b, view, nudge, selection.length > 1 ? 'item' : 'solo');
+      }
+    }
+    if (selection.length > 1) {
+      const group = boundsOfMany(objectBounds, selection);
+      if (group) drawSelectionFrame(ctx, group, view, nudge, 'group', selection.length);
+    }
+
+    if (wallEdit && wallEdit.walls.length) {
+      for (const wall of wallEdit.walls) {
+        const selected = wall.index === wallEdit.selected;
+        const meta = wallChordMeta(wall);
+        const preview =
+          wallDragPreview && wallDragPreview.index === wall.index ? wallDragPreview : null;
+        const ox = preview && preview.gesture === 'push' ? preview.nx * preview.amount : 0;
+        const oy = preview && preview.gesture === 'push' ? preview.ny * preview.amount : 0;
+        const curveOff =
+          preview && preview.gesture === 'curve'
+            ? preview.amount
+            : wall.curved
+              ? meta.existingOutward
+              : 0;
+        const lengthOff =
+          preview && preview.gesture === 'length' ? preview.amount : 0;
+        const ex = wall.endX + ox + (preview?.tx ?? meta.dx / meta.length) * lengthOff;
+        const ey = wall.endY + oy + (preview?.ty ?? meta.dy / meta.length) * lengthOff;
+        ctx.save();
+        ctx.strokeStyle = selected
+          ? paper
+            ? 'rgba(11, 110, 203, 0.95)'
+            : 'rgba(120, 190, 255, 0.95)'
+          : paper
+            ? 'rgba(11, 110, 203, 0.28)'
+            : 'rgba(120, 190, 255, 0.35)';
+        ctx.lineWidth = selected ? 3 : 1.5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(tx(wall.startX + ox), ty(wall.startY + oy));
+        if (preview?.gesture === 'curve' || (wall.curved && preview?.gesture !== 'length')) {
+          const mx = meta.midX + meta.nx * curveOff + ox;
+          const my = meta.midY + meta.ny * curveOff + oy;
+          ctx.quadraticCurveTo(tx(mx), ty(my), tx(ex), ty(ey));
+        } else {
+          ctx.lineTo(tx(ex), ty(ey));
+        }
+        ctx.stroke();
+        if (selected && wallEdit.editable) {
+          const hx =
+            preview?.gesture === 'length'
+              ? (wall.startX + ex) / 2 + ox
+              : meta.midX + ox + meta.nx * curveOff;
+          const hy =
+            preview?.gesture === 'length'
+              ? (wall.startY + ey) / 2 + oy
+              : meta.midY + oy + meta.ny * curveOff;
+          ctx.fillStyle = paper ? '#0b6ecb' : '#8ec5ff';
+          ctx.strokeStyle = paper ? '#fff' : '#0d1520';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(tx(hx), ty(hy), 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = paper ? 'rgba(11, 110, 203, 0.92)' : 'rgba(180, 220, 255, 0.95)';
+          ctx.font = '600 10px Inter, system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          const tip =
+            wallEdit.gesture === 'curve'
+              ? 'Drag to curve'
+              : wallEdit.gesture === 'length'
+                ? 'Drag to stretch length'
+                : 'Drag to push / pull';
+          ctx.fillText(tip, tx(hx), ty(hy) - 12);
+        }
+        ctx.restore();
+      }
+    }
+
+    if (pointerMode.mode === 'direct-select') {
+      for (const path of directPaths) {
+        const points = path.points.map((point) =>
+          pointPreview && pointPreview.pathNodeId === path.nodeId && pointPreview.pointIndex === point.index
+            ? { ...point, x: pointPreview.x, y: pointPreview.y }
+            : point,
+        );
+        if (points.length >= 2) {
+          ctx.save();
+          ctx.strokeStyle = paper ? 'rgba(40, 111, 213, .55)' : 'rgba(116, 175, 255, .7)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(tx(points[0]!.x), ty(points[0]!.y));
+          for (let index = 1; index < points.length; index++) {
+            ctx.lineTo(tx(points[index]!.x), ty(points[index]!.y));
+          }
+          if (path.closed) ctx.closePath();
+          ctx.stroke();
+          ctx.restore();
+        }
+        for (const point of points) {
+          const px = tx(point.x);
+          const py = ty(point.y);
+          ctx.save();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = path.canEdit ? '#1677e8' : '#8993a1';
+          ctx.fillStyle = point.role === 'control' ? (paper ? '#ffffff' : '#161a20') : '#1677e8';
+          if (point.role === 'control') {
+            ctx.beginPath();
+            ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          } else {
+            ctx.fillRect(px - 4.5, py - 4.5, 9, 9);
+            ctx.strokeRect(px - 4.5, py - 4.5, 9, 9);
+          }
+          ctx.restore();
+        }
+      }
     }
 
     if (marquee) drawMarquee(ctx, marquee, view);
@@ -610,7 +939,14 @@ export function PlanCanvas({
       if (pointerMode.preview === 'measure') drawMeasurement(ctx, spanFrom, to, view, paper, units);
       else if (pointerMode.preview !== 'room') drawShapePreview(ctx, spanFrom, to, pointerMode.preview, view);
     } else if (pointerMode.preview === 'room') {
-      drawRoomPathPreview(ctx, pathPoints, pointer, view);
+      if (pathGuide && pathGuide.width > 0 && pathGuide.depth > 0) {
+        drawRoomPathGuide(ctx, pathGuide, view);
+      }
+      const live =
+        pointer && pathPoints.length
+          ? constrainRoomCorner(pathPoints[pathPoints.length - 1]!, pointer, pathAngleLock, shiftHeld)
+          : pointer;
+      drawRoomPathPreview(ctx, pathPoints, live, view);
     } else if (readout) {
       drawMeasurement(ctx, readout.from, readout.to, view, paper, units);
     }
@@ -632,12 +968,54 @@ export function PlanCanvas({
     nudge,
     spanFrom,
     pathPoints,
+    pathGuide,
+    pathAngleLock,
+    shiftHeld,
     readout,
     pointerMode,
     pointer,
+    pointPreview,
+    directPaths,
     marquee,
     guides,
+    background,
+    backgroundImage,
+    textEditor,
+    wallEdit,
+    wallDragPreview,
   ]);
+
+  const editingTextPrimitive = useMemo(
+    () =>
+      textEditor && scene
+        ? scene.primitives.find(
+            (primitive) => primitive.type === 'text' && primitive.nodeId === textEditor.nodeId,
+          ) ?? null
+        : null,
+    [scene, textEditor],
+  );
+
+  const inlineTextStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!editingTextPrimitive) return undefined;
+    const style = editingTextPrimitive.textStyle;
+    const fontPx = Math.max(12, Math.min(72, Math.max(12, 130 * view.scale) * ((style?.size ?? 9) / 9)));
+    const longest = Math.max(8, ...textEditor!.value.replace(/\r/g, '').split('\n').map((line) => line.length));
+    return {
+      left: editingTextPrimitive.pts[0] * view.scale + view.offsetX,
+      top: editingTextPrimitive.pts[1] * view.scale + view.offsetY,
+      width: Math.max(180, Math.min(560, longest * fontPx * 0.68 + 42)),
+      minHeight: Math.max(42, textEditor!.value.replace(/\r/g, '').split('\n').length * fontPx * 1.25 + 18),
+      transform: `translate(-50%, -50%) rotate(${style?.angleDegrees ?? 0}deg)`,
+      fontFamily: `"${(style?.family || 'Arial').replace(/["\\]/g, '')}", sans-serif`,
+      fontSize: `${fontPx}px`,
+      fontWeight: style?.bold ? 700 : 400,
+      fontStyle: style?.italic ? 'italic' : 'normal',
+      textDecoration: [style?.underline ? 'underline' : '', style?.strikeOut ? 'line-through' : '']
+        .filter(Boolean)
+        .join(' ') || 'none',
+      color: colorRefToCss(editingTextPrimitive.color, paper),
+    };
+  }, [editingTextPrimitive, paper, textEditor, view]);
 
   /** Screen pixels to plan coordinates. */
   const toPlan = (e: { clientX: number; clientY: number; currentTarget: Element }) => {
@@ -691,10 +1069,88 @@ export function PlanCanvas({
     // tool value says. There is no third case to get wrong, because a stamp and
     // a span cannot both be live.
     const wantsPan =
-      pointerMode.mode === 'pan' || e.button === 1 || e.button === 2 || e.altKey || spaceHeld || !scene;
+      pointerMode.mode === 'pan' ||
+      e.button === 1 ||
+      e.button === 2 ||
+      (e.altKey && pointerMode.mode !== 'direct-select') ||
+      spaceHeld ||
+      !scene;
     if (wantsPan) {
       panRef.current = { x: e.clientX, y: e.clientY, ox: view.offsetX, oy: view.offsetY };
       return;
+    }
+
+    if (pointerMode.mode === 'direct-select' && editable && onMovePoint && e.button === 0) {
+      const at = toPlan(e);
+      let nearest: { pathNodeId: number; pointIndex: number; x: number; y: number; distance: number } | null = null;
+      for (const path of directPaths) {
+        if (!path.canEdit) continue;
+        for (const point of path.points) {
+          const distance = Math.hypot(point.x - at.x, point.y - at.y);
+          if (distance <= 10 / view.scale && (!nearest || distance < nearest.distance)) {
+            nearest = {
+              pathNodeId: path.nodeId,
+              pointIndex: point.index,
+              x: point.x,
+              y: point.y,
+              distance,
+            };
+          }
+        }
+      }
+      if (nearest) {
+        pointMoveRef.current = nearest;
+        setPointPreview(nearest);
+        return;
+      }
+    }
+
+    // Room wall editing beats furniture hit-testing so chairs along a wall
+    // cannot steal the click meant for push / curve.
+    if (wallEdit && wallEdit.editable && e.button === 0 && pointerMode.mode === 'select') {
+      const at = toPlan(e);
+      const wallHit = hitTestWall(wallEdit.walls, at.x, at.y, 14 / view.scale);
+      if (wallHit != null) {
+        onPickWall?.(wallHit);
+        onSelect([]);
+        const wall = wallEdit.walls.find((entry) => entry.index === wallHit);
+        if (wall && (!wall.curved || wallEdit.gesture === 'curve')) {
+          const meta = wallChordMeta(wall);
+          const nearHandle =
+            Math.hypot(at.x - meta.handleX, at.y - meta.handleY) <= 16 / view.scale ||
+            wallHit === wallEdit.selected;
+          if (nearHandle) {
+            const gesture =
+              wall.curved && wallEdit.gesture !== 'curve' ? 'curve' : wallEdit.gesture;
+            // Length needs a straight chord; curved walls stay on curve drag.
+            const activeGesture =
+              gesture === 'length' && wall.curved ? 'curve' : gesture;
+            wallDragRef.current = {
+              index: wallHit,
+              gesture: activeGesture,
+              originX: at.x,
+              originY: at.y,
+              nx: meta.nx,
+              ny: meta.ny,
+              tx: meta.dx / meta.length,
+              ty: meta.dy / meta.length,
+              baseLength: wall.length,
+              baseAmount: activeGesture === 'curve' ? meta.existingOutward : 0,
+              amount: activeGesture === 'curve' ? meta.existingOutward : 0,
+            };
+            setWallDragPreview({
+              index: wallHit,
+              amount: activeGesture === 'curve' ? meta.existingOutward : 0,
+              nx: meta.nx,
+              ny: meta.ny,
+              tx: meta.dx / meta.length,
+              ty: meta.dy / meta.length,
+              gesture: activeGesture,
+            });
+          }
+        }
+        return;
+      }
     }
 
     if (
@@ -716,7 +1172,16 @@ export function PlanCanvas({
               y: Math.round(point.y / snapStep) * snapStep,
             }
           : point;
-      onCanvasClick(nodeId == null ? coordinate : { ...coordinate, nodeId });
+      const constrained =
+        pointerMode.mode === 'path' && pathPoints.length
+          ? constrainRoomCorner(
+              pathPoints[pathPoints.length - 1]!,
+              coordinate,
+              pathAngleLock,
+              e.shiftKey,
+            )
+          : coordinate;
+      onCanvasClick(nodeId == null ? constrained : { ...constrained, nodeId });
       return;
     }
 
@@ -736,7 +1201,7 @@ export function PlanCanvas({
             : [hit];
         onSelect(next);
 
-        if (editable && next.length) {
+        if (editable && next.length && pointerMode.mode !== 'direct-select') {
           moveRef.current = { startX: x, startY: y };
           setNudge({ dx: 0, dy: 0 });
           return;
@@ -753,6 +1218,27 @@ export function PlanCanvas({
     panRef.current = { x: e.clientX, y: e.clientY, ox: view.offsetX, oy: view.offsetY };
   };
 
+  const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!editable || !onEditText || !scene || pointerMode.mode !== 'select') return;
+    const { x, y } = toPlan(e);
+    const hit = hitTest(
+      prepared.filter((item) => item.primitive.type === 'text'),
+      visibleLayers,
+      x,
+      y,
+      10 / view.scale,
+    );
+    if (hit == null) return;
+    const textPrimitive = prepared.find(
+      (item) => item.primitive.type === 'text' && item.primitive.selectId === hit,
+    )?.primitive;
+    if (!textPrimitive) return;
+    e.preventDefault();
+    moveRef.current = null;
+    setNudge(null);
+    onEditText(textPrimitive.nodeId);
+  };
+
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const pan = panRef.current;
     if (pan) {
@@ -766,7 +1252,48 @@ export function PlanCanvas({
 
     const plan = toPlan(e);
     onCursor?.(plan);
-    if (pointerMode.mode === 'span') setPointer(plan);
+    setShiftHeld(e.shiftKey);
+    if (pointerMode.mode === 'span' || pointerMode.mode === 'path') setPointer(plan);
+
+    if (pointMoveRef.current) {
+      const next = snapStep && !e.altKey
+        ? {
+            x: Math.round(plan.x / snapStep) * snapStep,
+            y: Math.round(plan.y / snapStep) * snapStep,
+          }
+        : plan;
+      setPointPreview({ ...pointMoveRef.current, ...next });
+      return;
+    }
+
+    if (wallDragRef.current) {
+      const drag = wallDragRef.current;
+      const dx = plan.x - drag.originX;
+      const dy = plan.y - drag.originY;
+      let delta =
+        drag.gesture === 'length'
+          ? dx * drag.tx + dy * drag.ty
+          : dx * drag.nx + dy * drag.ny;
+      if (drag.gesture === 'length') {
+        // Keep a minimal positive chord.
+        delta = Math.max(delta, 1 - drag.baseLength);
+      }
+      if (snapStep && !e.altKey) {
+        delta = Math.round(delta / snapStep) * snapStep;
+      }
+      const amount = drag.baseAmount + delta;
+      drag.amount = amount;
+      setWallDragPreview({
+        index: drag.index,
+        amount,
+        nx: drag.nx,
+        ny: drag.ny,
+        tx: drag.tx,
+        ty: drag.ty,
+        gesture: drag.gesture,
+      });
+      return;
+    }
 
     const band = marqueeRef.current;
     if (band) {
@@ -777,7 +1304,9 @@ export function PlanCanvas({
     const moving = moveRef.current;
     if (moving) {
       const raw = { dx: plan.x - moving.startX, dy: plan.y - moving.startY };
-      const snapped = scene ? applySnap(objectBounds, selection, raw, snapStep, view.scale) : { ...raw, guides: {} };
+      const snapped = scene
+        ? applySnap(objectBounds, selection, raw, snapStep, view.scale, objectSnap)
+        : { ...raw, guides: {} };
       setGuides(snapped.guides);
       setNudge({ dx: snapped.dx, dy: snapped.dy });
       return;
@@ -797,6 +1326,24 @@ export function PlanCanvas({
 
   const endDrag = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+
+    if (pointMoveRef.current) {
+      const moved = pointPreview ?? pointMoveRef.current;
+      pointMoveRef.current = null;
+      setPointPreview(null);
+      onMovePoint?.(moved.pathNodeId, moved.pointIndex, moved.x, moved.y);
+      return;
+    }
+
+    if (wallDragRef.current) {
+      const drag = wallDragRef.current;
+      wallDragRef.current = null;
+      setWallDragPreview(null);
+      if (Math.abs(drag.amount) > 1) {
+        onWallGesture?.(drag.index, drag.gesture, drag.amount);
+      }
+      return;
+    }
 
     if (marqueeRef.current && marquee && scene) {
       const box = {
@@ -852,6 +1399,8 @@ export function PlanCanvas({
       ? 'measure'
       : pointerMode.mode === 'stamp'
         ? 'place'
+        : pointerMode.mode === 'direct-select'
+          ? 'direct-select'
         : pointerMode.mode === 'pan' || panRef.current
           ? 'pan'
           : 'select';
@@ -879,6 +1428,7 @@ export function PlanCanvas({
         tabIndex={0}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
+        onDoubleClick={onDoubleClick}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
@@ -923,6 +1473,30 @@ export function PlanCanvas({
           else if (id && onDropItem) onDropItem(id, snappedX, snappedY);
         }}
       />
+      {textEditor && editingTextPrimitive && inlineTextStyle && (
+        <textarea
+          className="canvas-inline-text-editor"
+          aria-label="Edit text on plan"
+          autoFocus
+          rows={Math.max(1, Math.min(8, textEditor.value.replace(/\r/g, '').split('\n').length))}
+          maxLength={254}
+          value={textEditor.value}
+          style={inlineTextStyle}
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => onTextEditorChange?.(event.target.value)}
+          onBlur={() => onTextEditorBlur?.()}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              onTextEditorCancel?.();
+            } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              onTextEditorCommit?.();
+            }
+          }}
+        />
+      )}
       {dropping && (
         <div
           className="canvas-drop-cue"
@@ -976,6 +1550,7 @@ function applySnap(
   raw: { dx: number; dy: number },
   step: number,
   viewScale: number,
+  objectSnap: boolean,
 ): { dx: number; dy: number; guides: { x?: number; y?: number } } {
   if (!selection.length) return { ...raw, guides: {} };
 
@@ -996,17 +1571,19 @@ function applySnap(
   let bestX: { at: number; gap: number } | null = null;
   let bestY: { at: number; gap: number } | null = null;
 
-  for (const [id, bounds] of objectBounds) {
-    if (selected.has(id)) continue;
-    const { minX, minY, maxX, maxY } = bounds;
+  if (objectSnap) {
+    for (const [id, bounds] of objectBounds) {
+      if (selected.has(id)) continue;
+      const { minX, minY, maxX, maxY } = bounds;
 
-    for (const candidate of [(minX + maxX) / 2, minX, maxX]) {
-      const gap = Math.abs(candidate - centre.x);
-      if (gap < tolerance && (!bestX || gap < bestX.gap)) bestX = { at: candidate, gap };
-    }
-    for (const candidate of [(minY + maxY) / 2, minY, maxY]) {
-      const gap = Math.abs(candidate - centre.y);
-      if (gap < tolerance && (!bestY || gap < bestY.gap)) bestY = { at: candidate, gap };
+      for (const candidate of [(minX + maxX) / 2, minX, maxX]) {
+        const gap = Math.abs(candidate - centre.x);
+        if (gap < tolerance && (!bestX || gap < bestX.gap)) bestX = { at: candidate, gap };
+      }
+      for (const candidate of [(minY + maxY) / 2, minY, maxY]) {
+        const gap = Math.abs(candidate - centre.y);
+        if (gap < tolerance && (!bestY || gap < bestY.gap)) bestY = { at: candidate, gap };
+      }
     }
   }
 
@@ -1135,6 +1712,31 @@ function drawShapePreview(
   }
 
   ctx.stroke();
+  ctx.restore();
+}
+
+/** Dashed working-size guide for custom room tracing. */
+function drawRoomPathGuide(
+  ctx: CanvasRenderingContext2D,
+  guide: { width: number; depth: number },
+  view: View,
+): void {
+  const hw = guide.width / 2;
+  const hd = guide.depth / 2;
+  const x0 = (-hw) * view.scale + view.offsetX;
+  const y0 = (-hd) * view.scale + view.offsetY;
+  const x1 = hw * view.scale + view.offsetX;
+  const y1 = hd * view.scale + view.offsetY;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0, y0, x1 - x0, y1 - y0);
+  ctx.strokeStyle = 'rgba(77, 148, 255, 0.45)';
+  ctx.lineWidth = 1.25;
+  ctx.setLineDash([7, 5]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(77, 148, 255, 0.04)';
+  ctx.fill();
   ctx.restore();
 }
 
@@ -1300,21 +1902,50 @@ function drawSelectionFrame(
   b: { minX: number; minY: number; maxX: number; maxY: number },
   view: View,
   nudge: { dx: number; dy: number } | null,
+  kind: 'solo' | 'item' | 'group' = 'solo',
+  count?: number,
 ): void {
   const dx = nudge?.dx ?? 0;
   const dy = nudge?.dy ?? 0;
-  const pad = 5;
+  const pad = kind === 'group' ? 8 : 5;
   const x0 = (b.minX + dx) * view.scale + view.offsetX - pad;
   const y0 = (b.minY + dy) * view.scale + view.offsetY - pad;
   const x1 = (b.maxX + dx) * view.scale + view.offsetX + pad;
   const y1 = (b.maxY + dy) * view.scale + view.offsetY + pad;
+  const w = Math.round(x1 - x0);
+  const h = Math.round(y1 - y0);
+  const left = Math.round(x0) + 0.5;
+  const top = Math.round(y0) + 0.5;
 
   ctx.save();
-  ctx.strokeStyle = 'rgba(77,148,255,0.55)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([4, 3]);
-  ctx.strokeRect(Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.round(x1 - x0), Math.round(y1 - y0));
-
+  if (kind === 'group') {
+    ctx.strokeStyle = 'rgba(77,148,255,0.92)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.strokeRect(left, top, w, h);
+    const label = `${count ?? 0} selected`;
+    ctx.font = '600 11px -apple-system, "Segoe UI", system-ui, sans-serif';
+    const tw = ctx.measureText(label).width;
+    const chipW = tw + 12;
+    const chipH = 18;
+    const chipX = left;
+    const chipY = Math.max(RULER + 4, top - chipH - 4);
+    ctx.fillStyle = 'rgba(22,135,248,0.95)';
+    ctx.fillRect(chipX, chipY, chipW, chipH);
+    ctx.fillStyle = '#fff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, chipX + 6, chipY + chipH / 2);
+  } else if (kind === 'item') {
+    ctx.strokeStyle = 'rgba(77,148,255,0.28)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeRect(left, top, w, h);
+  } else {
+    ctx.strokeStyle = 'rgba(77,148,255,0.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(left, top, w, h);
+  }
   ctx.restore();
 }
 

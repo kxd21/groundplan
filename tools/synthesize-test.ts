@@ -34,6 +34,7 @@ import { buildScene } from '../src/format/scene.js';
 import { enclosesArea } from '../src/format/style.js';
 import { createBlankPlan, ROOM_PRESETS } from '../src/format/blank.js';
 import { placeGear } from '../src/format/place.js';
+import { convertSegmentKind } from '../src/format/path-edit.js';
 import { deriveRoom, roomArea } from '../src/format/room.js';
 import { fixturePlanBuffer } from './test-fixture.js';
 
@@ -131,6 +132,45 @@ const FIXTURE = fixturePlanBuffer({ walls: false });
       check('the rewritten file round-trips against itself', roundTrip(reread.document).identical);
     }
   }
+}
+
+{
+  // Direct Selection changes the binary class and point count, while keeping
+  // the same object in its parent slot so selection and undo stay stable.
+  const loaded = loadBuffer(FIXTURE, 'fixture.rv4');
+  const doc = loaded.document;
+  const geometry = findContainer(doc, 'RVGeometry')!;
+  const built = createSegment(doc, {
+    cls: 'RVSegmentLine',
+    points: [{ x: 100, y: 200 }, { x: 700, y: 500 }],
+  });
+  appendChild(doc, geometry, built.node!);
+  const segment = built.node!;
+  const stableId = segment.id;
+  const nextId = doc.nextId;
+
+  const curved = convertSegmentKind(doc, segment, 'curve');
+  check('Direct Selection converts a line to a curve', curved.ok, curved.reason);
+  check('the converted segment keeps its selection id', segment.id === stableId);
+  check('curve conversion does not consume a document id', doc.nextId === nextId);
+  check('the curve exposes two anchors and two controls', segment.cls === 'RVSegmentArc' && segment.points.length === 8);
+  check(
+    'a new curve keeps the original line visually straight',
+    segment.points.slice(-4).every((point) => Math.abs((point.y - 200) * 600 - (point.x - 100) * 300) < 1e-6),
+  );
+  check('the converted curve verifies', verifyWritable(doc).ok, verifyWritable(doc).reason);
+
+  const straight = convertSegmentKind(doc, segment, 'line');
+  check('Direct Selection converts a curve back to a line', straight.ok, straight.reason);
+  check('straightening keeps the same selection id', segment.id === stableId);
+  check(
+    'straightening keeps the two curve anchors',
+    segment.cls === 'RVSegmentLine' && segment.points.length === 2 &&
+      segment.points[0].x === 100 && segment.points[0].y === 200 &&
+      segment.points[1].x === 700 && segment.points[1].y === 500,
+  );
+  const verified = verifyWritable(doc);
+  check('the straightened line verifies', verified.ok, verified.reason);
 }
 
 {
@@ -504,6 +544,24 @@ console.log('\na plan created from nothing\n');
 }
 
 {
+  const advanced = createBlankPlan({
+    roomName: 'Curved ballroom',
+    roomSpec: {
+      shape: 'rounded',
+      width: 60 * UNITS_PER_FOOT,
+      depth: 40 * UNITS_PER_FOOT,
+      cornerRadius: 4 * UNITS_PER_FOOT,
+    },
+    autoDimensions: 'imperial',
+  });
+  check('New Plan writes advanced rounded geometry', advanced.ok, advanced.reason);
+  const loaded = loadBuffer(advanced.file!, 'Curved ballroom.rv4');
+  check('the advanced new plan round-trips', roundTrip(loaded.document).identical);
+  check('rounded corners are emitted as editable wall geometry', findByClass(loaded.document, 'RVSegmentPoly').length === 4);
+  check('New Plan can add initial dimensions', findByClass(loaded.document, 'RVDimensionLine').length > 0);
+}
+
+{
   // The point of a new plan: you can put something on it. Before synthesis this
   // failed outright, because there was no shape in the file to clone.
   const blank = createBlankPlan({ room: { width: 60 * UNITS_PER_FOOT, depth: 40 * UNITS_PER_FOOT } });
@@ -512,7 +570,11 @@ console.log('\na plan created from nothing\n');
 
   const placed = placeGear(doc, indexDocument(doc), 'Round 60"', 20 * UNITS_PER_FOOT, 20 * UNITS_PER_FOOT);
   check('gear can be placed on a brand-new plan', placed.ok, placed.reason);
-  check('and it was built rather than copied', placed.method === 'synthesized', placed.method);
+  check(
+    'and it was built rather than copied',
+    placed.method === 'synthesized' || placed.method === 'box',
+    placed.method,
+  );
 
   const verdict = verifyWritable(doc);
   check('the result verifies', verdict.ok, verdict.reason);

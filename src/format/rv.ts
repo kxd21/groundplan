@@ -177,6 +177,17 @@ export interface RVNode {
   angle?: number;
   /** Label drawn in a bold face. */
   bold?: boolean;
+  /** Decoded LOGFONT appearance for an editable text label. */
+  font?: {
+    family: string;
+    /** Native logical height; negative values mean character height. */
+    height: number;
+    width: number;
+    weight: number;
+    italic: boolean;
+    underline: boolean;
+    strikeOut: boolean;
+  };
   /** COLORREF as 0x00BBGGRR, when applicable. */
   color?: number;
   /** Strings recovered from the object body (shape name, label text). */
@@ -220,6 +231,16 @@ export interface RVFieldOffsets {
   /** Length-prefixed label text: offset of the length byte, and its length. */
   textAt?: number;
   textLen?: number;
+  /** Win32 LOGFONT fields carried by RVLabel. */
+  fontHeightAt?: number;
+  fontWidthAt?: number;
+  fontWeightAt?: number;
+  fontItalicAt?: number;
+  fontUnderlineAt?: number;
+  fontStrikeOutAt?: number;
+  /** Length-prefixed LOGFONT face name. */
+  fontFaceAt?: number;
+  fontFaceLen?: number;
   /** Length-prefixed catalogue name of a placed shape. */
   nameAt?: number;
   nameLen?: number;
@@ -303,15 +324,42 @@ function findNextTag(r: ArchiveReader, from: number, stride: number): number {
  * Recognising it is what makes a label's text field findable.
  */
 function readLogFont(r: ArchiveReader, node: RVNode): void {
-  r.i32(); // lfHeight — negative values are point sizes
-  r.i32(); // lfWidth
+  const heightAt = r.pos;
+  const height = r.i32();
+  const widthAt = r.pos;
+  const width = r.i32();
   r.i32(); // lfEscapement
   r.i32(); // lfOrientation
+  const weightAt = r.pos;
   const weight = r.i32();
-  r.skip(8); // italic, underline, strikeout, charset, precision, quality, pitch
+  const italicAt = r.pos;
+  const italic = r.u8() !== 0;
+  const underlineAt = r.pos;
+  const underline = r.u8() !== 0;
+  const strikeOutAt = r.pos;
+  const strikeOut = r.u8() !== 0;
+  r.skip(5); // charset, precision, clip precision, quality, pitch/family
+  const faceAt = r.pos;
   const face = r.cstring();
   if (face) node.labels.push(face);
   node.bold = weight >= 600;
+  node.font = {
+    family: face || 'Arial',
+    height,
+    width,
+    weight,
+    italic,
+    underline,
+    strikeOut,
+  };
+  node.fields.fontHeightAt = heightAt;
+  node.fields.fontWidthAt = widthAt;
+  node.fields.fontWeightAt = weightAt;
+  node.fields.fontItalicAt = italicAt;
+  node.fields.fontUnderlineAt = underlineAt;
+  node.fields.fontStrikeOutAt = strikeOutAt;
+  node.fields.fontFaceAt = faceAt;
+  node.fields.fontFaceLen = Buffer.byteLength(face, 'latin1');
 }
 
 /** Offset of an object's body given its tag position, or null for a reference. */
@@ -656,7 +704,9 @@ class DocumentParser {
           node.fields.textAt = textAt;
           node.fields.textLen = text.length;
         }
-        r.u32(); // text colour
+        const colorAt = r.pos;
+        node.color = r.u32();
+        node.fields.colorAt = colorAt;
         r.i32();
         r.f64();
         r.f64();
@@ -678,6 +728,8 @@ class DocumentParser {
       node.labels.length = 0;
       node.fields.textAt = undefined;
       node.fields.textLen = undefined;
+      node.fields.colorAt = undefined;
+      node.color = undefined;
       node.fields.nameAt = undefined;
       node.fields.nameLen = undefined;
       const next = findNextTag(r, r.pos, 1);

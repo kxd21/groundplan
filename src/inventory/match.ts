@@ -152,7 +152,8 @@ export function chooseSymbol(
 
     if (!pick?.symbolPath) continue;
     return {
-      symbolName: pick.name,
+      // Prefer the label inside the .rv4 when the inventory row was renamed.
+      symbolName: pick.symbolName ?? pick.name,
       symbolPath: pick.symbolPath,
       category: verdict.category,
       reason: verdict.reason,
@@ -193,6 +194,12 @@ export function mapSymbols(inventory: Inventory): MapSummary {
 
   for (const item of inventory.items) {
     if (item.symbolPath) {
+      summary.alreadyHad++;
+      continue;
+    }
+    // A hand-traced or photo outline is already placeable — don't overwrite it
+    // with an automatic catalogue guess.
+    if (item.tracedIcon?.paths?.length) {
       summary.alreadyHad++;
       continue;
     }

@@ -496,13 +496,15 @@ console.log('\n4. one tool at a time, structurally\n');
 }
 
 {
-  const armed = reduce(initialToolState(EDITABLE), { type: 'pick', choice: labelChoice('X4S') }).state;
+  const labelColor = 0x0055aa;
+  const armed = reduce(initialToolState(EDITABLE), { type: 'pick', choice: labelChoice('X4S', labelColor) }).state;
   const retyped = reduce(armed, { type: 'retext', text: '  Stage left  ' }).state;
   check(
-    'retyping while the label is in hand follows the field',
+    'retyping while the label is in hand follows the field and keeps its color',
     retyped.tool.kind === 'stamp' &&
       retyped.tool.stamp.what === 'label' &&
-      retyped.tool.stamp.text === 'Stage left',
+      retyped.tool.stamp.text === 'Stage left' &&
+      retyped.tool.stamp.color === labelColor,
   );
   check('emptying the field puts the label down', reduce(armed, { type: 'retext', text: '   ' }).state.tool.kind === 'select');
   for (const choice of [MEASURE, DIMENSION, drawChoice('line'), GEAR, SELECT]) {

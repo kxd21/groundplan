@@ -14,10 +14,14 @@
 
 import CFB from 'cfb';
 
+import { dimensionRoom } from './dimension.js';
+import { renderDimensions } from './dimension-render.js';
+import { buildNewRoom, type NewRoomSpec } from './new-room.js';
 import { createPlanDocument, setRoomRect, verifyPlanShape, wallExtent } from './plan-skeleton.js';
-import { roomFromPolygon } from './room.js';
+import { roomBounds, roomFromPolygon, type RoomModel } from './room.js';
 import { applyRoom } from './room-render.js';
 import { parseArchive, UNITS_PER_FOOT } from './rv.js';
+import type { UnitSystem } from './units.js';
 import { verifyWritable } from './write.js';
 
 /** The largest room this format's coordinates hold, in feet. */
@@ -26,10 +30,19 @@ const MAX_ROOM_FEET = 2000;
 export interface BlankPlanOptions {
   /** Draw a rectangular room, in logical units. Omit for an empty sheet. */
   room?: { width: number; depth: number };
+  /** Advanced New Plan geometry: circles, recesses, rounding, and curved walls. */
+  roomSpec?: NewRoomSpec;
+  /**
+   * Size the empty sheet for fit/zoom without drawing walls — used by custom
+   * room tracing so the canvas opens around the intended venue footprint.
+   */
+  sheetSize?: { width: number; depth: number };
   /** Name for the room. Stored where Room Viewer reads it, not just alongside. */
   roomName?: string;
   /** Date, venue, event and contact, written into the document trailer. */
   identity?: { date?: string; venue?: string; event?: string; contact?: string };
+  /** Add buildable wall/radius dimensions to the initial drawing. */
+  autoDimensions?: UnitSystem;
 }
 
 export interface BlankPlanResult {
@@ -89,8 +102,35 @@ export function createBlankPlan(options: BlankPlanOptions = {}): BlankPlanResult
       return { ok: false, reason: 'that is larger than any room this format holds' };
     }
   }
+  if (options.sheetSize) {
+    const { width, depth } = options.sheetSize;
+    if (!(width > 0) || !(depth > 0)) return { ok: false, reason: 'the working size needs a width and a depth' };
+    if (width > MAX_ROOM_FEET * UNITS_PER_FOOT || depth > MAX_ROOM_FEET * UNITS_PER_FOOT) {
+      return { ok: false, reason: 'that is larger than any room this format holds' };
+    }
+  }
 
   const roomName = options.roomName ?? 'Room';
+  let authoredRoom: RoomModel | undefined;
+  if (options.roomSpec) {
+    const advanced = buildNewRoom(options.roomSpec, roomName);
+    if (!advanced.ok || !advanced.room) return { ok: false, reason: advanced.reason };
+    authoredRoom = advanced.room;
+  } else if (options.room) {
+    authoredRoom = rectangularWalls(options.room.width, options.room.depth, roomName);
+  }
+
+  if (authoredRoom) {
+    const bounds = roomBounds(authoredRoom);
+    if (
+      !bounds ||
+      bounds.maxX - bounds.minX > MAX_ROOM_FEET * UNITS_PER_FOOT ||
+      bounds.maxY - bounds.minY > MAX_ROOM_FEET * UNITS_PER_FOOT
+    ) {
+      return { ok: false, reason: 'that is larger than any room this format holds' };
+    }
+  }
+
   const built = createPlanDocument({
     identity: options.identity,
     defaults: { roomName },
@@ -98,14 +138,24 @@ export function createBlankPlan(options: BlankPlanOptions = {}): BlankPlanResult
   if (!built.ok || !built.doc) return { ok: false, reason: built.reason };
   const doc = built.doc;
 
-  if (options.room) {
-    const drawn = applyRoom(doc, rectangularWalls(options.room.width, options.room.depth, roomName));
+  if (authoredRoom) {
+    const drawn = applyRoom(doc, authoredRoom);
     if (!drawn.ok) return { ok: false, reason: drawn.reason };
     const extent = wallExtent(doc);
     if (extent) {
       const sized = setRoomRect(doc, extent);
       if (!sized.ok) return { ok: false, reason: sized.reason };
     }
+
+    if (options.autoDimensions) {
+      const dimensions = renderDimensions(doc, dimensionRoom(authoredRoom, options.autoDimensions));
+      if (!dimensions.ok) return { ok: false, reason: dimensions.reason };
+    }
+  } else if (options.sheetSize) {
+    const hw = options.sheetSize.width / 2;
+    const hd = options.sheetSize.depth / 2;
+    const sized = setRoomRect(doc, { left: -hw, top: -hd, right: hw, bottom: hd });
+    if (!sized.ok) return { ok: false, reason: sized.reason };
   }
 
   const verdict = verifyWritable(doc);

@@ -20,13 +20,32 @@ import type {
 } from '../main/plan-model.js';
 import type { Allocation as AllocationLine } from '../format/allocation.js';
 import type { AllocationSummary as AllocationSummaryView } from '../format/allocation.js';
+import type { PlanBackground } from '../format/companion.js';
+import type { NewRoomSpec } from '../format/new-room.js';
 
 export interface EditReply {
   ok: boolean;
   reason?: string;
+  text?: string;
   /** IDs created by duplicate/place/annotation operations. */
   created?: number[];
   doc?: OpenResult;
+}
+
+export interface LabelStylePatch {
+  family?: string;
+  size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikeOut?: boolean;
+  angleDegrees?: number;
+}
+
+export interface PlanClipboardReply extends EditReply {
+  count?: number;
+  sourceName?: string;
+  sourcePath?: string;
 }
 
 export interface SaveReply {
@@ -45,7 +64,8 @@ export interface PlanFolderReply {
   cancelled?: boolean;
   id?: string;
   added?: number;
-  removed?: boolean | { folders: number; memberships: number };
+  removed?: boolean | number | { folders: number; memberships: number };
+  changed?: number;
   state?: PlanFolderState;
 }
 
@@ -62,6 +82,10 @@ const api = {
     name?: string;
     width?: number;
     depth?: number;
+    room?: NewRoomSpec;
+    /** Empty-sheet fit bounds for custom room tracing (no walls drawn). */
+    sheetSize?: { width: number; depth: number };
+    autoDimensions?: boolean;
     identity?: { date?: string; venue?: string; event?: string; contact?: string };
   }): Promise<{ ok: boolean; cancelled?: boolean; reason?: string; doc?: OpenResult }> =>
     ipcRenderer.invoke('file:new', options),
@@ -69,6 +93,7 @@ const api = {
     ipcRenderer.invoke('plan:room-presets'),
   openFolderDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-folder'),
   openPath: (path: string): Promise<OpenResult | null> => ipcRenderer.invoke('file:open', path),
+  closePlan: (): Promise<boolean> => ipcRenderer.invoke('file:close-plan'),
   listDirectory: (path: string): Promise<DirectoryEntry[]> => ipcRenderer.invoke('dir:list', path),
   recentFiles: (): Promise<RecentFile[]> => ipcRenderer.invoke('app:recent'),
   planFoldersList: (): Promise<PlanFolderState> => ipcRenderer.invoke('plan-folders:list'),
@@ -76,6 +101,12 @@ const api = {
     ipcRenderer.invoke('plan-folders:create', name, parentId),
   planFolderRename: (id: string, name: string): Promise<PlanFolderReply> =>
     ipcRenderer.invoke('plan-folders:rename', id, name),
+  planFolderUpdate: (
+    id: string,
+    patch: { name?: string; description?: string; color?: string; favorite?: boolean },
+  ): Promise<PlanFolderReply> => ipcRenderer.invoke('plan-folders:update', id, patch),
+  planFolderMove: (id: string, parentId: string | null): Promise<PlanFolderReply> =>
+    ipcRenderer.invoke('plan-folders:move', id, parentId),
   planFolderRemove: (id: string): Promise<PlanFolderReply> =>
     ipcRenderer.invoke('plan-folders:remove', id),
   planFolderAddFiles: (folderId: string): Promise<PlanFolderReply> =>
@@ -84,6 +115,20 @@ const api = {
     ipcRenderer.invoke('plan-folders:add-current', folderId),
   planFolderRemovePlan: (folderId: string, path: string): Promise<PlanFolderReply> =>
     ipcRenderer.invoke('plan-folders:remove-plan', folderId, path),
+  planFolderTransferPlans: (
+    sourceFolderId: string,
+    targetFolderId: string,
+    paths: string[],
+    mode: 'copy' | 'move',
+  ): Promise<PlanFolderReply> =>
+    ipcRenderer.invoke('plan-folders:transfer-plans', sourceFolderId, targetFolderId, paths, mode),
+  planFolderUpdatePlan: (
+    folderId: string,
+    path: string,
+    patch: { status?: 'active' | 'review' | 'approved' | 'archived'; starred?: boolean; note?: string },
+  ): Promise<PlanFolderReply> => ipcRenderer.invoke('plan-folders:update-plan', folderId, path, patch),
+  planFolderCleanupMissing: (folderId: string | null): Promise<PlanFolderReply> =>
+    ipcRenderer.invoke('plan-folders:cleanup-missing', folderId),
   exportSvg: (suggestedName: string, svg: string): Promise<string | null> =>
     ipcRenderer.invoke('export:svg', { suggestedName, svg }),
   scheduleBuild: (): Promise<unknown | null> => ipcRenderer.invoke('schedule:build'),
@@ -163,6 +208,8 @@ const api = {
     ipcRenderer.invoke('edit:recolor', nodeId, color),
   relabel: (nodeId: number, text: string): Promise<EditReply> =>
     ipcRenderer.invoke('edit:relabel', nodeId, text),
+  setTextStyle: (nodeId: number, patch: LabelStylePatch): Promise<EditReply> =>
+    ipcRenderer.invoke('edit:text-style', nodeId, patch),
   batch: (
     kind:
       | 'move'
@@ -178,6 +225,11 @@ const api = {
     a?: number,
     b?: number,
   ): Promise<EditReply> => ipcRenderer.invoke('edit:batch', kind, ids, a, b),
+  repeatAcross: (
+    nodeId: number,
+    count: number,
+    direction?: 'right' | 'left' | 'down' | 'up',
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:repeat-across', nodeId, count, direction ?? 'right'),
   arrange: (
     mode:
       | 'align-left'
@@ -190,10 +242,26 @@ const api = {
       | 'distribute-vertical',
     ids: number[],
   ): Promise<EditReply> => ipcRenderer.invoke('edit:arrange', mode, ids),
+  copyPlanObjects: (ids: number[]): Promise<PlanClipboardReply> =>
+    ipcRenderer.invoke('edit:clipboard-copy', ids),
+  planClipboardStatus: (): Promise<PlanClipboardReply> => ipcRenderer.invoke('edit:clipboard-status'),
+  pastePlanObjects: (): Promise<EditReply> => ipcRenderer.invoke('edit:clipboard-paste'),
   undo: (): Promise<OpenResult | null> => ipcRenderer.invoke('edit:undo'),
   redo: (): Promise<OpenResult | null> => ipcRenderer.invoke('edit:redo'),
   selectionInfo: (nodeId: number): Promise<SelectionInfo | null> =>
     ipcRenderer.invoke('edit:selection', nodeId),
+  movePoint: (
+    ownerId: number,
+    pathNodeId: number,
+    pointIndex: number,
+    x: number,
+    y: number,
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:point-move', ownerId, pathNodeId, pointIndex, x, y),
+  setPointPathKind: (
+    ownerId: number,
+    pathNodeId: number,
+    kind: 'line' | 'curve',
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:point-kind', ownerId, pathNodeId, kind),
   save: (saveAs: boolean): Promise<SaveReply> => ipcRenderer.invoke('file:save', saveAs),
 
   placeGear: (description: string, x: number, y: number): Promise<EditReply & { method?: string }> =>
@@ -202,8 +270,8 @@ const api = {
     ipcRenderer.invoke('plan:rotate', nodeId, degrees),
   resize: (nodeId: number, width: number, height: number): Promise<EditReply> =>
     ipcRenderer.invoke('plan:resize', nodeId, width, height),
-  addLabel: (text: string, x: number, y: number): Promise<EditReply> =>
-    ipcRenderer.invoke('plan:add-label', text, x, y),
+  addLabel: (text: string, x: number, y: number, color?: number): Promise<EditReply> =>
+    ipcRenderer.invoke('plan:add-label', text, x, y, color),
   addDimension: (
     x1: number,
     y1: number,
@@ -241,6 +309,10 @@ const api = {
    * and comes back as an `EditReply` with a refreshed document.
    */
   planModel: (): Promise<PlanModelView | null> => ipcRenderer.invoke('plan:model'),
+  backgroundSet: (
+    background: PlanBackground | null,
+  ): Promise<{ ok: boolean; reason?: string; background?: PlanBackground | null }> =>
+    ipcRenderer.invoke('plan:background-set', background),
   roomCreate: (width: number, height: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-create', width, height),
   roomCreateCircle: (diameter: number): Promise<EditReply & { note?: string }> =>
@@ -265,15 +337,29 @@ const api = {
     height: number,
   ): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-reshape', op, x, y, width, height),
-  roomCurve: (wallIndex: number, radius: number, major?: boolean): Promise<EditReply & { note?: string }> =>
-    ipcRenderer.invoke('plan:room-curve', wallIndex, radius, major === true),
+  roomCurve: (
+    wallIndex: number,
+    value: number,
+    options?: boolean | { major?: boolean; method?: 'radius' | 'sagitta' | 'angle' | 'arc-length'; outward?: boolean },
+  ): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-curve', wallIndex, value, options),
+  roomCurveThrough: (
+    wallIndex: number,
+    through: { x: number; y: number },
+  ): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-curve-through', wallIndex, through),
   roomWallLength: (wallIndex: number, length: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-wall-length', wallIndex, length),
+  roomWallOffset: (wallIndex: number, distance: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-wall-offset', wallIndex, distance),
   roomDimension: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:room-dimension'),
   roomMeta: (patch: {
     name?: string;
     ceilingHeight?: number;
   }): Promise<{ ok: boolean; reason?: string; note?: string }> => ipcRenderer.invoke('plan:room-meta', patch),
+  identitySet: (
+    patch: { date?: string; venue?: string; event?: string; contact?: string },
+  ): Promise<EditReply & { text?: string }> => ipcRenderer.invoke('plan:identity-set', patch),
   avSummary: (): Promise<{
     screens: number;
     seatsGraded: number;
@@ -301,13 +387,15 @@ const api = {
     width: number,
     depth: number,
     height: number,
+    back?: { depth: number; height: number },
+    stairs?: Array<'front' | 'back' | 'left' | 'right'>,
   ): Promise<
     EditReply & {
       note?: string;
       buildList?: Array<{ item: string; quantity: number; detail?: string }>;
       warnings?: string[];
     }
-  > => ipcRenderer.invoke('plan:stage-add', x, y, width, depth, height),
+  > => ipcRenderer.invoke('plan:stage-add', x, y, width, depth, height, back, stairs),
   stageClear: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('plan:stage-clear'),
 
   /** Draws a line, rectangle or ellipse between two plan points. */
@@ -335,6 +423,8 @@ const api = {
     category?: string | null,
   ): Promise<InventoryState> =>
     ipcRenderer.invoke('inventory:list', query, department, category ?? null),
+  inventoryGetPhoto: (id: string): Promise<{ ok: boolean; reason?: string; photoDataUrl?: string | null }> =>
+    ipcRenderer.invoke('inventory:get-photo', id),
   inventoryMapSymbols: (): Promise<{
     ok: boolean;
     reason?: string;
@@ -343,12 +433,20 @@ const api = {
     noSymbol: number;
     notDrawn: number;
     examples: Array<{ item: string; symbol: string; reason: string }>;
-    inventory: InventoryState;
   }> => ipcRenderer.invoke('inventory:map-symbols'),
-  inventoryImport: (): Promise<{ ok: boolean; reason?: string; added: number; updated: number; files: number; inventory: InventoryState } | null> =>
-    ipcRenderer.invoke('inventory:import'),
-  inventoryAbsorbGear: (): Promise<{ ok: boolean; reason?: string; added?: number; updated?: number; inventory?: InventoryState }> =>
-    ipcRenderer.invoke('inventory:absorb-gear'),
+  inventoryImport: (): Promise<{
+    ok: boolean;
+    reason?: string;
+    added: number;
+    updated: number;
+    files: number;
+  } | null> => ipcRenderer.invoke('inventory:import'),
+  inventoryAbsorbGear: (): Promise<{
+    ok: boolean;
+    reason?: string;
+    added?: number;
+    updated?: number;
+  }> => ipcRenderer.invoke('inventory:absorb-gear'),
   inventoryExportPack: (): Promise<{
     ok: boolean;
     reason?: string;
@@ -365,19 +463,33 @@ const api = {
     updated?: number;
     assets?: number;
     items?: number;
-    inventory?: InventoryState;
   }> => ipcRenderer.invoke('inventory:import-pack'),
-  inventoryAdd: (name: string, department?: string): Promise<{ ok: boolean; reason?: string; inventory?: InventoryState }> =>
+  inventoryAdd: (
+    name: string,
+    department?: string,
+  ): Promise<{ ok: boolean; reason?: string; id?: string }> =>
     ipcRenderer.invoke('inventory:add', name, department),
   inventoryUpdate: (
     id: string,
-    patch: { name?: string; department?: string; width?: number; height?: number; notes?: string },
-  ): Promise<{ ok: boolean; reason?: string; changed?: boolean; inventory?: InventoryState }> =>
+    patch: {
+      name?: string;
+      department?: string;
+      width?: number;
+      height?: number;
+      notes?: string;
+      tracedIcon?: {
+        paths: Array<{ points: number[]; closed: boolean }>;
+        width: number;
+        height: number;
+      } | null;
+      photoDataUrl?: string | null;
+    },
+  ): Promise<{ ok: boolean; reason?: string; changed?: boolean; id?: string }> =>
     ipcRenderer.invoke('inventory:update', id, patch),
   inventoryDuplicate: (
     id: string,
     name?: string,
-  ): Promise<{ ok: boolean; reason?: string; id?: string; inventory?: InventoryState }> =>
+  ): Promise<{ ok: boolean; reason?: string; id?: string }> =>
     ipcRenderer.invoke('inventory:duplicate', id, name),
   inventoryThumbnails: (
     ids: string[],
@@ -391,20 +503,17 @@ const api = {
     category?: string;
     notes?: string;
     department?: string;
-  }): Promise<{ ok: boolean; reason?: string; id?: string; inventory?: InventoryState }> =>
+  }): Promise<{ ok: boolean; reason?: string; id?: string }> =>
     ipcRenderer.invoke('inventory:add-traced', payload),
   inventoryRemove: (id: string): Promise<{
     ok: boolean;
     reason?: string;
     undoAvailable?: boolean;
-    inventory?: InventoryState;
-  }> =>
-    ipcRenderer.invoke('inventory:remove', id),
+  }> => ipcRenderer.invoke('inventory:remove', id),
   inventoryRestoreLast: (): Promise<{
     ok: boolean;
     reason?: string;
     restoredId?: string;
-    inventory?: InventoryState;
   }> => ipcRenderer.invoke('inventory:restore-last'),
   inventoryHarvest: (): Promise<{
     ok: boolean;

@@ -66,6 +66,50 @@ export async function writeRecovery(
   return entry;
 }
 
+/** Optional plan sidecars journaled beside a recovery entry so room/meta/links survive. */
+export type PlanRecoverySidecar = 'companion' | 'dimensions' | 'links';
+
+export function recoverySidecarPath(root: string, id: string, kind: PlanRecoverySidecar): string {
+  return join(root, `${id}.${kind}.json`);
+}
+
+export async function writePlanRecoverySidecars(
+  root: string,
+  id: string,
+  sidecars: Partial<Record<PlanRecoverySidecar, unknown>>,
+): Promise<void> {
+  if (!/^(plan|gear)-[a-f0-9]{24}$/.test(id)) return;
+  await mkdir(root, { recursive: true });
+  for (const kind of ['companion', 'dimensions', 'links'] as const) {
+    const value = sidecars[kind];
+    if (value === undefined) continue;
+    await atomicWriteJson(recoverySidecarPath(root, id, kind), value);
+  }
+}
+
+export async function readPlanRecoverySidecar(
+  root: string,
+  id: string,
+  kind: PlanRecoverySidecar,
+): Promise<unknown | null> {
+  if (!/^(plan|gear)-[a-f0-9]{24}$/.test(id)) return null;
+  const path = recoverySidecarPath(root, id, kind);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+async function removePlanRecoverySidecars(root: string, id: string): Promise<void> {
+  await Promise.all(
+    (['companion', 'dimensions', 'links'] as const).map((kind) =>
+      rm(recoverySidecarPath(root, id, kind), { force: true }),
+    ),
+  );
+}
+
 function validEntry(value: unknown): RecoveryEntry | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const entry = value as Partial<RecoveryEntry>;
@@ -125,6 +169,7 @@ export async function removeRecovery(root: string, id: string): Promise<void> {
   } catch {
     // The metadata may be the only surviving half.
   }
+  await removePlanRecoverySidecars(root, id);
   await rm(join(root, `${id}.json`), { force: true });
 }
 

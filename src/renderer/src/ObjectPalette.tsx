@@ -1,7 +1,9 @@
 /**
  * Classic left icon strip: Tables, Chairs, Staging, Screens, …
- * Click arms the first matching inventory item for stamp placement.
- * Empty categories still open the Insert browser.
+ *
+ * Click opens the Insert browser for that group (so you pick the real item).
+ * Shift+click arms the first inventory match for a fast stamp when you already
+ * know what you want.
  */
 
 import { PALETTE_CATEGORIES, type InsertGroupId } from '../../inventory/insert-catalog.js';
@@ -44,24 +46,24 @@ export default function ObjectPalette({ items, armedId, disabled, onArm, onBrows
           <button
             key={cat.id}
             type="button"
-            className={`${active ? 'active' : ''}${!match ? ' is-browse-only' : ''}`}
+            className={`palette-cat${active ? ' active' : ''}${!match ? ' is-browse-only' : ''}`}
             disabled={disabled}
             aria-label={
               match
-                ? `${cat.label}: ${match.name}. Click to stamp, Shift+click to browse.`
+                ? `${cat.label}: browse Insert. Shift+click to stamp ${match.name}.`
                 : `${cat.label}: browse catalog`
             }
             title={
               match
-                ? `${cat.label}: ${match.name}\nClick to stamp · Shift+click or right-click to browse`
+                ? `${cat.label}\nClick to browse Insert · Shift+click to stamp ${match.name}`
                 : `${cat.label}: nothing matched in inventory — click to browse Insert`
             }
             onClick={(e) => {
-              if (e.shiftKey || !match) {
-                onBrowse(cat.id);
+              if (e.shiftKey && match) {
+                onArm(match.id, match.name);
                 return;
               }
-              onArm(match.id, match.name);
+              onBrowse(cat.id);
             }}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -74,6 +76,11 @@ export default function ObjectPalette({ items, armedId, disabled, onArm, onBrows
             <span className="palette-label" aria-hidden>
               {cat.label.split(' ')[0]}
             </span>
+            {match ? (
+              <span className="palette-affordance stamp" aria-hidden />
+            ) : (
+              <span className="palette-affordance browse" aria-hidden />
+            )}
           </button>
         );
       })}

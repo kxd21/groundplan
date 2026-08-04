@@ -9,7 +9,7 @@
 
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, type MenuItemConstructorOptions } from 'electron';
 import { join, dirname, basename, extname } from 'node:path';
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -58,15 +58,20 @@ import {
   moveNode,
   deleteNode,
   duplicateNode,
+  indexDocument,
   recolorNode,
   renameNode,
   rotateNode,
   resizeNode,
   measureNode,
+  setPoints,
   flipNode,
+  setLabelStyle,
   reorderChild,
   scalePlanUniform,
+  type LabelStylePatch,
 } from '../format/edit.js';
+import { convertSegmentKind, type EditableSegmentKind } from '../format/path-edit.js';
 import { arrangeMoves, type ArrangeBounds, type ArrangeMode } from '../format/arrange.js';
 import { addSeating, type SeatingRequest } from '../format/seating.js';
 import {
@@ -79,8 +84,9 @@ import {
 } from '../format/annotate.js';
 import { type UnitSystem } from '../format/units.js';
 import { INSERT_TREE, isInsertLeaf, type InsertBranch, type InsertLeaf } from '../inventory/insert-catalog.js';
-import { walk } from '../format/rv.js';
-import { listSymbols, importSymbol } from '../format/symbol.js';
+import { walk, type RVDocument, type RVNode } from '../format/rv.js';
+import { importDetachedObject, listSymbols, importSymbol } from '../format/symbol.js';
+import { snapshotPlanSelection } from '../format/plan-clipboard.js';
 import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions } from '../format/place.js';
 import { isLibrary } from '../format/library.js';
 import { verifyWritable } from '../format/write.js';
@@ -122,7 +128,7 @@ import {
   type InventoryItem,
   type RemovedInventoryItem,
 } from '../inventory/model.js';
-import { mapSymbols } from '../inventory/match.js';
+import { mapSymbols, chooseSymbol } from '../inventory/match.js';
 import {
   classify,
   CATEGORY_LABELS,
@@ -143,29 +149,38 @@ import {
 } from './show-project.js';
 import {
   listRecoveries,
+  readPlanRecoverySidecar,
   readRecovery,
   recoveryId,
   removeRecovery,
+  writePlanRecoverySidecars,
   writeRecovery,
   type RecoveryEntry,
 } from './recovery.js';
 import { buildStableSchedule, setStableScheduleField } from './schedule-metadata.js';
 import { createBlankPlan, ROOM_PRESETS } from '../format/blank.js';
+import { buildNewRoom, type NewRoomSpec } from '../format/new-room.js';
+import { planIdentity, setPlanIdentity } from '../format/plan-skeleton.js';
 import { companionPathFor } from './companion-store.js';
 import {
   addRoomCorner,
   addStage,
+  adoptAuthoredRoom,
+  adoptCompanionSnapshot,
   applySeating as applySeatingModel,
   avSummary,
   clearStage,
+  companionSnapshot,
   createCircularRoom,
   createPolygonalRoom,
   createRectangularRoom,
   curveRoomWall,
+  curveRoomWallThrough,
   drawShape,
   dimensionTheRoom,
   lengthenRoomWall,
   moveRoomCorner,
+  offsetRoomWall,
   openPlanModel,
   planAllocation,
   planModelView,
@@ -177,6 +192,7 @@ import {
   roundRoomCorner,
   resetPlanModel,
   savePlanModel,
+  updatePlanBackground,
   updateRoomMeta,
   type DrawTool,
   type ReportOptions,
@@ -191,17 +207,31 @@ import {
   type DimensionAssociationFile,
 } from './dimension-associations.js';
 import {
+  applyObjectLinkFile,
+  loadObjectLinks,
+  objectLinksFromMap,
+  objectLinksPath,
+  saveObjectLinks,
+  type ObjectLinkFile,
+} from './object-links.js';
+import { parseCompanion } from '../format/companion.js';
+import {
   addPlansToFolder,
   clonePlanFolders,
   createPlanFolder,
   emptyPlanFolders,
   loadPlanFolders,
+  movePlanFolder,
   removePlanFolder,
   removePlanFromFolder,
   renamePlanFolder,
   savePlanFolders,
+  transferPlans,
+  updatePlanFolder,
+  updatePlanMembership,
   type PlanFolder,
   type PlanFolderLibrary,
+  type PlanWorkflowStatus,
 } from './plan-folders.js';
 
 /**
@@ -292,6 +322,10 @@ export interface OpenResult {
   recovered: boolean;
   dimensionWarning?: string;
   annotationCapabilities: AnnotationCapabilities;
+  /** Trailer show identity (venue / event / date / contact), when present. */
+  identity?: { date: string; venue: string; event: string; contact: string };
+  /** True when an authored room outline with at least three walls exists. */
+  hasRoom: boolean;
 }
 
 /** Details of the currently selected object, for the properties panel. */
@@ -308,6 +342,30 @@ export interface SelectionInfo {
   /** Centre of the object's bounds, in logical units. */
   x: number;
   y: number;
+  /** Saved typography for an RVLabel. */
+  textStyle?: {
+    family: string;
+    size: number;
+    bold: boolean;
+    italic: boolean;
+    underline: boolean;
+    strikeOut: boolean;
+    angleDegrees: number;
+  };
+  /** Writable geometry belonging to this object, expressed in plan coordinates. */
+  pointPaths: Array<{
+    nodeId: number;
+    cls: string;
+    closed: boolean;
+    canEdit: boolean;
+    reason?: string;
+    points: Array<{
+      index: number;
+      x: number;
+      y: number;
+      role: 'anchor' | 'control';
+    }>;
+  }>;
   /** Present when the selection is a dimension line. */
   dimension?: {
     length: number;
@@ -365,6 +423,9 @@ export interface PlanFolderPlan {
   modified: number;
   missing: boolean;
   addedAt: string;
+  status: PlanWorkflowStatus;
+  starred: boolean;
+  note?: string;
 }
 
 export interface PlanFolderState {
@@ -416,6 +477,9 @@ async function planFolderState(): Promise<PlanFolderState> {
         modified: info.mtimeMs,
         missing: false,
         addedAt: membership.addedAt,
+        status: membership.status ?? 'active',
+        starred: membership.starred === true,
+        note: membership.note,
       });
     } catch {
       plans.push({
@@ -428,6 +492,9 @@ async function planFolderState(): Promise<PlanFolderState> {
         modified: 0,
         missing: true,
         addedAt: membership.addedAt,
+        status: membership.status ?? 'active',
+        starred: membership.starred === true,
+        note: membership.note,
       });
     }
   }
@@ -483,7 +550,11 @@ let recentsWrite = Promise.resolve();
 function queueRecentWrite(path: string, value: unknown): void {
   recentsWrite = recentsWrite
     .catch(() => undefined)
-    .then(() => atomicWriteJson(path, value))
+    .then(() =>
+      atomicWriteJson(path, value, {
+        backupPath: existsSync(path) ? `${path}.bak` : undefined,
+      }),
+    )
     .catch((error) => console.error(`[groundplan] could not persist ${basename(path)}:`, error));
 }
 
@@ -585,8 +656,100 @@ function catalogFor(planPath: string): Catalog | null {
   return catalogCache.get(found) ?? null;
 }
 
-/** The document currently open. Groundplan edits one plan at a time. */
+/** The document currently active. Other open plans are represented by renderer tabs. */
 let session: Session | null = null;
+/**
+ * True when the plan file reached disk but a Groundplan sidecar (companion,
+ * dimensions, object links, or schedule) did not. Treated as dirty for
+ * discard/quit so that data is not silently lost.
+ */
+let planSidecarPending = false;
+/** Stage↔stairs (and similar) pairs so move/delete/duplicate keep them together. */
+const objectLinks = new Map<number, number[]>();
+
+function linkObjects(a: number, b: number): void {
+  const add = (from: number, to: number) => {
+    const list = objectLinks.get(from) ?? [];
+    if (!list.includes(to)) list.push(to);
+    objectLinks.set(from, list);
+  };
+  add(a, b);
+  add(b, a);
+  scheduleObjectLinkPersist();
+}
+
+function expandLinkedIds(ids: number[]): number[] {
+  const out = new Set(ids);
+  for (const id of ids) {
+    for (const partner of objectLinks.get(id) ?? []) out.add(partner);
+  }
+  return [...out];
+}
+
+function clearObjectLinks(): void {
+  objectLinks.clear();
+}
+
+function pruneObjectLinks(removed: Iterable<number>): void {
+  for (const id of removed) {
+    const partners = objectLinks.get(id) ?? [];
+    objectLinks.delete(id);
+    for (const partner of partners) {
+      const list = (objectLinks.get(partner) ?? []).filter((x) => x !== id);
+      if (list.length) objectLinks.set(partner, list);
+      else objectLinks.delete(partner);
+    }
+  }
+  scheduleObjectLinkPersist();
+}
+
+let objectLinkWrite: Promise<void> = Promise.resolve();
+
+function scheduleObjectLinkPersist(): void {
+  const s = session;
+  if (!s) return;
+  const snapshot = objectLinksFromMap(objectLinks);
+  objectLinkWrite = objectLinkWrite
+    .catch(() => undefined)
+    .then(async () => {
+      await saveObjectLinks(s.path, snapshot);
+      // A successful flush clears only the links half of a pending state when
+      // the session is otherwise clean — full clears happen on plan save.
+    })
+    .catch((error) => {
+      planSidecarPending = true;
+      if (session === s) schedulePlanRecovery(s);
+      console.error('[groundplan] could not save object links:', error);
+    });
+}
+
+async function restoreObjectLinks(planPath: string): Promise<string | undefined> {
+  const loaded = await loadObjectLinks(planPath);
+  applyObjectLinkFile(loaded.file, objectLinks);
+  // Drop pairs whose objects no longer exist in the open document.
+  if (session) {
+    const alive = new Set(session.index.byId.keys());
+    const stale: number[] = [];
+    for (const id of objectLinks.keys()) {
+      if (!alive.has(id)) stale.push(id);
+    }
+    if (stale.length) pruneObjectLinks(stale);
+  }
+  return loaded.warning;
+}
+
+interface PlanObjectClipboard {
+  source: RVDocument;
+  nodes: RVNode[];
+  sourcePath: string;
+  sourceName: string;
+  /** Consecutive pastes into one plan staircase instead of landing on top of each other. */
+  pasteTarget?: string;
+  pasteCount: number;
+}
+
+/** Exact source-object snapshots used for copy/paste between plan tabs. */
+let planObjectClipboard: PlanObjectClipboard | null = null;
 
 /** How this person likes the application to behave. Loaded once at startup. */
 let settings: Settings | null = null;
@@ -632,7 +795,11 @@ function persistDimensionAssociations(planPath: string): void {
   dimensionWrite = dimensionWrite
     .catch(() => undefined)
     .then(() => saveDimensionAssociations(planPath, snapshot))
-    .catch((error) => console.error('[groundplan] could not save dimension associations:', error));
+    .catch((error) => {
+      planSidecarPending = true;
+      if (session) schedulePlanRecovery(session);
+      console.error('[groundplan] could not save dimension associations:', error);
+    });
 }
 
 /** The equipment inventory, loaded once at startup and saved after each change. */
@@ -647,7 +814,7 @@ let finishHarvest: (() => void) | null = null;
 let harvestCloseRequested = false;
 
 export interface InventoryState {
-  items: InventoryItem[];
+  items: Array<Omit<InventoryItem, 'photoDataUrl'> & { hasPhoto?: boolean; photoDataUrl?: never }>;
   departments: Array<{ name: string; count: number }>;
   /** Category counts, already grouped into the drawing's layer families. */
   groups: Array<{
@@ -658,6 +825,16 @@ export interface InventoryState {
   total: number;
   path: string;
   notice?: string;
+}
+
+/** Slim mutate replies — the renderer re-lists; do not ship every photo again. */
+function inventoryMutateOk(extra: Record<string, unknown> = {}): { ok: true } & Record<string, unknown> {
+  return { ok: true, ...extra };
+}
+
+function inventoryBusyReason(): string | null {
+  if (harvestRunning) return 'wait for the symbol scan to finish';
+  return null;
 }
 
 function inventoryState(
@@ -674,8 +851,15 @@ function inventoryState(
       .map((c) => ({ id: c.id, label: CATEGORY_LABELS[c.id], count: c.count })),
   })).filter((g) => g.categories.length > 0);
 
+  // Photos stay on the main-process inventory; list payloads only flag that one
+  // exists so the UI can fetch it for visible rows.
+  const items = searchInventory(inventory, query, department, category).map((item) => {
+    const { photoDataUrl, ...rest } = item;
+    return photoDataUrl ? { ...rest, hasPhoto: true as const } : rest;
+  });
+
   return {
-    items: searchInventory(inventory, query, department, category),
+    items,
     departments: departmentsOf(inventory),
     groups,
     total: inventory.items.length,
@@ -816,8 +1000,14 @@ function currentGearRecoveryKey(): string | null {
   return gearRecoveryKeyFor(gear);
 }
 
+function planNeedsRecovery(s: Session): boolean {
+  return s.dirty || planSidecarPending;
+}
+
 function schedulePlanRecovery(s: Session): void {
   if (!recoveryRoot) return;
+  // Never journal a lossy rewrite of a read-only / non-round-trip open.
+  if (!s.editable) return;
   if (planRecoveryTimer) clearTimeout(planRecoveryTimer);
   const generation = planRecoveryGeneration;
   planRecoveryTimer = setTimeout(() => {
@@ -826,8 +1016,10 @@ function schedulePlanRecovery(s: Session): void {
       .catch(() => undefined)
       .then(async () => {
         if (generation !== planRecoveryGeneration || session !== s) return;
-        if (!s.dirty) {
-          await removeRecovery(recoveryRoot, recoveryId('plan', canonicalPath(s.path)));
+        if (!s.editable) return;
+        const id = recoveryId('plan', canonicalPath(s.path));
+        if (!planNeedsRecovery(s)) {
+          await removeRecovery(recoveryRoot, id);
         } else {
           await writeRecovery(
             recoveryRoot,
@@ -838,6 +1030,14 @@ function schedulePlanRecovery(s: Session): void {
             s.path,
             s.savedFileHash,
           );
+          // Journal every sidecar so room/meta/links survive a crash after the
+          // plan body landed but a companion write failed (any plan extension).
+          const companion = companionSnapshot();
+          await writePlanRecoverySidecars(recoveryRoot, id, {
+            companion: companion ?? undefined,
+            dimensions: cloneDimensionAssociations(),
+            links: objectLinksFromMap(objectLinks),
+          });
         }
         if (generation === planRecoveryGeneration) notifyRecoveryChanged();
       })
@@ -901,17 +1101,33 @@ function describe(s: Session): OpenResult {
     warningSamples: s.loaded.document.warnings.slice(0, 5).map((w) => w.message),
     scene: s.scene,
     editable: s.editable,
-    dirty: s.dirty,
+    dirty: s.dirty || planSidecarPending,
     canUndo: s.canUndo(),
     canRedo: s.canRedo(),
     revision: s.revision,
     recovered: s.recovered,
     dimensionWarning: dimensionAssociationWarning,
     annotationCapabilities: annotationCapabilities(s.loaded.document),
+    identity: (() => {
+      const found = planIdentity(s.loaded.document);
+      if (!found) return undefined;
+      return {
+        date: found.date,
+        venue: found.venue,
+        event: found.event,
+        contact: found.contact,
+      };
+    })(),
+    hasRoom: (() => {
+      const model = planModelView(s, unitSystem());
+      const walls = model?.room?.walls ?? 0;
+      return walls >= 3 && model?.room?.source !== 'extent' && model?.room?.source !== 'none';
+    })(),
   };
 }
 
 function restoreDimensionLinks(s: Session): void {
+  if (!s.editable) return;
   if (dimensionAssociationWarning || dimensionAssociations.entries.length === 0) return;
   const updated = updateAssociativeDimensions(
     s.loaded.document,
@@ -932,6 +1148,9 @@ async function openPath(path: string): Promise<OpenResult> {
   path = grantPath(path);
   await enforceFileSize(path, MAX_PLAN_BYTES);
   const buf = await readFile(path);
+  clearObjectLinks();
+  resetPlanModel();
+  planSidecarPending = false;
   session = new Session(path, buf);
   const associations = await loadDimensionAssociations(path);
   dimensionAssociations = associations.file;
@@ -939,6 +1158,10 @@ async function openPath(path: string): Promise<OpenResult> {
   restoreDimensionLinks(session);
   resetDimensionHistory();
   await openPlanModel(path, session.loaded.document, unitSystem());
+  const linkWarning = await restoreObjectLinks(path);
+  if (linkWarning && !dimensionAssociationWarning) {
+    dimensionAssociationWarning = linkWarning;
+  }
   activePlanRecoveryId = null;
   rememberRecent(path);
   return describe(session);
@@ -972,17 +1195,28 @@ const RESULT_CHANNELS = new Set([
   'recovery:dismiss',
   'plan-folders:create',
   'plan-folders:rename',
+  'plan-folders:update',
+  'plan-folders:move',
   'plan-folders:remove',
   'plan-folders:add-files',
   'plan-folders:add-current',
   'plan-folders:remove-plan',
+  'plan-folders:transfer-plans',
+  'plan-folders:update-plan',
+  'plan-folders:cleanup-missing',
   'edit:move',
   'edit:delete',
   'edit:duplicate',
   'edit:recolor',
   'edit:relabel',
+  'edit:text-style',
   'edit:batch',
+  'edit:repeat-across',
   'edit:arrange',
+  'edit:clipboard-copy',
+  'edit:clipboard-paste',
+  'edit:clipboard-status',
+  'edit:point-kind',
   'inventory:map-symbols',
   'inventory:absorb-gear',
   'inventory:harvest',
@@ -1024,12 +1258,16 @@ const RESULT_CHANNELS = new Set([
   'plan:room-corners-round-all',
   'plan:room-reshape',
   'plan:room-curve',
+  'plan:room-curve-through',
   'plan:room-wall-length',
+  'plan:room-wall-offset',
   'plan:room-dimension',
+  'plan:identity-set',
   'plan:seating-apply',
   'plan:stage-add',
   'plan:report-export',
   'plan:draw',
+  'plan:background-set',
   'file:new',
 ]);
 
@@ -1059,11 +1297,18 @@ function handle(
   });
 }
 
-function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: string; created?: number[] }): {
+function applyEdit(run: (s: Session) => {
   ok: boolean;
   reason?: string;
   text?: string;
   created?: number[];
+  method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
+}): {
+  ok: boolean;
+  reason?: string;
+  text?: string;
+  created?: number[];
+  method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
   doc?: OpenResult;
 } {
   const s = session;
@@ -1074,7 +1319,13 @@ function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: s
 
   const associationsBefore = cloneDimensionAssociations();
   s.checkpoint();
-  let result: { ok: boolean; reason?: string; text?: string; created?: number[] };
+  let result: {
+    ok: boolean;
+    reason?: string;
+    text?: string;
+    created?: number[];
+    method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
+  };
   try {
     result = run(s);
     if (!result.ok) {
@@ -1104,7 +1355,13 @@ function applyEdit(run: (s: Session) => { ok: boolean; reason?: string; text?: s
     commitDimensionHistory(associationsBefore);
     if (associatedUpdates > 0) persistDimensionAssociations(s.path);
     schedulePlanRecovery(s);
-    return { ok: true, text: result.text, created: result.created, doc: describe(s) };
+    return {
+      ok: true,
+      text: result.text,
+      created: result.created,
+      method: result.method,
+      doc: describe(s),
+    };
   } catch (err) {
     // Roll back rather than undo: an edit that threw must not be offered as a
     // redo, or Redo would re-apply the half-finished change.
@@ -1142,6 +1399,16 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
   }
   const overwritingSource = samePath(target, source);
 
+  // Carved/repaired compounds must not be rewritten in place — Save As builds a
+  // clean OLE container instead of re-packing the damaged original.
+  if (s.loaded.repaired && overwritingSource) {
+    return {
+      ok: false,
+      reason:
+        'This plan was repaired when opened. Use Save As to write a clean file instead of overwriting the damaged original.',
+    };
+  }
+
   if (overwritingSource) {
     try {
       const currentDiskFile = await readFile(source);
@@ -1165,7 +1432,6 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
     }
   }
 
-  const backup = `${source}.bak`;
   const verdict = verifyWritable(s.loaded.document);
   if (!verdict.ok) {
     return {
@@ -1180,9 +1446,9 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
   const associationsAtSave = cloneDimensionAssociations();
   try {
     await atomicWriteFile(target, bytes, {
-      // Refresh .bak on every overwrite so it stays a last-good copy, matching
-      // companion / dimension / schedule sidecar writers.
-      backupPath: overwritingSource ? backup : undefined,
+      // Always keep a last-good .bak when replacing any existing file (Save and
+      // Save As overwrite), matching companion / dimension / schedule writers.
+      backupPath: existsSync(target) ? `${target}.bak` : undefined,
     });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -1197,6 +1463,7 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
   const addWarning = (message: string): void => {
     warning = warning ? `${warning} ${message}` : message;
   };
+  let sidecarsOk = true;
   if (!overwritingSource) {
     const sourceData = dataFileFor(source);
     if (existsSync(sourceData)) {
@@ -1207,6 +1474,7 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
         });
         grantPath(targetData);
       } catch (error) {
+        sidecarsOk = false;
         addWarning(`The plan was saved, but its schedule metadata could not be copied: ${String(error)}`);
       }
     }
@@ -1234,7 +1502,28 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
         }
         grantPath(dimensionAssociationPath(target));
       } catch (error) {
+        sidecarsOk = false;
         addWarning(`Its associative dimensions could not be copied: ${String(error)}`);
+      }
+    }
+    const sourceLinks = objectLinksPath(source);
+    const linksAtSave = objectLinksFromMap(objectLinks);
+    if (existsSync(sourceLinks) || linksAtSave.pairs.length > 0) {
+      try {
+        await objectLinkWrite;
+        if (linksAtSave.pairs.length > 0) {
+          await saveObjectLinks(target, linksAtSave);
+        } else if (existsSync(sourceLinks)) {
+          await atomicWriteFile(objectLinksPath(target), await readFile(sourceLinks), {
+            backupPath: existsSync(objectLinksPath(target))
+              ? `${objectLinksPath(target)}.bak`
+              : undefined,
+          });
+        }
+        grantPath(objectLinksPath(target));
+      } catch (error) {
+        sidecarsOk = false;
+        addWarning(`Its object links could not be copied: ${String(error)}`);
       }
     }
   }
@@ -1247,23 +1536,47 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
     await savePlanModel(target, body);
     grantPath(companionPathFor(target));
   } catch (error) {
-    addWarning(`Its Groundplan data could not be saved: ${String(error)}`);
+    sidecarsOk = false;
+    addWarning(
+      `Its Groundplan data could not be saved: ${String(error)} Save again when the folder is writable so room and seating data are not lost.`,
+    );
   }
+  try {
+    await dimensionWrite;
+    await saveDimensionAssociations(target, associationsAtSave);
+    grantPath(dimensionAssociationPath(target));
+  } catch (error) {
+    sidecarsOk = false;
+    addWarning(`Its associative dimensions could not be saved: ${String(error)}`);
+  }
+  try {
+    await objectLinkWrite;
+    await saveObjectLinks(target, objectLinksFromMap(objectLinks));
+    grantPath(objectLinksPath(target));
+  } catch (error) {
+    sidecarsOk = false;
+    addWarning(`Its object links could not be saved: ${String(error)}`);
+  }
+  planSidecarPending = !sidecarsOk;
+
   if (recoveryRoot) {
     cancelPlanRecoverySchedule();
     await planRecoveryWrite;
-    const ids = new Set([
-      recoveryId('plan', canonicalPath(source)),
-      recoveryId('plan', canonicalPath(target)),
-      ...(activePlanRecoveryId ? [activePlanRecoveryId] : []),
-    ]);
-    await Promise.all([...ids].map((id) => removeRecovery(recoveryRoot, id)));
-    activePlanRecoveryId = null;
-    notifyRecoveryChanged();
+    if (sidecarsOk) {
+      const ids = new Set([
+        recoveryId('plan', canonicalPath(source)),
+        recoveryId('plan', canonicalPath(target)),
+        ...(activePlanRecoveryId ? [activePlanRecoveryId] : []),
+      ]);
+      await Promise.all([...ids].map((id) => removeRecovery(recoveryRoot, id)));
+      activePlanRecoveryId = null;
+      notifyRecoveryChanged();
+    }
   }
   // A newer edit may have landed while the snapshot was being written. It is
   // intentionally still dirty and needs a fresh crash-recovery checkpoint.
-  if (s.dirty) {
+  // Sidecar failure also keeps a journal until every sidecar lands.
+  if (planNeedsRecovery(s)) {
     persistDimensionAssociations(target);
     schedulePlanRecovery(s);
   }
@@ -1396,7 +1709,7 @@ async function showSaveFailure(result: { reason?: string; conflict?: boolean }):
 }
 
 async function confirmDiscard(kind: 'plan' | 'gear' | 'all'): Promise<boolean> {
-  const dirtyPlan = !!session?.dirty;
+  const dirtyPlan = !!(session && (session.dirty || planSidecarPending));
   const dirtyGear = !!gear?.dirty;
   const needsPlan = kind !== 'gear' && dirtyPlan;
   const needsGear = kind !== 'plan' && dirtyGear;
@@ -1505,7 +1818,7 @@ async function armScheduledUpdateTimer(latestVersion?: string): Promise<void> {
  * Returns false when they cancel. Clean sessions skip the question.
  */
 async function confirmSaveBeforeUpdate(latestVersion: string): Promise<boolean> {
-  const dirtyPlan = !!session?.dirty;
+  const dirtyPlan = !!(session && (session.dirty || planSidecarPending));
   const dirtyGear = !!gear?.dirty;
   if (!dirtyPlan && !dirtyGear) return true;
 
@@ -1969,7 +2282,8 @@ function createWindow(): void {
       }
       return;
     }
-    if (closeConfirmed || (!session?.dirty && !gear?.dirty)) return;
+    if (closeConfirmed || (!(session && (session.dirty || planSidecarPending)) && !gear?.dirty))
+      return;
     event.preventDefault();
     void confirmDiscard('all').then((discard) => {
       if (!discard || !mainWindow) return;
@@ -1985,9 +2299,11 @@ function createWindow(): void {
     cancelGearRecoverySchedule();
     harvestCancelled = true;
     session = null;
+    clearObjectLinks();
     gear = null;
     lastRemovedGear = null;
     resetPlanModel();
+    planSidecarPending = false;
     activePlanRecoveryId = null;
     activeGearRecoveryId = null;
     dimensionAssociations = {
@@ -2285,14 +2601,60 @@ app.whenReady().then(async () => {
       if (recovered.entry.sourcePath && existsSync(recovered.entry.sourcePath)) {
         grantPath(recovered.entry.sourcePath);
       }
+      clearObjectLinks();
+      resetPlanModel();
+      planSidecarPending = false;
       session = new Session(planPath, recovered.data);
       const associations = await loadDimensionAssociations(planPath);
       dimensionAssociations = associations.file;
       dimensionAssociationWarning = associations.warning;
       resetDimensionHistory();
       session.markRecovered(recovered.entry.sourceDigest);
+      // Prefer journaled sidecars over disk — they hold work that never landed
+      // beside the plan (any of .rv4 / .rs4 / .se4 / .ds4 / .rsd).
+      const journaledDimensions = await readPlanRecoverySidecar(
+        recoveryRoot,
+        recovered.entry.id,
+        'dimensions',
+      );
+      if (
+        journaledDimensions &&
+        typeof journaledDimensions === 'object' &&
+        (journaledDimensions as DimensionAssociationFile).format ===
+          'groundplan-dimension-associations'
+      ) {
+        dimensionAssociations = journaledDimensions as DimensionAssociationFile;
+        dimensionAssociationWarning = undefined;
+      }
       restoreDimensionLinks(session);
+      await openPlanModel(planPath, session.loaded.document, unitSystem());
+      const journaledCompanion = await readPlanRecoverySidecar(
+        recoveryRoot,
+        recovered.entry.id,
+        'companion',
+      );
+      const parsedCompanion = parseCompanion(journaledCompanion);
+      if (parsedCompanion) adoptCompanionSnapshot(parsedCompanion);
+      const linkWarning = await restoreObjectLinks(planPath);
+      const journaledLinks = await readPlanRecoverySidecar(
+        recoveryRoot,
+        recovered.entry.id,
+        'links',
+      );
+      if (
+        journaledLinks &&
+        typeof journaledLinks === 'object' &&
+        (journaledLinks as { format?: string }).format === 'groundplan-object-links'
+      ) {
+        clearObjectLinks();
+        applyObjectLinkFile(journaledLinks as ObjectLinkFile, objectLinks);
+      }
+      if (linkWarning && !dimensionAssociationWarning) {
+        dimensionAssociationWarning = linkWarning;
+      }
       activePlanRecoveryId = recovered.entry.id;
+      planSidecarPending = true;
+      schedulePlanRecovery(session);
       return { kind: 'plan' as const, doc: describe(session) };
     }
 
@@ -2359,6 +2721,22 @@ app.whenReady().then(async () => {
     return { ok: true, state: await planFolderState() };
   });
 
+  handle('plan-folders:update', async (_event, id: string, patch: unknown) => {
+    if (typeof id !== 'string' || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error('a valid folder update is required');
+    }
+    await mutatePlanFolders((next) => updatePlanFolder(next, id, patch as never));
+    return { ok: true, state: await planFolderState() };
+  });
+
+  handle('plan-folders:move', async (_event, id: string, parentId: string | null) => {
+    if (typeof id !== 'string' || (parentId !== null && typeof parentId !== 'string')) {
+      throw new Error('a valid folder destination is required');
+    }
+    await mutatePlanFolders((next) => movePlanFolder(next, id, parentId));
+    return { ok: true, state: await planFolderState() };
+  });
+
   handle('plan-folders:remove', async (_event, id: string) => {
     if (typeof id !== 'string') throw new Error('a valid folder is required');
     const removed = await mutatePlanFolders((next) => removePlanFolder(next, id));
@@ -2417,9 +2795,74 @@ app.whenReady().then(async () => {
     return { ok: true, removed, state: await planFolderState() };
   });
 
+  handle(
+    'plan-folders:transfer-plans',
+    async (_event, sourceFolderId: string, targetFolderId: string, paths: string[], mode: 'copy' | 'move') => {
+      if (
+        typeof sourceFolderId !== 'string' ||
+        typeof targetFolderId !== 'string' ||
+        !Array.isArray(paths) ||
+        !paths.every((path) => typeof path === 'string') ||
+        (mode !== 'copy' && mode !== 'move')
+      ) {
+        throw new Error('a valid batch folder operation is required');
+      }
+      const changed = await mutatePlanFolders((next) =>
+        transferPlans(next, sourceFolderId, targetFolderId, paths, mode),
+      );
+      return { ok: true, changed, state: await planFolderState() };
+    },
+  );
+
+  handle('plan-folders:update-plan', async (_event, folderId: string, path: string, patch: unknown) => {
+    if (
+      typeof folderId !== 'string' ||
+      typeof path !== 'string' ||
+      !patch ||
+      typeof patch !== 'object' ||
+      Array.isArray(patch)
+    ) {
+      throw new Error('a valid plan update is required');
+    }
+    await mutatePlanFolders((next) => updatePlanMembership(next, folderId, path, patch as never));
+    return { ok: true, state: await planFolderState() };
+  });
+
+  handle('plan-folders:cleanup-missing', async (_event, folderId: string | null) => {
+    if (folderId !== null && typeof folderId !== 'string') throw new Error('a valid folder is required');
+    const removed = await mutatePlanFolders((next) => {
+      const before = next.memberships.length;
+      next.memberships = next.memberships.filter(
+        (membership) =>
+          (folderId != null && membership.folderId !== folderId) || existsSync(membership.path),
+      );
+      return before - next.memberships.length;
+    });
+    return { ok: true, removed, state: await planFolderState() };
+  });
+
   handle('file:open', async (_event, path: string) => {
     if (!(await confirmDiscard('plan'))) return null;
     return openPath(requireGrantedPath(path, ALL_EXTENSIONS));
+  });
+
+  handle('file:close-plan', async () => {
+    if (!session) return true;
+    if (!(await confirmDiscard('plan'))) return false;
+    cancelPlanRecoverySchedule();
+    session = null;
+    clearObjectLinks();
+    resetPlanModel();
+    planSidecarPending = false;
+    activePlanRecoveryId = null;
+    dimensionAssociations = {
+      format: 'groundplan-dimension-associations',
+      version: 1,
+      entries: [],
+    };
+    dimensionAssociationWarning = undefined;
+    resetDimensionHistory();
+    return true;
   });
 
   handle(
@@ -2472,6 +2915,71 @@ app.whenReady().then(async () => {
 
   // --- editing ------------------------------------------------------------
 
+  handle('edit:clipboard-copy', (_event, ids: number[]) => {
+    const s = session;
+    if (!s) return { ok: false, reason: 'open a plan first' };
+    if (!Array.isArray(ids) || ids.length === 0) return { ok: false, reason: 'select one or more items first' };
+    if (ids.length > 2_000) return { ok: false, reason: 'copy up to 2,000 items at a time' };
+    if (!ids.every((id) => Number.isSafeInteger(id) && id > 0)) {
+      return { ok: false, reason: 'the selection is invalid' };
+    }
+
+    // Serialize and parse once so the clipboard is a snapshot. Continuing to
+    // move the source objects after Copy must not silently change what Paste
+    // will insert into another show.
+    const source = loadBuffer(s.file(), s.path).document;
+    const nodes = snapshotPlanSelection(s.loaded.document, s.index, ids, source);
+    if (!nodes.length) return { ok: false, reason: 'none of the selected items can be copied' };
+
+    planObjectClipboard = {
+      source,
+      nodes,
+      sourcePath: s.path,
+      sourceName: s.loaded.name,
+      pasteCount: 0,
+    };
+    return { ok: true, count: nodes.length, sourceName: s.loaded.name, sourcePath: s.path };
+  });
+
+  handle('edit:clipboard-status', () => {
+    const clipboard = planObjectClipboard;
+    return clipboard
+      ? {
+          ok: true,
+          count: clipboard.nodes.length,
+          sourceName: clipboard.sourceName,
+          sourcePath: clipboard.sourcePath,
+        }
+      : { ok: false };
+  });
+
+  handle('edit:clipboard-paste', () => {
+    const clipboard = planObjectClipboard;
+    if (!clipboard) return { ok: false, reason: 'copy items from a plan first' };
+    if (!session) return { ok: false, reason: 'open the destination plan first' };
+    if (clipboard.pasteTarget === session.path) clipboard.pasteCount++;
+    else {
+      clipboard.pasteTarget = session.path;
+      clipboard.pasteCount = 1;
+    }
+    const offset = 120 * Math.min(clipboard.pasteCount, 10);
+    const reply = applyEdit((s) => {
+      const created: number[] = [];
+      for (const node of clipboard.nodes) {
+        const imported = importDetachedObject(s.loaded.document, clipboard.source, node, offset, offset);
+        if (!imported.ok) return imported;
+        if (imported.created) created.push(...imported.created);
+      }
+      return {
+        ok: true,
+        created,
+        text: `${clipboard.nodes.length} item${clipboard.nodes.length === 1 ? '' : 's'} from ${clipboard.sourceName}`,
+      };
+    });
+    if (!reply.ok) clipboard.pasteCount = Math.max(0, clipboard.pasteCount - 1);
+    return reply;
+  });
+
   handle('edit:move', (_event, nodeId: number, dx: number, dy: number) =>
     applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
@@ -2512,6 +3020,17 @@ app.whenReady().then(async () => {
     }),
   );
 
+  handle('edit:text-style', (_event, nodeId: number, patch: LabelStylePatch) =>
+    applyEdit((s) => {
+      if (!Number.isSafeInteger(nodeId) || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return { ok: false, reason: 'the text formatting is invalid' };
+      }
+      const node = s.index.byId.get(nodeId);
+      if (!node) return { ok: false, reason: 'text label no longer exists' };
+      return setLabelStyle(s.loaded.document, node, patch);
+    }),
+  );
+
   // --- equipment inventory --------------------------------------------------
 
   handle(
@@ -2519,6 +3038,13 @@ app.whenReady().then(async () => {
     (_event, query: string, department: string | null, category: string | null) =>
       inventoryState(query ?? '', department ?? null, (category as Category) ?? null),
   );
+
+  handle('inventory:get-photo', (_event, id: string) => {
+    const item = locateInventoryItem(inventory, id);
+    if (!item) return { ok: false, reason: 'item no longer exists' };
+    if (!item.photoDataUrl) return { ok: true, photoDataUrl: null };
+    return { ok: true, photoDataUrl: item.photoDataUrl };
+  });
 
   /**
    * Gives every unshaped item the best drawn symbol available.
@@ -2529,20 +3055,26 @@ app.whenReady().then(async () => {
    * and matched to a symbol harvested from the shop's own plans.
    */
   handle('inventory:map-symbols', async () => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     const summary = mapSymbols(inventory);
     await persistInventory();
-    return { ok: true, ...summary, inventory: inventoryState() };
+    return inventoryMutateOk({ ...summary });
   });
 
   /** Folds the gear lists currently open into the inventory. */
   handle('inventory:absorb-gear', async () => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     const summary = await absorbOpenGearIntoInventory();
     if (!summary) return { ok: false, reason: 'no gear list is open' };
-    return { ok: true, ...summary, inventory: inventoryState() };
+    return inventoryMutateOk({ ...summary });
   });
 
   /** Writes the company inventory to a folder other machines can import. */
   handle('inventory:export-pack', async () => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     const result = await dialog.showOpenDialog({
       title: 'Export inventory pack for other computers',
       properties: ['openDirectory', 'createDirectory'],
@@ -2557,6 +3089,8 @@ app.whenReady().then(async () => {
 
   /** Merges an inventory pack from USB / shared folder into this install. */
   handle('inventory:import-pack', async () => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     const result = await dialog.showOpenDialog({
       title: 'Import inventory pack',
       properties: ['openDirectory'],
@@ -2567,7 +3101,7 @@ app.whenReady().then(async () => {
     const imported = await importInventoryPack(source, inventoryFile, inventory);
     if (!imported.ok) return imported;
     inventoryNotice = `Imported inventory pack — ${imported.added} new, ${imported.updated} updated.`;
-    return { ...imported, inventory: inventoryState() };
+    return inventoryMutateOk({ ...imported });
   });
 
   /** Imports straight from a gear-list PDF or a CSV, without opening it first. */
@@ -2673,7 +3207,6 @@ app.whenReady().then(async () => {
         failed,
         cancelled: harvestCancelled,
         plans: plans.length,
-        inventory: inventoryState(),
       };
     } finally {
       harvestRunning = false;
@@ -2689,6 +3222,8 @@ app.whenReady().then(async () => {
   });
 
   handle('inventory:import', async () => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     const result = await dialog.showOpenDialog({
       title: 'Add to the equipment inventory',
       properties: ['openFile', 'multiSelections'],
@@ -2776,30 +3311,75 @@ app.whenReady().then(async () => {
     }
 
     await persistInventory();
-    return { ok: true, added, updated, files: result.filePaths.length, inventory: inventoryState() };
+    return inventoryMutateOk({ added, updated, files: result.filePaths.length });
   });
 
   handle('inventory:add', async (_event, name: string, department?: string) => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     const summary = mergeItems(inventory, [{ name, department }], new Date(), {
       id: `manual:${normaliseName(name)}`,
       type: 'manual',
       label: name.trim(),
     });
-    await persistInventory();
-    return { ok: summary.added > 0, reason: summary.added ? undefined : 'already in the inventory', inventory: inventoryState() };
+    if (summary.added > 0) await persistInventory();
+    const created = inventory.items.find((i) => normaliseName(i.name) === normaliseName(name));
+    return summary.added > 0
+      ? inventoryMutateOk({ id: created?.id })
+      : { ok: false, reason: 'already in the inventory' };
   });
 
   handle(
     'inventory:update',
-    async (_event, id: string, patch: { name?: string; department?: string; width?: number; height?: number; notes?: string }) => {
+    async (
+      _event,
+      id: string,
+      patch: {
+        name?: string;
+        department?: string;
+        width?: number;
+        height?: number;
+        notes?: string;
+        tracedIcon?: {
+          paths: Array<{ points: number[]; closed: boolean }>;
+          width: number;
+          height: number;
+        } | null;
+        photoDataUrl?: string | null;
+      },
+    ) => {
+      const busy = inventoryBusyReason();
+      if (busy) return { ok: false, reason: busy };
       if (!patch || typeof id !== 'string') return { ok: false, reason: 'invalid equipment edit' };
+      if (patch.tracedIcon) {
+        if (!patch.tracedIcon.paths?.length) return { ok: false, reason: 'the traced outline is empty' };
+        for (const path of patch.tracedIcon.paths) {
+          if (typeof path.closed !== 'boolean' || !Array.isArray(path.points)) {
+            return { ok: false, reason: 'the traced outline is malformed' };
+          }
+          for (const value of path.points) {
+            if (typeof value !== 'number' || !Number.isFinite(value)) {
+              return { ok: false, reason: 'the traced outline is malformed' };
+            }
+          }
+        }
+      }
+      if (typeof patch.photoDataUrl === 'string') {
+        // Cap stored photos so the inventory JSON stays portable.
+        if (patch.photoDataUrl.length > 350_000) {
+          return { ok: false, reason: 'that photo is too large — try a smaller image' };
+        }
+        if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(patch.photoDataUrl)) {
+          return { ok: false, reason: 'photo must be a PNG or JPEG' };
+        }
+      }
       const updated = updateInventoryItem(inventory, id, patch);
       if (!updated.ok) return { ok: false, reason: updated.reason };
       if (updated.changed) {
         await persistInventory();
         lastRemovedInventory = null;
       }
-      return { ok: true, changed: updated.changed, inventory: inventoryState() };
+      return inventoryMutateOk({ changed: updated.changed, id });
     },
   );
 
@@ -2811,7 +3391,9 @@ app.whenReady().then(async () => {
    * linen" is still a 60 inch round.
    */
   handle('inventory:duplicate', async (_event, id: string, name?: string) => {
-    const item = inventory.items.find((i) => i.id === id);
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
+    const item = locateInventoryItem(inventory, id);
     if (!item) return { ok: false, reason: 'item no longer exists' };
 
     let wanted = name?.trim() || `${item.name} (copy)`;
@@ -2821,7 +3403,8 @@ app.whenReady().then(async () => {
       wanted = `${wanted} ${n}`;
     }
 
-    const [copy] = mergeItems(
+    const beforeIds = new Set(inventory.items.map((i) => i.id));
+    mergeItems(
       inventory,
       [
         {
@@ -2831,24 +3414,28 @@ app.whenReady().then(async () => {
           height: item.height,
           sizeSource: item.sizeSource,
           symbolPath: item.symbolPath,
+          symbolName: item.symbolName,
+          symbolAsset: item.symbolAsset,
+          mappedBy: item.mappedBy,
+          mapReason: item.mapReason,
+          tracedIcon: item.tracedIcon,
+          photoDataUrl: item.photoDataUrl,
+          notes: item.notes,
         },
       ],
       new Date(),
       { id: `manual-copy:${item.id}:${normaliseName(wanted)}`, type: 'manual', label: wanted },
-    )
-      ? [inventory.items[inventory.items.length - 1]]
-      : [];
+    );
 
-    if (copy) {
-      copy.symbolName = item.symbolName;
-      copy.mappedBy = item.mappedBy;
-      copy.mapReason = item.mapReason;
-      // A copy starts unused rather than inheriting the original's history.
-      copy.timesSeen = 1;
-    }
+    const copy = inventory.items.find((i) => !beforeIds.has(i.id) && normaliseName(i.name) === normaliseName(wanted));
+    if (!copy) return { ok: false, reason: 'could not create the copy' };
+    // A copy starts unused rather than inheriting the original's history.
+    copy.timesSeen = 1;
+    copy.peakQuantity = 0;
+    copy.category = item.category;
 
     await persistInventory();
-    return { ok: true, id: copy?.id, inventory: inventoryState() };
+    return inventoryMutateOk({ id: copy.id });
   });
 
   /**
@@ -2923,6 +3510,8 @@ app.whenReady().then(async () => {
         department?: string;
       },
     ) => {
+      const busy = inventoryBusyReason();
+      if (busy) return { ok: false, reason: busy };
       const name = payload?.name?.trim();
       if (!name) return { ok: false, reason: 'the item needs a name' };
       if (!payload.paths?.length) return { ok: false, reason: 'the traced outline is empty' };
@@ -2967,20 +3556,24 @@ app.whenReady().then(async () => {
       }
 
       await persistInventory();
-      return { ok: true, id: created?.id, inventory: inventoryState() };
+      return inventoryMutateOk({ id: created?.id });
     },
   );
 
   handle('inventory:remove', async (_event, id: string) => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     const removed = removeInventoryItem(inventory, id);
     if (!removed.ok) return { ok: false, reason: removed.reason };
     if (!removed.changed || !removed.value) return { ok: false, reason: 'the equipment item was not removed' };
     lastRemovedInventory = removed.value;
     await persistInventory();
-    return { ok: true, undoAvailable: true, inventory: inventoryState() };
+    return inventoryMutateOk({ undoAvailable: true });
   });
 
   handle('inventory:restore-last', async () => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
     if (!lastRemovedInventory) {
       return { ok: false, reason: 'there is no deleted equipment item to restore' };
     }
@@ -2991,7 +3584,7 @@ app.whenReady().then(async () => {
     }
     lastRemovedInventory = null;
     await persistInventory();
-    return { ok: true, restoredId: restored.value.id, inventory: inventoryState() };
+    return inventoryMutateOk({ restoredId: restored.value.id });
   });
 
   /** Places a inventory item, using its remembered footprint when it has one. */
@@ -3045,11 +3638,11 @@ app.whenReady().then(async () => {
       // the drawing.
       if (isLibrary(from)) {
         const built = applyEdit((s) => placeFromLibrary(s.loaded.document, from, lookFor, x, y));
-        if (built.ok) return built;
+        if (built.ok) return { ...built, method: built.method ?? 'library' };
       }
       const imported = applyEdit((s) => importSymbol(s.loaded.document, s.index, from, lookFor, x, y));
       // Fall through to a drawn box only if the symbol could not be brought in.
-      if (imported.ok) return imported;
+      if (imported.ok) return { ...imported, method: imported.method ?? 'symbol' };
     }
 
     if (item.tracedIcon?.paths?.length) {
@@ -3203,7 +3796,9 @@ app.whenReady().then(async () => {
       filters: [{ name: 'CSV', extensions: ['csv'] }],
     });
     if (result.canceled || !result.filePath) return null;
-    await atomicWriteFile(result.filePath, toCsv(list));
+    await atomicWriteFile(result.filePath, toCsv(list), {
+      backupPath: existsSync(result.filePath) ? `${result.filePath}.bak` : undefined,
+    });
     return grantPath(result.filePath);
   });
 
@@ -3321,9 +3916,74 @@ app.whenReady().then(async () => {
     return { ok: true, gear: gearState(), createdId: department.id };
   });
 
-  handle('plan:place-gear', (_event, description: string, x: number, y: number) =>
-    applyEdit((s) => placeGear(s.loaded.document, s.index, description, x, y)),
-  );
+  handle('plan:place-gear', async (_event, description: string, x: number, y: number) => {
+    // Prefer the company inventory when this description is already sized or
+    // has a real silhouette — absorb and harvest are wasted if gear placement
+    // always synthesizes a bare box.
+    const desc = description.trim();
+    const match = inventory.items.find(
+      (item) => normaliseName(item.name) === normaliseName(desc),
+    );
+
+    const placeMatched = async (item: InventoryItem) => {
+      const known =
+        item.width && item.height ? { width: item.width, height: item.height } : undefined;
+      if (item.symbolPath && existsSync(item.symbolPath)) {
+        try {
+          let source = symbolCache.get(item.symbolPath);
+          if (!source) {
+            source = loadBuffer(await readFile(item.symbolPath), item.symbolPath).document;
+            symbolCache.set(item.symbolPath, source);
+          }
+          const lookFor = item.symbolName ?? item.name;
+          if (isLibrary(source)) {
+            const built = applyEdit((s) => placeFromLibrary(s.loaded.document, source!, lookFor, x, y));
+            if (built.ok) return { ...built, method: built.method ?? 'library' };
+          }
+          const imported = applyEdit((s) =>
+            importSymbol(s.loaded.document, s.index, source!, lookFor, x, y),
+          );
+          if (imported.ok) return { ...imported, method: imported.method ?? 'symbol' };
+        } catch {
+          // Fall through to traced / sized box.
+        }
+      }
+      if (item.tracedIcon?.paths?.length) {
+        return applyEdit((s) =>
+          placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+        );
+      }
+      return applyEdit((s) => placeGear(s.loaded.document, s.index, item.name, x, y, known));
+    };
+
+    if (match) return placeMatched(match);
+
+    // Exact name miss — still try a classified symbol so gear lines like
+    // "Panasonic PT-RZ21KU" can place as the shop's LCD projector silhouette.
+    const choice = chooseSymbol(inventory, desc);
+    if (choice?.symbolPath && existsSync(choice.symbolPath)) {
+      try {
+        let source = symbolCache.get(choice.symbolPath);
+        if (!source) {
+          source = loadBuffer(await readFile(choice.symbolPath), choice.symbolPath).document;
+          symbolCache.set(choice.symbolPath, source);
+        }
+        const lookFor = choice.symbolName;
+        if (isLibrary(source)) {
+          const built = applyEdit((s) => placeFromLibrary(s.loaded.document, source!, lookFor, x, y));
+          if (built.ok) return { ...built, method: built.method ?? 'library' };
+        }
+        const imported = applyEdit((s) =>
+          importSymbol(s.loaded.document, s.index, source!, lookFor, x, y),
+        );
+        if (imported.ok) return { ...imported, method: imported.method ?? 'symbol' };
+      } catch {
+        // Fall through to synthesis.
+      }
+    }
+
+    return applyEdit((s) => placeGear(s.loaded.document, s.index, description, x, y));
+  });
 
   handle('plan:rotate', (_event, nodeId: number, degrees: number) =>
     applyEdit((s) => {
@@ -3349,8 +4009,15 @@ app.whenReady().then(async () => {
     applyEdit((s) => addSeating(s.loaded.document, s.index, request)),
   );
 
-  handle('plan:add-label', (_event, text: string, x: number, y: number) =>
-    applyEdit((s) => createLabel(s.loaded.document, s.index, text, x, y)),
+  handle('plan:add-label', (_event, text: string, x: number, y: number, color?: number) =>
+    applyEdit((s) => createLabel(
+      s.loaded.document,
+      s.index,
+      text,
+      x,
+      y,
+      Number.isSafeInteger(color) && color! >= 0 && color! <= 0xffffff ? { color } : {},
+    )),
   );
 
   handle(
@@ -3397,6 +4064,25 @@ app.whenReady().then(async () => {
 
   handle('plan:model', () => (session ? planModelView(session, unitSystem()) : null), null);
 
+  handle('plan:background-set', async (_event, background: unknown) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    try {
+      const reply = await updatePlanBackground(session, background, unitSystem());
+      if (reply.ok) {
+        grantPath(companionPathFor(session.path));
+        planSidecarPending = false;
+      }
+      return reply;
+    } catch (err) {
+      planSidecarPending = true;
+      schedulePlanRecovery(session);
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'the background image could not be saved',
+      };
+    }
+  });
+
   handle('plan:room-create', (_event, width: number, height: number) =>
     applyEdit((s) => createRectangularRoom(s, width, height, unitSystem())),
   );
@@ -3438,12 +4124,48 @@ app.whenReady().then(async () => {
     height: number,
   ) => applyEdit((s) => reshapeRoom(s, op, x, y, width, height, unitSystem())));
 
-  handle('plan:room-curve', (_event, wallIndex: number, radius: number, major = false) =>
-    applyEdit((s) => curveRoomWall(s, wallIndex, radius, unitSystem(), major === true)),
+  handle(
+    'plan:room-curve',
+    (
+      _event,
+      wallIndex: number,
+      value: number,
+      options?: boolean | { major?: boolean; method?: string; outward?: boolean },
+    ) =>
+      applyEdit((s) => {
+        // Legacy callers passed a signed radius and an optional major boolean.
+        if (typeof options === 'boolean' || options == null) {
+          const signed = Number(value);
+          return curveRoomWall(s, wallIndex, Math.abs(signed), unitSystem(), {
+            major: options === true,
+            method: 'radius',
+            outward: signed < 0,
+          });
+        }
+        const method =
+          options.method === 'sagitta' || options.method === 'angle' || options.method === 'arc-length'
+            ? options.method
+            : 'radius';
+        return curveRoomWall(s, wallIndex, Number(value), unitSystem(), {
+          major: options.major === true,
+          method,
+          outward: options.outward === true,
+        });
+      }),
+  );
+
+  handle(
+    'plan:room-curve-through',
+    (_event, wallIndex: number, through: { x: number; y: number }) =>
+      applyEdit((s) => curveRoomWallThrough(s, wallIndex, through, unitSystem())),
   );
 
   handle('plan:room-wall-length', (_event, wallIndex: number, length: number) =>
     applyEdit((s) => lengthenRoomWall(s, wallIndex, length, unitSystem())),
+  );
+
+  handle('plan:room-wall-offset', (_event, wallIndex: number, distance: number) =>
+    applyEdit((s) => offsetRoomWall(s, wallIndex, Number(distance), unitSystem())),
   );
 
   handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
@@ -3453,11 +4175,15 @@ app.whenReady().then(async () => {
     const result = updateRoomMeta(session, patch ?? {}, unitSystem());
     if (!result.ok) return result;
     // Companion-only: persist immediately so name/ceiling survive quit without a
-    // plan-body edit marking the session dirty.
+    // plan-body edit marking the session dirty. Fingerprint the last-saved
+    // archive so a dirty RV body cannot make the sidecar look fresher than disk.
     try {
-      await savePlanModel(session.path, session.body());
+      await savePlanModel(session.path, session.savedArchiveBody());
       grantPath(companionPathFor(session.path));
+      planSidecarPending = false;
     } catch (err) {
+      planSidecarPending = true;
+      schedulePlanRecovery(session);
       return {
         ok: false,
         reason: err instanceof Error ? err.message : 'the room details could not be saved',
@@ -3465,6 +4191,30 @@ app.whenReady().then(async () => {
     }
     return { ok: true, note: 'Room details saved' };
   });
+
+  handle(
+    'plan:identity-set',
+    (
+      _event,
+      patch: { date?: string; venue?: string; event?: string; contact?: string },
+    ) =>
+      applyEdit((s) => {
+        const next = {
+          date: typeof patch?.date === 'string' ? patch.date : undefined,
+          venue: typeof patch?.venue === 'string' ? patch.venue : undefined,
+          event: typeof patch?.event === 'string' ? patch.event : undefined,
+          contact: typeof patch?.contact === 'string' ? patch.contact : undefined,
+        };
+        const cleaned: Partial<{ date: string; venue: string; event: string; contact: string }> = {};
+        if (next.date !== undefined) cleaned.date = next.date.trim();
+        if (next.venue !== undefined) cleaned.venue = next.venue.trim();
+        if (next.event !== undefined) cleaned.event = next.event.trim();
+        if (next.contact !== undefined) cleaned.contact = next.contact.trim();
+        const result = setPlanIdentity(s.loaded.document, cleaned);
+        if (!result.ok) return { ok: false, reason: result.reason };
+        return { ok: true, text: 'Show details saved' };
+      }),
+  );
 
   handle('plan:av-summary', () => (session ? avSummary(session, unitSystem()) : null), null);
 
@@ -3481,13 +4231,28 @@ app.whenReady().then(async () => {
 
   handle(
     'plan:stage-add',
-    (_event, x: number, y: number, width: number, depth: number, height: number) => {
+    (
+      _event,
+      x: number,
+      y: number,
+      width: number,
+      depth: number,
+      height: number,
+      back?: { depth: number; height: number },
+      stairs?: Array<'front' | 'back' | 'left' | 'right'>,
+    ) => {
       let extra: { buildList?: unknown; warnings?: string[] } = {};
       const reply = applyEdit((s) => {
-        const result = addStage(s, x, y, width, depth, height);
+        const result = addStage(s, x, y, width, depth, height, {
+          back: back && back.depth > 0 && back.height > 0 ? back : undefined,
+          stairs: Array.isArray(stairs) ? stairs : undefined,
+        });
         extra = { buildList: result.buildList, warnings: result.warnings };
         return result;
       });
+      if (reply.ok && reply.created && reply.created.length >= 2) {
+        linkObjects(reply.created[0]!, reply.created[1]!);
+      }
       return { ...reply, ...extra };
     },
   );
@@ -3521,7 +4286,9 @@ app.whenReady().then(async () => {
     });
     if (target.canceled || !target.filePath) return { ok: false, cancelled: true };
 
-    await writeFile(target.filePath, markdown, 'utf8');
+    await atomicWriteFile(target.filePath, markdown, {
+      backupPath: existsSync(target.filePath) ? `${target.filePath}.bak` : undefined,
+    });
     grantPath(target.filePath);
     return { ok: true, path: target.filePath };
   });
@@ -3547,6 +4314,9 @@ app.whenReady().then(async () => {
         name?: string;
         width?: number;
         depth?: number;
+        room?: NewRoomSpec;
+        sheetSize?: { width: number; depth: number };
+        autoDimensions?: boolean;
         identity?: { date?: string; venue?: string; event?: string; contact?: string };
       },
     ) => {
@@ -3555,24 +4325,66 @@ app.whenReady().then(async () => {
     const roomName =
       typeof options?.name === 'string' && options.name.trim() ? options.name.trim() : undefined;
 
+    const sheet =
+      options?.sheetSize &&
+      Number(options.sheetSize.width) > 0 &&
+      Number(options.sheetSize.depth) > 0
+        ? { width: Number(options.sheetSize.width), depth: Number(options.sheetSize.depth) }
+        : undefined;
+
     const built = createBlankPlan({
-      room: width > 0 && depth > 0 ? { width, depth } : undefined,
+      roomSpec: options?.room,
+      room: !options?.room && width > 0 && depth > 0 ? { width, depth } : undefined,
+      sheetSize: !options?.room ? sheet : undefined,
       roomName,
       identity: options?.identity,
+      autoDimensions: options?.autoDimensions ? unitSystem() : undefined,
     });
     if (!built.ok || !built.file) return { ok: false, reason: built.reason };
+
+    // Same Save / Discard / Cancel gate as Open. Without it, finishing New Plan
+    // would replace a dirty session via openPath and drop unsaved edits.
+    if (!(await confirmDiscard('plan'))) return { ok: false, cancelled: true };
 
     const suggested = `${roomName || 'Untitled plan'}.rv4`;
     const target = await dialog.showSaveDialog(mainWindow!, {
       title: 'Save new plan',
       defaultPath: suggested,
-      filters: [{ name: 'Room Viewer plan', extensions: ['rv4'] }],
+      filters: [
+        {
+          name: 'Room Viewer plan',
+          extensions: PLAN_EXTENSIONS.map((extension) => extension.slice(1)),
+        },
+      ],
     });
     if (target.canceled || !target.filePath) return { ok: false, cancelled: true };
 
-    await writeFile(target.filePath, built.file);
+    await atomicWriteFile(target.filePath, built.file, {
+      backupPath: existsSync(target.filePath) ? `${target.filePath}.bak` : undefined,
+    });
     grantPath(target.filePath);
-    return { ok: true, doc: await openPath(target.filePath) };
+    await openPath(target.filePath);
+
+    // RV4 stores arcs as faithful polylines. The companion keeps the exact
+    // radius/bulge model so the Room panel can reopen and continue editing the
+    // curve by its original measurement rather than an approximation.
+    if (options?.room && session) {
+      const exact = buildNewRoom(options.room, roomName ?? 'Room');
+      if (exact.ok && exact.room) {
+        adoptAuthoredRoom(session, exact.room, unitSystem());
+        try {
+          await savePlanModel(session.path, session.savedArchiveBody());
+          planSidecarPending = false;
+        } catch (error) {
+          planSidecarPending = true;
+          schedulePlanRecovery(session);
+          console.error('[groundplan] could not save new-plan companion:', error);
+        }
+      }
+    }
+
+    if (!session) return { ok: false, reason: 'the new plan could not be opened' };
+    return { ok: true, doc: describe(session) };
   });
 
   handle('plan:preview-gear', (_event, description: string) => parseDimensions(description));
@@ -3605,7 +4417,13 @@ app.whenReady().then(async () => {
         const reasons: string[] = [];
         const created: number[] = [];
 
-        const targets = ids
+        // Stage↔stairs pairs travel together on move / delete / duplicate.
+        const expanded =
+          kind === 'move' || kind === 'delete' || kind === 'duplicate'
+            ? expandLinkedIds(ids)
+            : ids;
+
+        const targets = expanded
           .map((id) => s.index.byId.get(id))
           .filter((n): n is NonNullable<typeof n> => !!n);
 
@@ -3623,8 +4441,18 @@ app.whenReady().then(async () => {
             }
             return depth;
           };
-          targets.sort((a, b) => depthOf(b) - depthOf(a));
+          targets.sort((left, right) => depthOf(right) - depthOf(left));
         }
+
+        const duplicatePairs: Array<{ from: number; to: number }> = [];
+        if (kind === 'duplicate') {
+          for (const id of ids) {
+            for (const partner of objectLinks.get(id) ?? []) {
+              if (id < partner) duplicatePairs.push({ from: id, to: partner });
+            }
+          }
+        }
+        const newByOld = new Map<number, number>();
 
         for (const node of targets) {
           let result: { ok: boolean; reason?: string; created?: number[] };
@@ -3637,6 +4465,10 @@ app.whenReady().then(async () => {
               break;
             case 'duplicate':
               result = duplicateNode(s.loaded.document, s.index, node, a, b);
+              if (result.ok && result.created?.[0] != null) {
+                newByOld.set(node.id, result.created[0]);
+                s.index = indexDocument(s.loaded.document);
+              }
               break;
             case 'recolor':
               result = recolorNode(s.loaded.document, node, a);
@@ -3659,8 +4491,18 @@ app.whenReady().then(async () => {
           if (result.ok) {
             touched++;
             if (result.created) created.push(...result.created);
+          } else if (result.reason && !reasons.includes(result.reason)) reasons.push(result.reason);
+        }
+
+        if (kind === 'delete' && touched > 0) {
+          pruneObjectLinks(targets.map((n) => n.id));
+        }
+        if (kind === 'duplicate' && touched > 0) {
+          for (const pair of duplicatePairs) {
+            const na = newByOld.get(pair.from);
+            const nb = newByOld.get(pair.to);
+            if (na != null && nb != null) linkObjects(na, nb);
           }
-          else if (result.reason && !reasons.includes(result.reason)) reasons.push(result.reason);
         }
 
         if (touched === 0) {
@@ -3668,6 +4510,37 @@ app.whenReady().then(async () => {
         }
         return { ok: true, created: created.length ? created : undefined };
       }),
+  );
+
+  handle('edit:repeat-across', (_event, nodeId: number, count: number, direction = 'right') =>
+    applyEdit((s) => {
+      const n = Math.floor(Number(count));
+      if (!(n >= 2 && n <= 40)) {
+        return { ok: false, reason: 'enter a repeat count between 2 and 40' };
+      }
+      let node = s.index.byId.get(nodeId);
+      if (!node) return { ok: false, reason: 'object no longer exists' };
+      const size = measureNode(node);
+      const dir = direction === 'left' || direction === 'up' || direction === 'down' ? direction : 'right';
+      const spacing = dir === 'right' || dir === 'left' ? size.width : size.height;
+      if (!(spacing > 0)) {
+        return { ok: false, reason: 'that item has no size to space copies by' };
+      }
+      const dx = dir === 'right' ? spacing : dir === 'left' ? -spacing : 0;
+      const dy = dir === 'down' ? spacing : dir === 'up' ? -spacing : 0;
+      const created: number[] = [nodeId];
+      for (let i = 1; i < n; i++) {
+        const result = duplicateNode(s.loaded.document, s.index, node, dx, dy);
+        if (!result.ok) return result;
+        if (result.created) created.push(...result.created);
+        s.index = indexDocument(s.loaded.document);
+        const nextId = result.created?.[0];
+        const next = nextId != null ? s.index.byId.get(nextId) : undefined;
+        if (!next) return { ok: false, reason: 'the copy could not be located' };
+        node = next;
+      }
+      return { ok: true, created };
+    }),
   );
 
   handle('edit:arrange', (_event, mode: ArrangeMode, ids: number[]) =>
@@ -3766,7 +4639,13 @@ app.whenReady().then(async () => {
   handle('edit:selection', (_event, nodeId: number): SelectionInfo | null => {
     const node = session?.index.byId.get(nodeId);
     if (!node || !session) return null;
-    const name = node.labels.find((s) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(s));
+    // A label stores [font family, text]. Font names are user-editable, so
+    // guessing which string is a font by a short allow-list makes Georgia or
+    // a custom face appear as the label's wording in Properties.
+    const name =
+      node.cls === 'RVLabel' && node.labels.length >= 2
+        ? node.labels[1]
+        : node.labels.find((s) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(s));
     const measured = measureNode(node);
     const info: SelectionInfo = {
       nodeId,
@@ -3781,6 +4660,52 @@ app.whenReady().then(async () => {
       heightUnits: measured.height,
       x: (node.bounds.left + node.bounds.right) / 2,
       y: (node.bounds.top + node.bounds.bottom) / 2,
+      textStyle:
+        node.cls === 'RVLabel'
+          ? {
+              family: node.font?.family || 'Arial',
+              size: Math.max(4, Math.abs(node.font?.height ?? -90) / 10),
+              bold: (node.font?.weight ?? (node.bold ? 700 : 400)) >= 600,
+              italic: node.font?.italic ?? false,
+              underline: node.font?.underline ?? false,
+              strikeOut: node.font?.strikeOut ?? false,
+              angleDegrees: ((node.angle ?? 0) * 180) / Math.PI,
+            }
+          : undefined,
+      pointPaths: session.scene.primitives
+        .filter((primitive) => primitive.selectId === nodeId || primitive.nodeId === nodeId)
+        .map((primitive) => {
+          const source = session!.index.byId.get(primitive.nodeId);
+          if (!source) return null;
+          const firstIndex = source.cls === 'RVSegmentArc' && source.points.length >= 4
+            ? source.points.length - 4
+            : 0;
+          const points = Array.from({ length: primitive.pts.length / 2 }, (_, pointIndex) => ({
+            index: firstIndex + pointIndex,
+            x: primitive.pts[pointIndex * 2]!,
+            y: primitive.pts[pointIndex * 2 + 1]!,
+            role:
+              primitive.type === 'bezier' && (pointIndex === 1 || pointIndex === 2)
+                ? ('control' as const)
+                : ('anchor' as const),
+          }));
+          const shared = session!.index.shared.has(source);
+          const writable = source.fields.pointsAt != null && !!source.fields.pointCount;
+          return {
+            nodeId: source.id,
+            cls: source.cls,
+            closed: primitive.type === 'polygon',
+            canEdit: writable && !shared,
+            reason: shared
+              ? 'This path is shared by more than one symbol instance.'
+              : writable
+                ? undefined
+                : 'This path has no writable point array.',
+            points,
+          };
+        })
+        .filter((path): path is NonNullable<typeof path> => path != null)
+        .filter((path, index, paths) => paths.findIndex((candidate) => candidate.nodeId === path.nodeId) === index),
     };
     if (node.cls === 'RVDimensionLine' && node.points.length >= 2) {
       const a = node.points[0]!;
@@ -3797,6 +4722,71 @@ app.whenReady().then(async () => {
     }
     return info;
   });
+
+  handle(
+    'edit:point-move',
+    (_event, ownerId: number, pathNodeId: number, pointIndex: number, x: number, y: number) =>
+      applyEdit((s) => {
+        if (![ownerId, pathNodeId, pointIndex, x, y].every(Number.isFinite)) {
+          return { ok: false, reason: 'the point coordinates are invalid' };
+        }
+        const node = s.index.byId.get(pathNodeId);
+        if (!node) return { ok: false, reason: 'that path no longer exists' };
+        if (s.index.shared.has(node)) {
+          return { ok: false, reason: 'this path is shared by more than one symbol instance' };
+        }
+        if (!Number.isInteger(pointIndex) || pointIndex < 0 || pointIndex >= node.points.length) {
+          return { ok: false, reason: 'that point no longer exists' };
+        }
+
+        const primitive = s.scene.primitives.find(
+          (candidate) =>
+            candidate.nodeId === pathNodeId &&
+            (candidate.selectId === ownerId || candidate.nodeId === ownerId),
+        );
+        if (!primitive) return { ok: false, reason: 'that path does not belong to the selection' };
+
+        const visibleFirst = node.cls === 'RVSegmentArc' && node.points.length >= 4
+          ? node.points.length - 4
+          : 0;
+        const renderedIndex = pointIndex - visibleFirst;
+        if (renderedIndex < 0 || renderedIndex * 2 + 1 >= primitive.pts.length) {
+          return { ok: false, reason: 'that construction point is not directly editable' };
+        }
+
+        // Placed catalogue geometry is local to its RVShape. The flattened
+        // scene is in plan coordinates, so recover the instance translation
+        // from the current point instead of trusting coordinates from the UI.
+        const current = node.points[pointIndex]!;
+        const offsetX = primitive.pts[renderedIndex * 2]! - current.x;
+        const offsetY = primitive.pts[renderedIndex * 2 + 1]! - current.y;
+        const next = node.points.map((point) => ({ ...point }));
+        next[pointIndex] = { x: x - offsetX, y: y - offsetY };
+        return setPoints(s.loaded.document, node, next);
+      }),
+  );
+
+  handle(
+    'edit:point-kind',
+    (_event, ownerId: number, pathNodeId: number, kind: EditableSegmentKind) =>
+      applyEdit((s) => {
+        if (![ownerId, pathNodeId].every(Number.isFinite) || (kind !== 'line' && kind !== 'curve')) {
+          return { ok: false, reason: 'the path type request is invalid' };
+        }
+        const node = s.index.byId.get(pathNodeId);
+        if (!node) return { ok: false, reason: 'that path no longer exists' };
+        if (s.index.shared.has(node)) {
+          return { ok: false, reason: 'this path is shared by more than one symbol instance' };
+        }
+        const belongsToSelection = s.scene.primitives.some(
+          (candidate) =>
+            candidate.nodeId === pathNodeId &&
+            (candidate.selectId === ownerId || candidate.nodeId === ownerId),
+        );
+        if (!belongsToSelection) return { ok: false, reason: 'that path does not belong to the selection' };
+        return convertSegmentKind(s.loaded.document, node, kind);
+      }),
+  );
 
   handle(
     'edit:dimension-props',
@@ -3936,7 +4926,9 @@ app.whenReady().then(async () => {
       filters: [{ name: 'SVG image', extensions: ['svg'] }],
     });
     if (result.canceled || !result.filePath) return null;
-    await atomicWriteFile(result.filePath, payload.svg);
+    await atomicWriteFile(result.filePath, payload.svg, {
+      backupPath: existsSync(result.filePath) ? `${result.filePath}.bak` : undefined,
+    });
     return grantPath(result.filePath);
   });
 
@@ -3948,18 +4940,27 @@ app.whenReady().then(async () => {
 
   handle('schedule:set-field', async (_event, key: string, field: string, value: string) => {
     if (!session) return { ok: false, reason: 'no plan is open' };
-    const stable = await setStableScheduleField(
-      session.loaded.document,
-      session.path,
-      key,
-      field,
-      value,
-    );
-    grantPath(dataFileFor(session.path));
-    return {
-      ok: true,
-      schedule: Object.assign(stable.schedule, { warnings: stable.warnings }),
-    };
+    try {
+      const stable = await setStableScheduleField(
+        session.loaded.document,
+        session.path,
+        key,
+        field,
+        value,
+      );
+      grantPath(dataFileFor(session.path));
+      return {
+        ok: true,
+        schedule: Object.assign(stable.schedule, { warnings: stable.warnings }),
+      };
+    } catch (error) {
+      planSidecarPending = true;
+      schedulePlanRecovery(session);
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : 'the schedule could not be saved',
+      };
+    }
   });
 
   handle('schedule:key', (_event, name: string, x: number, y: number) => entryKey(name, x, y));
@@ -3977,6 +4978,9 @@ app.whenReady().then(async () => {
     await atomicWriteFile(
       result.filePath,
       summary ? scheduleSummaryCsv(schedule) : scheduleToCsv(schedule),
+      {
+        backupPath: existsSync(result.filePath) ? `${result.filePath}.bak` : undefined,
+      },
     );
     return grantPath(result.filePath);
   });
@@ -4003,7 +5007,9 @@ app.whenReady().then(async () => {
 
     const visible = layers && layers.length > 0 ? new Set(layers as Scene['primitives'][number]['layer'][]) : undefined;
     const result = toDxf(session.loaded.document, session.scene, { visible });
-    await atomicWriteFile(chosen.filePath, result.text);
+    await atomicWriteFile(chosen.filePath, result.text, {
+      backupPath: existsSync(chosen.filePath) ? `${chosen.filePath}.bak` : undefined,
+    });
     grantPath(chosen.filePath);
 
     // The schedule rides along unless asked not to; nobody wants to remember to
@@ -4012,7 +5018,9 @@ app.whenReady().then(async () => {
     try {
       if (!includeSchedule) throw new Error('skipped by preference');
       const { schedule } = await buildStableSchedule(session.loaded.document, session.path);
-      await atomicWriteFile(csvPath, scheduleToCsv(schedule));
+      await atomicWriteFile(csvPath, scheduleToCsv(schedule), {
+        backupPath: existsSync(csvPath) ? `${csvPath}.bak` : undefined,
+      });
       grantPath(csvPath);
     } catch {
       // A missing schedule should not fail the drawing export.

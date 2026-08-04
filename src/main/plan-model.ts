@@ -27,8 +27,8 @@ import {
   type Screen,
   type SightlineSummary,
 } from '../format/av.js';
-import type { CompanionDocument } from '../format/companion.js';
-import { createCompanion } from '../format/companion.js';
+import type { CompanionDocument, PlanBackground } from '../format/companion.js';
+import { createCompanion, parsePlanBackground } from '../format/companion.js';
 import { resolveInstances, SpecLibrary, type PlacedItem } from '../format/definition.js';
 import { dimensionRoom as dimensionRoomDrawings } from '../format/dimension.js';
 import { renderDimensions } from '../format/dimension-render.js';
@@ -53,6 +53,7 @@ import {
   addCorner,
   combineRooms,
   curveWall,
+  fitWallThroughPoint,
   isAxisAligned,
   moveCorner,
   rectRoom,
@@ -62,6 +63,10 @@ import {
   roundCorner,
   setWallLength,
   setWallRadius,
+  setWallSagitta,
+  setWallAngle,
+  setWallArcLength,
+  offsetWall,
   type RoomEditResult,
 } from '../format/room-edit.js';
 import { applyRoom } from '../format/room-render.js';
@@ -81,6 +86,8 @@ import {
   stageBuildList,
   stageReservedAreas,
   stageWarnings,
+  stairDeckOutlines,
+  tieredStage,
   type StageBuild,
 } from '../format/stage.js';
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
@@ -111,8 +118,10 @@ interface PlanModelState {
    * is exactly what the user needs to judge the area by.
    */
   derivedSource: 'walls' | 'region' | 'extent' | 'none';
-  /** Objects the last seating render created. */
+  /** Objects created by every currently managed seating section. */
   seatingIds: number[];
+  /** Counts for managed seating on the drawing (preview counts are separate). */
+  placedSeatCounts: { chairs: number; tables: number } | null;
   /** Clearances from the last seating preview/apply, for the status bar. */
   lastClearances: {
     front: number;
@@ -136,6 +145,7 @@ const EMPTY: PlanModelState = {
   derivedSource: 'none',
   rendered: null,
   seatingIds: [],
+  placedSeatCounts: null,
   lastClearances: null,
   lastSeatCounts: null,
   stage: null,
@@ -161,6 +171,7 @@ export async function openPlanModel(planPath: string, doc: RVDocument, units: Un
     // which amounts to the same thing.
     rendered: loaded.companion.rooms[0] ?? null,
     seatingIds: [],
+    placedSeatCounts: null,
     lastClearances: null,
     lastSeatCounts: null,
     stage: null,
@@ -179,9 +190,24 @@ export async function savePlanModel(planPath: string, body: Buffer): Promise<voi
   // Nothing has been authored: the room in there was read off the drawing and
   // can be read off it again, so writing a sidecar would only litter the folder
   // beside a plan the user never touched.
-  if (state.derived) return;
+  if (state.derived && !companion.background) return;
   await saveCompanion(planPath, body, companion);
   state.freshness = 'fresh';
+}
+
+/** In-memory companion for crash journals (may include unsaved room/meta). */
+export function companionSnapshot(): CompanionDocument | null {
+  return state.companion ? structuredClone(state.companion) : null;
+}
+
+/** Restores a companion recovered from the crash journal. */
+export function adoptCompanionSnapshot(companion: CompanionDocument): void {
+  state.companion = companion;
+  state.derived = companion.roomIsDerived === true;
+  state.freshness = 'fresh';
+  state.reason = undefined;
+  state.rendered = companion.rooms[0] ?? null;
+  state.derivedSource = state.derived ? state.derivedSource : 'none';
 }
 
 /** The current room, from the companion or derived from the drawing. */
@@ -195,7 +221,37 @@ function currentRoom(doc: RVDocument): RoomModel | null {
 function setRoom(doc: RVDocument, room: RoomModel, units: UnitSystem): void {
   if (!state.companion) state.companion = createCompanion(doc, units);
   state.companion.rooms = [room];
+  state.companion.roomIsDerived = false;
   state.derived = false;
+}
+
+/**
+ * Marks geometry created by New Plan as authored, preserving its exact arcs in
+ * the companion instead of re-deriving only the flattened RV polylines.
+ */
+export function adoptAuthoredRoom(session: Session, room: RoomModel, units: UnitSystem): void {
+  setRoom(session.loaded.document, room, units);
+  state.rendered = room;
+  state.derivedSource = 'none';
+  state.reason = undefined;
+}
+
+/** Sets or removes the raster underlay and persists it without dirtying the RV file. */
+export async function updatePlanBackground(
+  session: Session,
+  value: unknown,
+  units: UnitSystem,
+): Promise<{ ok: boolean; reason?: string; background?: PlanBackground | null }> {
+  const background = value == null ? null : parsePlanBackground(value);
+  if (value != null && !background) return { ok: false, reason: 'that background image is invalid' };
+  if (!state.companion) state.companion = createCompanion(session.loaded.document, units);
+  state.companion.background = background ?? undefined;
+  state.companion.roomIsDerived = state.derived;
+  // Fingerprint the last disk revision, never dirty in-memory edits — otherwise
+  // a background-only write would claim the companion matches unsaved RV bytes.
+  await saveCompanion(session.path, session.savedArchiveBody(), state.companion);
+  state.freshness = 'fresh';
+  return { ok: true, background };
 }
 
 /** Renames the room and/or sets ceiling height on the companion model. */
@@ -283,11 +339,18 @@ export interface RoomWallSummary {
   startY: number;
   startXText: string;
   startYText: string;
+  /** The corner that ends this wall. */
+  endX: number;
+  endY: number;
+  /** Chord / arc length in logical units. */
+  length: number;
   lengthText: string;
   curved: boolean;
   /** Arc radius in logical units when curved; otherwise 0. */
   radius: number;
   radiusText: string;
+  /** Signed bulge (0 when straight). Used for mid-wall curve handles. */
+  bulge: number;
 }
 
 export interface RoomSummary {
@@ -333,6 +396,8 @@ export interface PlanModelView {
     derived: boolean;
     path: string;
   };
+  /** Raster site plan or venue image drawn below the plot. */
+  background: PlanBackground | null;
   /** Layout styles the seating panel offers. */
   seatingStyles: Array<{ id: SeatingStyle; label: string; needsTable: boolean }>;
   /** Placed items, summarised — what the allocation and legend are built from. */
@@ -405,16 +470,21 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
     walls: room.walls.length,
     wallDetails: room.walls.map((segment, index) => {
       const arc = arcOf(segment);
+      const length = wallLength(segment);
       return {
         index,
         startX: segment.start.x,
         startY: segment.start.y,
         startXText: formatLength(segment.start.x, units),
         startYText: formatLength(segment.start.y, units),
-        lengthText: formatLength(wallLength(segment), units),
+        endX: segment.end.x,
+        endY: segment.end.y,
+        length,
+        lengthText: formatLength(length, units),
         curved: Boolean(segment.bulge),
         radius: arc?.radius ?? 0,
         radiusText: arc ? formatLength(arc.radius, units) : '',
+        bulge: segment.bulge ?? 0,
       };
     }),
     holes: room.holes.length,
@@ -463,6 +533,7 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
       derived: state.derived,
       path: companionPathFor(session.path),
     },
+    background: state.companion?.background ?? null,
     seatingStyles: (Object.keys(STYLE_DEFAULTS) as SeatingStyle[]).map((id) => ({
       id,
       label: STYLE_LABELS[id],
@@ -740,22 +811,69 @@ export function reshapeRoom(
   return { ok: true, created: drawn.createdIds };
 }
 
-/** Bows one wall to a radius. Pass radius 0 to straighten. */
+/** How a wall curve is measured when authoring from the Room panel. */
+export type RoomCurveMethod = 'radius' | 'sagitta' | 'angle' | 'arc-length';
+
+/** Bows one wall. Pass value 0 (any method) to straighten. */
 export function curveRoomWall(
   session: Session,
   wallIndex: number,
-  radius: number,
+  value: number,
   units: UnitSystem,
-  major = false,
+  options: { major?: boolean; method?: RoomCurveMethod; outward?: boolean } = {},
 ): ModelEdit {
   const doc = session.loaded.document;
   const room = currentRoom(doc);
   if (!room) return { ok: false, reason: 'there is no room to change yet' };
 
-  const curved =
-    !radius || !Number.isFinite(radius)
-      ? curveWall(room, wallIndex, 0)
-      : setWallRadius(room, wallIndex, radius, major);
+  let curved;
+  if (!value || !Number.isFinite(value)) {
+    curved = curveWall(room, wallIndex, 0);
+  } else {
+    const method = options.method ?? 'radius';
+    const direction = options.outward ? -1 : 1;
+    if (method === 'radius') {
+      curved = setWallRadius(room, wallIndex, direction * Math.abs(value), options.major === true);
+    } else if (method === 'sagitta') {
+      curved = setWallSagitta(room, wallIndex, direction * Math.abs(value));
+    } else if (method === 'angle') {
+      curved = setWallAngle(room, wallIndex, direction * Math.abs(value));
+    } else {
+      curved = setWallArcLength(room, wallIndex, Math.abs(value));
+      if (curved.ok && curved.room && options.outward) {
+        const bulge = curved.room.walls[wallIndex]?.bulge ?? 0;
+        curved = curveWall(curved.room, wallIndex, -Math.abs(bulge));
+      }
+    }
+  }
+  if (!curved.ok || !curved.room) return { ok: false, reason: curved.reason };
+
+  const drawn = applyRoom(doc, curved.room, state.rendered ?? room);
+  if (!drawn.ok) return { ok: false, reason: drawn.reason };
+
+  state.rendered = curved.room;
+  setRoom(doc, curved.room, units);
+  return { ok: true, created: drawn.createdIds };
+}
+
+/**
+ * Bows a wall so the arc passes through a plan point (canvas drag handle).
+ * Direction cannot invert relative to the handle — the curve must hit it.
+ */
+export function curveRoomWallThrough(
+  session: Session,
+  wallIndex: number,
+  through: { x: number; y: number },
+  units: UnitSystem,
+): ModelEdit {
+  const doc = session.loaded.document;
+  const room = currentRoom(doc);
+  if (!room) return { ok: false, reason: 'there is no room to change yet' };
+  if (!Number.isFinite(through.x) || !Number.isFinite(through.y)) {
+    return { ok: false, reason: 'that curve point is not valid' };
+  }
+
+  const curved = fitWallThroughPoint(room, wallIndex, through);
   if (!curved.ok || !curved.room) return { ok: false, reason: curved.reason };
 
   const drawn = applyRoom(doc, curved.room, state.rendered ?? room);
@@ -773,6 +891,31 @@ export function lengthenRoomWall(session: Session, wallIndex: number, length: nu
   if (!room) return { ok: false, reason: 'there is no room to change yet' };
 
   const next = setWallLength(room, wallIndex, length);
+  if (!next.ok || !next.room) return { ok: false, reason: next.reason };
+
+  const drawn = applyRoom(doc, next.room, state.rendered ?? room);
+  if (!drawn.ok) return { ok: false, reason: drawn.reason };
+
+  state.rendered = next.room;
+  setRoom(doc, next.room, units);
+  return { ok: true, created: drawn.createdIds };
+}
+
+/**
+ * Pushes or pulls one straight wall perpendicular to itself.
+ * Positive distance grows the room (outward for a CCW outline).
+ */
+export function offsetRoomWall(
+  session: Session,
+  wallIndex: number,
+  distance: number,
+  units: UnitSystem,
+): ModelEdit {
+  const doc = session.loaded.document;
+  const room = currentRoom(doc);
+  if (!room) return { ok: false, reason: 'there is no room to change yet' };
+
+  const next = offsetWall(room, wallIndex, distance);
   if (!next.ok || !next.room) return { ok: false, reason: next.reason };
 
   const drawn = applyRoom(doc, next.room, state.rendered ?? room);
@@ -833,6 +976,8 @@ export interface SeatingRequestView {
   sectionCentre?: number;
   /** Seats/tables across each wing when sectioning is on. */
   sectionWing?: number;
+  /** Keep managed seating and add this solution as another independent bank. */
+  append?: boolean;
 }
 
 function planFrom(request: SeatingRequestView): SeatingPlan {
@@ -928,7 +1073,9 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
 
   const plan = planFrom(request);
   const solution = plan.optimum ? solveOptimum(plan, room) : solveSeating(plan, room);
-  state.lastClearances = {
+  // Preview must not write shared plan-model state — rapid slider updates would
+  // race applySeating / planModelView seatingStatus. Return clearances locally.
+  const clearances = {
     front: plan.clearances.front,
     side: plan.clearances.side,
     wing: plan.clearances.wing,
@@ -938,18 +1085,17 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
     aisle: plan.clearances.aisle,
     frontWall: plan.clearances.frontWall,
   };
-  state.lastSeatCounts = { chairs: solution.seats.length, tables: solution.tables.length };
   return {
     seats: solution.seats.length,
     tables: solution.tables.length,
     rows: solution.rowCount,
     dropped: solution.dropped,
     notes: solution.notes,
-    clearances: state.lastClearances,
+    clearances,
   };
 }
 
-/** Draws a seating layout, replacing the one this drew before. */
+/** Draws a seating layout, replacing managed seating or adding another bank. */
 export function applySeating(
   session: Session,
   request: SeatingRequestView,
@@ -970,10 +1116,22 @@ export function applySeating(
     return { ok: false, reason: 'this layout needs a table as well as a chair' };
   }
 
-  const drawn = renderSeating(doc, indexDocument(doc), solution, { chair, table }, state.seatingIds);
+  const append = request.append === true;
+  const drawn = renderSeating(
+    doc,
+    indexDocument(doc),
+    solution,
+    { chair, table },
+    append ? [] : state.seatingIds,
+  );
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
 
-  state.seatingIds = drawn.created;
+  state.seatingIds = append ? [...state.seatingIds, ...drawn.created] : drawn.created;
+  const previousPlaced = append ? state.placedSeatCounts : null;
+  state.placedSeatCounts = {
+    chairs: (previousPlaced?.chairs ?? 0) + solution.seats.length,
+    tables: (previousPlaced?.tables ?? 0) + solution.tables.length,
+  };
   state.lastClearances = {
     front: plan.clearances.front,
     side: plan.clearances.side,
@@ -984,9 +1142,10 @@ export function applySeating(
     aisle: plan.clearances.aisle,
     frontWall: plan.clearances.frontWall,
   };
-  state.lastSeatCounts = { chairs: solution.seats.length, tables: solution.tables.length };
+  state.lastSeatCounts = { ...state.placedSeatCounts };
   const notes = [...solution.notes];
   if (drawn.removed) notes.unshift(`Replaced the previous layout (${drawn.removed} items).`);
+  else if (append) notes.unshift(`Added a seating section (${drawn.chairs} chairs${drawn.tables ? `, ${drawn.tables} tables` : ''}).`);
   return { ok: true, created: drawn.created, note: notes.join(' ') || undefined };
 }
 
@@ -1001,18 +1160,41 @@ export function addStage(
   width: number,
   depth: number,
   height: number,
+  options?: {
+    /** Second tier behind the front deck (tiered house-riser builds). */
+    back?: { depth: number; height: number };
+    /** Which edges get stair units. Default: front for single, left+right for tiered. */
+    stairs?: Array<'front' | 'back' | 'left' | 'right'>;
+  },
 ): ModelEdit & { buildList?: Array<{ item: string; quantity: number; detail?: string }>; warnings?: string[] } {
   if (!(width > 0) || !(depth > 0)) return { ok: false, reason: 'enter a stage width and depth' };
 
   const doc = session.loaded.document;
-  const build = simpleStage(x, y, width, depth, height, 'Stage');
+  const stairEdges =
+    options?.stairs ??
+    (options?.back ? (['left', 'right'] as const) : (['front'] as const));
+  const build = options?.back
+    ? tieredStage(
+        x,
+        y,
+        width,
+        { depth, height },
+        { depth: options.back.depth, height: options.back.height },
+        [...stairEdges],
+      )
+    : simpleStage(x, y, width, depth, height, 'Stage', [...stairEdges]);
   const solution = solveStage(build);
   if (!solution.decks.length) return { ok: false, reason: 'no stock deck fits a stage that size' };
 
-  // Drawn as one placed shape whose outline is the footprint plus every deck,
-  // so the crew can see the deck layout while the stage stays a single object
-  // that can be selected, moved and counted like anything else on the plan.
-  const centre = { x: x + width / 2, y: y + depth / 2 };
+  // Drawn as one placed shape whose outline is the footprint plus every deck
+  // and stair tread, so the crew can see the build while the stage stays a
+  // single object that can be selected, moved and counted like anything else.
+  const levels = build.levels;
+  const minX = Math.min(...levels.map((l) => l.x));
+  const minY = Math.min(...levels.map((l) => l.y));
+  const maxX = Math.max(...levels.map((l) => l.x + l.width));
+  const maxY = Math.max(...levels.map((l) => l.y + l.depth));
+  const centre = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
   const rect = (rx: number, ry: number, rw: number, rd: number) => [
     { x: rx - centre.x, y: ry - centre.y },
     { x: rx + rw - centre.x, y: ry - centre.y },
@@ -1021,8 +1203,13 @@ export function addStage(
     { x: rx - centre.x, y: ry - centre.y },
   ];
 
-  const outline = [rect(x, y, width, depth), ...solution.decks.map((d) => rect(d.x, d.y, d.width, d.depth))];
-  const name = `Stage ${(width / UNITS_PER_FOOT).toFixed(0)}' x ${(depth / UNITS_PER_FOOT).toFixed(0)}' x ${(height / 10).toFixed(0)}"`;
+  const footprint = levels.map((l) => rect(l.x, l.y, l.width, l.depth));
+  const decks = solution.decks.map((d) => rect(d.x, d.y, d.width, d.depth));
+  const outline = [...footprint, ...decks];
+  const totalDepth = maxY - minY;
+  const name = options?.back
+    ? `Tiered stage ${(width / UNITS_PER_FOOT).toFixed(0)}' x ${(totalDepth / UNITS_PER_FOOT).toFixed(0)}'`
+    : `Stage ${(width / UNITS_PER_FOOT).toFixed(0)}' x ${(depth / UNITS_PER_FOOT).toFixed(0)}' x ${(height / 10).toFixed(0)}"`;
 
   const shape = createShape(doc, { name, x: centre.x, y: centre.y, outline });
   if (!shape.ok || !shape.node) return { ok: false, reason: shape.reason };
@@ -1031,13 +1218,37 @@ export function addStage(
   const added = host ? appendChild(doc, host, shape.node) : addRoot(doc, shape.node);
   if (!added.ok) return { ok: false, reason: added.reason };
 
+  const created = [shape.node.id];
+
+  // Stairs stay a sibling so the stage still measures as its deck footprint
+  // (resize / inventory counts stay honest). They are linked in the editor so
+  // move / delete / duplicate keep the pair together.
+  const stairPolys = stairDeckOutlines(build);
+  if (stairPolys.length) {
+    const xs = stairPolys.flatMap((poly) => poly.map((p) => p.x));
+    const ys = stairPolys.flatMap((poly) => poly.map((p) => p.y));
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const local = stairPolys.map((poly) => poly.map((p) => ({ x: p.x - cx, y: p.y - cy })));
+    const stair = createShape(doc, {
+      name: `Stairs · ${name}`,
+      x: cx,
+      y: cy,
+      outline: local,
+    });
+    if (stair.ok && stair.node) {
+      const placed = host ? appendChild(doc, host, stair.node) : addRoot(doc, stair.node);
+      if (placed.ok) created.push(stair.node.id);
+    }
+  }
+
   state.stage = build;
   return {
     ok: true,
-    created: [shape.node.id],
+    created,
     buildList: stageBuildList(build, solution),
     warnings: [...solution.notes, ...stageWarnings(build)],
-    note: `${solution.decks.length} decks.`,
+    note: `${solution.decks.length} decks${build.stairs.length ? `, ${build.stairs.length} stair unit${build.stairs.length === 1 ? '' : 's'}` : ''}.`,
   };
 }
 

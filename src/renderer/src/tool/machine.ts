@@ -32,7 +32,7 @@ export type SeatingRequest = Record<string, unknown>;
 export type Stamp =
   | { what: 'gear'; description: string }
   | { what: 'inventory'; id: string; name: string }
-  | { what: 'label'; text: string }
+  | { what: 'label'; text: string; color?: number }
   | { what: 'seating'; request: SeatingRequest; description: string };
 
 /** Two clicks make one object, or one readout. */
@@ -52,6 +52,7 @@ export type Path = { what: 'room' };
  */
 export type Tool =
   | { kind: 'select' }
+  | { kind: 'direct-select' }
   | { kind: 'hand' }
   | { kind: 'stamp'; stamp: Stamp }
   | { kind: 'span'; span: Span; from: PlanPoint | null }
@@ -60,6 +61,7 @@ export type Tool =
 /** A tool as named by a button, a palette row or a shortcut — before it is held. */
 export type ToolChoice =
   | { kind: 'select' }
+  | { kind: 'direct-select' }
   | { kind: 'hand' }
   | { kind: 'stamp'; stamp: Stamp }
   | { kind: 'span'; span: Span }
@@ -110,7 +112,7 @@ export type ToolEvent =
 export type ToolEffect =
   | { do: 'placeGear'; description: string; at: PlanPoint }
   | { do: 'placeInventory'; id: string; name: string; at: PlanPoint }
-  | { do: 'placeLabel'; text: string; at: PlanPoint }
+  | { do: 'placeLabel'; text: string; color?: number; at: PlanPoint }
   | { do: 'placeSeating'; request: SeatingRequest; at: PlanPoint }
   | { do: 'draw'; shape: DrawShape; from: PlanPoint; to: PlanPoint }
   | { do: 'createRoom'; points: PlanPoint[] }
@@ -147,6 +149,8 @@ export function choiceId(choice: ToolChoice): string {
   switch (choice.kind) {
     case 'select':
       return 'select';
+    case 'direct-select':
+      return 'direct-select';
     case 'hand':
       return 'hand';
     case 'stamp':
@@ -232,6 +236,7 @@ export function staysAfterUse(tool: Tool): boolean {
  */
 export function refusalFor(can: Capability, choice: ToolChoice): string | null {
   if (choice.kind === 'select' || choice.kind === 'hand') return null;
+  if (choice.kind === 'direct-select') return can.open ? null : 'Open a plan first.';
   if (!can.open) return 'Open a plan first.';
   if (choice.kind === 'stamp' && choice.stamp.what === 'label' && !choice.stamp.text.trim()) {
     return 'Enter label text first.';
@@ -346,7 +351,7 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
       if (!text) return { state: putDown(state), effect: null };
       if (text === tool.stamp.text) return { state, effect: null };
       return {
-        state: { ...state, tool: { kind: 'stamp', stamp: { what: 'label', text } }, epoch: state.epoch + 1 },
+        state: { ...state, tool: { kind: 'stamp', stamp: { ...tool.stamp, text } }, epoch: state.epoch + 1 },
         effect: null,
       };
     }
@@ -368,7 +373,9 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
 
     case 'click': {
       const tool = state.tool;
-      if (tool.kind === 'select' || tool.kind === 'hand') return { state, effect: null };
+      if (tool.kind === 'select' || tool.kind === 'direct-select' || tool.kind === 'hand') {
+        return { state, effect: null };
+      }
 
       if (tool.kind === 'stamp') {
         return { state, effect: { ...stampEffect(tool.stamp, event.at), epoch: state.epoch } };
@@ -438,7 +445,7 @@ function stampEffect(stamp: Stamp, at: PlanPoint): ToolEffect {
     case 'inventory':
       return { do: 'placeInventory', id: stamp.id, name: stamp.name, at };
     case 'label':
-      return { do: 'placeLabel', text: stamp.text, at };
+      return { do: 'placeLabel', text: stamp.text, color: stamp.color, at };
     case 'seating':
       return { do: 'placeSeating', request: stamp.request, at };
   }
@@ -449,7 +456,7 @@ function stampEffect(stamp: Stamp, at: PlanPoint): ToolEffect {
 // ---------------------------------------------------------------------------
 
 export type PointerSpec = {
-  mode: 'select' | 'pan' | 'stamp' | 'span' | 'path';
+  mode: 'select' | 'direct-select' | 'pan' | 'stamp' | 'span' | 'path';
   /** Whether the click coordinate is rounded to the drawing's snap step. */
   snap: 'grid' | 'none';
   /** Whether the raw click is hit-tested for an object to associate with. */
@@ -475,6 +482,8 @@ export function pointerSpec(state: ToolState): PointerSpec {
   switch (tool.kind) {
     case 'select':
       return { mode: 'select', snap: 'grid', associate: false, preview: 'none' };
+    case 'direct-select':
+      return { mode: 'direct-select', snap: 'none', associate: false, preview: 'none' };
     case 'hand':
       return { mode: 'pan', snap: 'none', associate: false, preview: 'none' };
     case 'stamp':
@@ -497,6 +506,8 @@ export function pointerSpec(state: ToolState): PointerSpec {
 export type BannerAction =
   /** Put the tool down. */
   | { id: 'done'; label: string }
+  /** Put down a stamp and hand off to edit / repeat. */
+  | { id: 'finish-place'; label: string; primary: true }
   /** Remove the last corner from a multi-point room outline. */
   | { id: 'undo-point'; label: string }
   /** Close and create a multi-point room outline. */
@@ -524,12 +535,22 @@ export type Banner = {
 export function banner(state: ToolState): Banner | null {
   const tool = state.tool;
   if (tool.kind === 'select' || tool.kind === 'hand') return null;
+  if (tool.kind === 'direct-select') {
+    return {
+      badge: { text: 'Edit points', tone: 'persistent' },
+      message: 'Select an item, then drag an anchor or enter exact point coordinates in Properties',
+      actions: [{ id: 'done', label: 'Done' }],
+    };
+  }
   if (tool.kind === 'stamp') {
     return {
-      badge: null,
+      badge: { text: 'Placing', tone: 'persistent' },
       message: 'Click the plan to place ',
       emphasis: stampDescription(tool.stamp),
-      actions: [{ id: 'done', label: 'Cancel' }],
+      actions: [
+        { id: 'finish-place', label: 'Done placing', primary: true },
+        { id: 'done', label: 'Cancel' },
+      ],
     };
   }
   if (tool.kind === 'path') {
@@ -598,7 +619,7 @@ export function banner(state: ToolState): Banner | null {
  * so drawing a rectangle still yanked the panel.
  */
 export function opensProperties(selectedCount: number, state: ToolState): boolean {
-  return selectedCount > 0 && state.tool.kind === 'select';
+  return selectedCount > 0 && (state.tool.kind === 'select' || state.tool.kind === 'direct-select');
 }
 
 /** With nothing in hand, Escape is about the selection instead. */
@@ -611,9 +632,13 @@ export function escapeAlsoClearsSelection(state: ToolState): boolean {
 // ---------------------------------------------------------------------------
 
 export const SELECT: ToolChoice = { kind: 'select' };
+export const DIRECT_SELECT: ToolChoice = { kind: 'direct-select' };
 export const HAND: ToolChoice = { kind: 'hand' };
 export const MEASURE: ToolChoice = { kind: 'span', span: { what: 'measure' } };
 export const DIMENSION: ToolChoice = { kind: 'span', span: { what: 'dimension' } };
 export const drawChoice = (shape: DrawShape): ToolChoice => ({ kind: 'span', span: { what: 'draw', shape } });
 export const roomOutlineChoice: ToolChoice = { kind: 'path', path: { what: 'room' } };
-export const labelChoice = (text: string): ToolChoice => ({ kind: 'stamp', stamp: { what: 'label', text } });
+export const labelChoice = (text: string, color?: number): ToolChoice => ({
+  kind: 'stamp',
+  stamp: { what: 'label', text, color },
+});

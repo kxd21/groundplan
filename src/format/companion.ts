@@ -48,6 +48,28 @@ export interface PlanFingerprint {
   savedAt: string;
 }
 
+/** A raster underlay anchored in plan coordinates beneath all drawing geometry. */
+export interface PlanBackground {
+  name: string;
+  dataUrl: string;
+  visible: boolean;
+  opacity: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  flipX: boolean;
+  flipY: boolean;
+  locked: boolean;
+  includeInExport: boolean;
+  blendMode: 'normal' | 'multiply' | 'screen' | 'darken' | 'lighten';
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  grayscale: number;
+}
+
 export interface CompanionDocument {
   format: typeof COMPANION_FORMAT;
   version: typeof COMPANION_VERSION;
@@ -58,6 +80,10 @@ export interface CompanionDocument {
   library: ItemSpec[];
   /** Per-placement departures from a definition. */
   overrides: InstanceOverride[];
+  /** Optional site plan, venue map, or photo shown below the editable plot. */
+  background?: PlanBackground;
+  /** Keeps a traced room labelled as derived when a background alone creates a sidecar. */
+  roomIsDerived?: boolean;
 }
 
 /** The sidecar path for a plan. */
@@ -273,6 +299,54 @@ function parseFingerprint(value: unknown): PlanFingerprint | null {
   };
 }
 
+/** Validates an image underlay received from either JSON or the renderer. */
+export function parsePlanBackground(value: unknown): PlanBackground | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 255) return null;
+  if (
+    typeof value.dataUrl !== 'string' ||
+    value.dataUrl.length > 32 * 1024 * 1024 ||
+    !/^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=]+$/i.test(value.dataUrl)
+  ) {
+    return null;
+  }
+  const numbers = [value.opacity, value.x, value.y, value.width, value.height, value.rotation];
+  if (!numbers.every((number) => typeof number === 'number' && Number.isFinite(number))) return null;
+  if ((value.width as number) <= 0 || (value.height as number) <= 0) return null;
+  if ((value.opacity as number) < 0 || (value.opacity as number) > 1) return null;
+  const appearance = (key: 'brightness' | 'contrast' | 'saturation' | 'grayscale', fallback: number) => {
+    const number = value[key];
+    return typeof number === 'number' && Number.isFinite(number) ? number : fallback;
+  };
+  const blendMode =
+    value.blendMode === 'multiply' ||
+    value.blendMode === 'screen' ||
+    value.blendMode === 'darken' ||
+    value.blendMode === 'lighten'
+      ? value.blendMode
+      : 'normal';
+  return {
+    name: value.name.trim(),
+    dataUrl: value.dataUrl,
+    visible: value.visible !== false,
+    opacity: value.opacity as number,
+    x: value.x as number,
+    y: value.y as number,
+    width: value.width as number,
+    height: value.height as number,
+    rotation: value.rotation as number,
+    flipX: value.flipX === true,
+    flipY: value.flipY === true,
+    locked: value.locked === true,
+    includeInExport: value.includeInExport !== false,
+    blendMode,
+    brightness: Math.max(0.2, Math.min(2, appearance('brightness', 1))),
+    contrast: Math.max(0.2, Math.min(2, appearance('contrast', 1))),
+    saturation: Math.max(0, Math.min(2, appearance('saturation', 1))),
+    grayscale: Math.max(0, Math.min(1, appearance('grayscale', 0))),
+  };
+}
+
 /**
  * Reads a companion file.
  *
@@ -288,6 +362,7 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
   const plan = parseFingerprint(value.plan);
   if (!plan) return null;
 
+  const background = parsePlanBackground(value.background);
   return {
     format: COMPANION_FORMAT,
     version: COMPANION_VERSION,
@@ -302,5 +377,7 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
     overrides: Array.isArray(value.overrides)
       ? value.overrides.map(parseOverride).filter((o): o is InstanceOverride => o != null)
       : [],
+    ...(background ? { background } : {}),
+    ...(value.roomIsDerived === true ? { roomIsDerived: true } : {}),
   };
 }

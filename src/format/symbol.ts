@@ -13,7 +13,7 @@
  */
 
 import type { RVDocument, RVNode } from './rv.js';
-import { measureNode, type DocumentIndex, type EditResult } from './edit.js';
+import { appendChild, measureNode, moveNode, type DocumentIndex, type EditResult } from './edit.js';
 import { readLibrary } from './library.js';
 import { planBody } from './plan-skeleton.js';
 
@@ -54,14 +54,22 @@ export function listSymbols(doc: RVDocument): SymbolSource[] {
     seen.add(node);
 
     if (node.cls === 'RVShape' && node.fields.nameAt != null) {
-      const name = node.labels.find(
-        (l) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(l),
-      );
+      const name = node.labels
+        .find((l) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(l))
+        ?.trim();
       const geometry = node.children.find((c) => c.cls === 'RVGeometry');
       if (name && geometry && !byName.has(name)) {
         const size = measureNode(geometry);
-        if (size.width > 0 && size.height > 0) {
-          byName.set(name, { name, width: size.width, height: size.height });
+        const fromBounds = {
+          width: node.bounds.right - node.bounds.left,
+          height: node.bounds.bottom - node.bounds.top,
+        };
+        // Catalogue husks and empty geometry measure near zero; the stored
+        // rect is then the only honest footprint (same rule as measureNode).
+        const width = size.width > 1 ? size.width : fromBounds.width;
+        const height = size.height > 1 ? size.height : fromBounds.height;
+        if (width > 0 && height > 0) {
+          byName.set(name, { name, width, height });
         }
       }
     }
@@ -111,6 +119,7 @@ function detach(node: RVNode, source: RVDocument, nextId: () => number, created:
     points: node.points.map((p) => ({ ...p })),
     labels: [...node.labels],
     fields: { ...node.fields },
+    font: node.font ? { ...node.font } : undefined,
     headerOverride: Buffer.from(
       node.headerOverride ?? source.source.subarray(node.span.bodyAt, node.span.headerEnd),
     ),
@@ -134,6 +143,37 @@ function detach(node: RVNode, source: RVDocument, nextId: () => number, created:
     // array, which means nothing here.
   }
   return copy;
+}
+
+/**
+ * Copies one concrete object from another plan into this plan.
+ *
+ * Unlike `importSymbol`, this does not look the item up by catalogue name. It
+ * receives the exact node captured by Groundplan's internal clipboard, so two
+ * visually different objects with the same label remain different when they
+ * are pasted between shows. Source bytes are detached at copy time and every
+ * object receives destination-local IDs.
+ */
+export function importDetachedObject(
+  doc: RVDocument,
+  source: RVDocument,
+  original: RVNode,
+  dx: number,
+  dy: number,
+): ImportResult {
+  if (![dx, dy].every(Number.isFinite)) return { ok: false, reason: 'the paste offset is invalid' };
+  const host = findHost(doc);
+  if (!host || host.fields.childCountAt == null) {
+    return { ok: false, reason: 'this plan has no room container to receive pasted objects' };
+  }
+
+  const created: number[] = [];
+  const copy = detach(original, source, () => doc.nextId++, created);
+  const moved = moveNode(doc, copy, dx, dy);
+  if (!moved.ok) return moved;
+  const added = appendChild(doc, host, copy);
+  if (!added.ok) return added;
+  return { ok: true, created, name: original.labels[0] };
 }
 
 /**

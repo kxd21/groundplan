@@ -11,8 +11,11 @@
  * refusing to start because of them would not be.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+
+import { atomicWriteJson } from './storage.js';
 
 export interface Settings {
   /** Defaults for File → Print to PDF. */
@@ -42,7 +45,19 @@ export interface Settings {
     units: 'imperial' | 'metric';
     /** Snap step in logical units. Zero disables snapping. */
     snapStep: number;
+    /** Align moving objects to nearby object edges and centres. */
+    objectSnap: boolean;
     showGrid: boolean;
+    /** Start newly opened plans on a white sheet instead of a dark sheet. */
+    paperSheet: boolean;
+    /** Fit the room to the available canvas when a plan opens. */
+    autoFitOnOpen: boolean;
+    /** Switch the inspector to Properties after clicking an object. */
+    openPropertiesOnSelect: boolean;
+    /** Arrow-key movement in logical units. */
+    nudgeStep: number;
+    /** Shift+arrow fine movement in logical units. */
+    fineNudgeStep: number;
     /** Confirm before deleting more than this many objects at once. */
     bulkDeleteWarning: number;
   };
@@ -70,7 +85,18 @@ export const DEFAULT_SETTINGS: Settings = {
   print: { scale: '1/8', paper: 'Tabloid', landscape: true, subtitle: '' },
   dxf: { includeSchedule: true, visibleLayersOnly: true },
   // A foot is the granularity rooms are actually laid out on.
-  drawing: { units: 'imperial', snapStep: 120, showGrid: true, bulkDeleteWarning: 25 },
+  drawing: {
+    units: 'imperial',
+    snapStep: 120,
+    objectSnap: true,
+    showGrid: true,
+    paperSheet: true,
+    autoFitOnOpen: true,
+    openPropertiesOnSelect: true,
+    nudgeStep: 120,
+    fineNudgeStep: 10,
+    bulkDeleteWarning: 25,
+  },
   catalog: { policy: 'notify', smallUpdateLimitMb: 5, checkIntervalHours: 12 },
   app: { checkOnLaunch: true },
   inventory: { autoAbsorbGear: false, autoMatchShapes: false },
@@ -104,7 +130,9 @@ export async function loadSettings(userDataDir: string): Promise<Settings> {
 export async function saveSettings(userDataDir: string, settings: Settings): Promise<void> {
   const path = settingsPath(userDataDir);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+  await atomicWriteJson(path, settings, {
+    backupPath: existsSync(path) ? `${path}.bak` : undefined,
+  });
 }
 
 /**

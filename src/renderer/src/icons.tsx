@@ -121,6 +121,25 @@ export function IconDuplicate({ size = 16, className }: IconProps) {
   );
 }
 
+export function IconCopy({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="5.25" y="4.75" width="8" height="8.5" rx="1.25" />
+      <path d="M10.75 4.75V3.5a1.25 1.25 0 0 0-1.25-1.25H3.5A1.25 1.25 0 0 0 2.25 3.5v7A1.25 1.25 0 0 0 3.5 11.75h1.75" />
+    </svg>
+  );
+}
+
+export function IconPaste({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M5.25 3.25H3.75A1.5 1.5 0 0 0 2.25 4.75v8A1.5 1.5 0 0 0 3.75 14.25h7.5a1.5 1.5 0 0 0 1.5-1.5v-8a1.5 1.5 0 0 0-1.5-1.5h-1.5" />
+      <rect x="5.25" y="1.75" width="4.5" height="3" rx="1" />
+      <path d="M5.25 8h5.5M5.25 10.75h4" />
+    </svg>
+  );
+}
+
 export function IconTrash({ size = 16, className }: IconProps) {
   return (
     <svg {...base(size)} className={className}>
@@ -159,6 +178,45 @@ export function IconLock({ size = 16, className }: IconProps) {
     <svg {...base(size)} className={className}>
       <rect x="3.25" y="7" width="9.5" height="7" rx="1.5" />
       <path d="M5.5 7V4.75a2.5 2.5 0 0 1 5 0V7" />
+    </svg>
+  );
+}
+
+export function IconEye({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M1.5 8s2.3-3.75 6.5-3.75S14.5 8 14.5 8s-2.3 3.75-6.5 3.75S1.5 8 1.5 8Z" />
+      <circle cx="8" cy="8" r="1.75" />
+    </svg>
+  );
+}
+
+export function IconChair({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M4 2.25v5.5h7.25a1.5 1.5 0 0 1 1.5 1.5v1.5H4.5A2.25 2.25 0 0 1 2.25 8.5V5.25" />
+      <path d="M4.5 10.75v3M11.5 10.75v3M4 7.75h7.5" />
+    </svg>
+  );
+}
+
+/** White-arrow/direct-selection tool with an editable anchor. */
+export function IconDirectSelect({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3 1.75 11.5 8 7.3 8.8 5.25 13.5 3 1.75Z" fill="none" />
+      <rect x="10.75" y="1.75" width="3" height="3" rx=".35" fill="currentColor" stroke="none" />
+      <path d="M8.2 5.2 11.2 3.3" strokeDasharray="1.2 1.2" />
+    </svg>
+  );
+}
+
+export function IconCalculator({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2.5" y="1.5" width="11" height="13" rx="1.5" />
+      <rect x="4.25" y="3.25" width="7.5" height="2.5" rx=".4" />
+      <path d="M4.5 8h1M7.5 8h1M10.5 8h1M4.5 10.5h1M7.5 10.5h1M10.5 10.5h1M4.5 13h1M7.5 13h4" />
     </svg>
   );
 }

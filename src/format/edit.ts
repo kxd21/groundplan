@@ -14,6 +14,18 @@ import type { RVDocument, RVNode } from './rv.js';
 
 export type EditKind = 'move' | 'delete' | 'duplicate' | 'recolor' | 'relabel' | 'rotate' | 'resize' | 'flip';
 
+export interface LabelStylePatch {
+  family?: string;
+  /** User-facing size in points. */
+  size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikeOut?: boolean;
+  /** Absolute clockwise rotation in degrees. */
+  angleDegrees?: number;
+}
+
 export interface EditResult {
   ok: boolean;
   reason?: string;
@@ -203,6 +215,7 @@ function cloneSubtree(
     points: node.points.map((p) => ({ ...p })),
     labels: [...node.labels],
     fields: { ...node.fields },
+    font: node.font ? { ...node.font } : undefined,
     headerOverride: node.headerOverride ? Buffer.from(node.headerOverride) : undefined,
     slots: [],
     children: [],
@@ -759,6 +772,118 @@ export function relabelNode(doc: RVDocument, node: RVNode, text: string): EditRe
   const idx = node.labels.length >= 2 ? 1 : 0;
   node.labels[idx] = text;
   return { ok: true };
+}
+
+/** Applies typography directly to the LOGFONT stored by an RVLabel. */
+export function setLabelStyle(
+  doc: RVDocument,
+  node: RVNode,
+  patch: LabelStylePatch,
+): EditResult {
+  if (node.cls !== 'RVLabel') return { ok: false, reason: 'only text labels carry typography' };
+  if (!patch || typeof patch !== 'object') return { ok: false, reason: 'the text formatting is invalid' };
+  const header = editableHeader(doc, node);
+  let touched = false;
+
+  const writeI32 = (absolute: number | undefined, value: number): boolean => {
+    if (absolute == null) return false;
+    const at = rel(node, absolute);
+    if (at < 0 || at + 4 > header.length) return false;
+    header.writeInt32LE(value, at);
+    return true;
+  };
+  const writeFlag = (absolute: number | undefined, value: boolean): boolean => {
+    if (absolute == null) return false;
+    const at = rel(node, absolute);
+    if (at < 0 || at >= header.length) return false;
+    header.writeUInt8(value ? 1 : 0, at);
+    return true;
+  };
+
+  if (patch.size != null) {
+    if (!Number.isFinite(patch.size) || patch.size < 4 || patch.size > 144) {
+      return { ok: false, reason: 'text size must be between 4 and 144 points' };
+    }
+    const height = -Math.round(patch.size * 10);
+    if (!writeI32(node.fields.fontHeightAt, height)) {
+      return { ok: false, reason: 'this label has no writable font size' };
+    }
+    if (node.font) node.font.height = height;
+    touched = true;
+  }
+
+  if (patch.bold != null) {
+    const weight = patch.bold ? 700 : 400;
+    if (!writeI32(node.fields.fontWeightAt, weight)) {
+      return { ok: false, reason: 'this label has no writable font weight' };
+    }
+    node.bold = patch.bold;
+    if (node.font) node.font.weight = weight;
+    touched = true;
+  }
+
+  for (const [key, at] of [
+    ['italic', node.fields.fontItalicAt],
+    ['underline', node.fields.fontUnderlineAt],
+    ['strikeOut', node.fields.fontStrikeOutAt],
+  ] as const) {
+    const value = patch[key];
+    if (value == null) continue;
+    if (!writeFlag(at, value)) return { ok: false, reason: `this label has no writable ${key} setting` };
+    if (node.font) node.font[key] = value;
+    touched = true;
+  }
+
+  if (patch.family != null) {
+    const family = patch.family.trim();
+    const encoded = Buffer.from(family, 'latin1');
+    if (!family || encoded.length > 63) return { ok: false, reason: 'enter a font name up to 63 characters' };
+    if (node.fields.fontFaceAt == null || node.fields.fontFaceLen == null) {
+      return { ok: false, reason: 'this label has no writable font family' };
+    }
+    const at = rel(node, node.fields.fontFaceAt);
+    const oldLen = node.fields.fontFaceLen;
+    const current = node.headerOverride!;
+    if (at < 0 || at + 1 + oldLen > current.length) {
+      return { ok: false, reason: 'the font name is outside the decoded label' };
+    }
+    node.headerOverride = Buffer.concat([
+      current.subarray(0, at),
+      Buffer.from([encoded.length]),
+      encoded,
+      current.subarray(at + 1 + oldLen),
+    ]);
+    const delta = encoded.length - oldLen;
+    if (delta !== 0) {
+      for (const key of ['textAt', 'colorAt', 'pointsAt', 'childCountAt'] as const) {
+        const value = node.fields[key];
+        if (value != null && value > node.fields.fontFaceAt) node.fields[key] = value + delta;
+      }
+    }
+    node.fields.fontFaceLen = encoded.length;
+    if (node.font) node.font.family = family;
+    if (node.labels.length >= 2) node.labels[0] = family;
+    else node.labels.unshift(family);
+    touched = true;
+  }
+
+  if (patch.angleDegrees != null) {
+    if (!Number.isFinite(patch.angleDegrees) || Math.abs(patch.angleDegrees) > 3600) {
+      return { ok: false, reason: 'text rotation must be between -3600° and 3600°' };
+    }
+    if (node.fields.angleAt == null) return { ok: false, reason: 'this label has no writable rotation' };
+    const at = rel(node, node.fields.angleAt);
+    const current = node.headerOverride!;
+    if (at < 0 || at + 8 > current.length) {
+      return { ok: false, reason: 'the text rotation is outside the decoded label' };
+    }
+    const angle = (patch.angleDegrees * Math.PI) / 180;
+    current.writeDoubleLE(angle, at);
+    node.angle = angle;
+    touched = true;
+  }
+
+  return touched ? { ok: true } : { ok: false, reason: 'choose a text formatting change' };
 }
 
 /**

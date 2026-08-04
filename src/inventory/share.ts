@@ -7,7 +7,7 @@
  * merges by name, so two people editing different items do not wipe each other.
  */
 
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
@@ -19,6 +19,7 @@ import {
   manageInventorySymbols,
   saveInventory,
 } from './store.js';
+import { atomicWriteJson } from '../main/storage.js';
 
 export const PACK_MANIFEST = 'groundplan-inventory-pack.json';
 export const PACK_FORMAT = 'groundplan-inventory-pack';
@@ -71,10 +72,14 @@ export async function exportInventoryPack(
   if (!destinationDir) return reason('choose a folder for the inventory pack');
 
   await mkdir(destinationDir, { recursive: true });
+  // Keep the live inventory's managed paths under userData. Export must never
+  // rewrite in-memory symbolPath to the USB/pack folder (that would break
+  // placement after the stick is ejected).
   await manageInventorySymbols(inventoryFile, inventory);
+  const snapshot = structuredClone(inventory);
 
   const packInventoryPath = join(destinationDir, INVENTORY_FILENAME);
-  await saveInventory(packInventoryPath, inventory);
+  await saveInventory(packInventoryPath, snapshot);
 
   const assetRoot = join(destinationDir, INVENTORY_ASSET_DIRECTORY);
   await mkdir(assetRoot, { recursive: true });
@@ -102,7 +107,10 @@ export async function exportInventoryPack(
     assetCount: assets,
     label: label?.trim() || undefined,
   };
-  await writeFile(join(destinationDir, PACK_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  const manifestPath = join(destinationDir, PACK_MANIFEST);
+  await atomicWriteJson(manifestPath, manifest, {
+    backupPath: existsSync(manifestPath) ? `${manifestPath}.bak` : undefined,
+  });
 
   return { ok: true, path: destinationDir, items: inventory.items.length, assets };
 }
@@ -173,6 +181,7 @@ export async function importInventoryPack(
       mappedBy: item.mappedBy,
       mapReason: item.mapReason,
       tracedIcon: item.tracedIcon,
+      photoDataUrl: item.photoDataUrl,
     })),
     new Date(),
     {

@@ -46,6 +46,16 @@ export interface ScenePrimitive {
   owner?: string;
   /** Rendered text, for labels and dimensions. */
   text?: string;
+  /** Saved RVLabel typography. Present only for editable text labels. */
+  textStyle?: {
+    family: string;
+    size: number;
+    bold: boolean;
+    italic: boolean;
+    underline: boolean;
+    strikeOut: boolean;
+    angleDegrees: number;
+  };
 }
 
 export interface Scene {
@@ -188,6 +198,18 @@ export function buildScene(doc: RVDocument): Scene {
           layer,
           owner,
           text,
+          textStyle:
+            type === 'text'
+              ? {
+                  family: node.font?.family || 'Arial',
+                  size: Math.max(4, Math.abs(node.font?.height ?? -90) / 10),
+                  bold: (node.font?.weight ?? (node.bold ? 700 : 400)) >= 600,
+                  italic: node.font?.italic ?? false,
+                  underline: node.font?.underline ?? false,
+                  strikeOut: node.font?.strikeOut ?? false,
+                  angleDegrees: ((node.angle ?? 0) * 180) / Math.PI,
+                }
+              : undefined,
         });
       }
     }

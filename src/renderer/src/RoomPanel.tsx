@@ -19,6 +19,7 @@ import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import type { Doc } from './App.js';
 import {
+  IconChair,
   IconDrawEllipse,
   IconDrawPolygon,
   IconDrawRect,
@@ -28,10 +29,14 @@ import {
   IconTrash,
   IconWarning,
 } from './icons.js';
+import { SnappySlider } from './SnappySlider.js';
+import type { WallEditSession } from './wall-edit.js';
 
 const api = window.groundplan;
 
 interface Props {
+  /** Room keeps outline/more; seating is promoted to its own inspector destination. */
+  mode?: 'room' | 'seating';
   doc: Doc;
   onDoc: (doc: Doc) => void;
   onStatus: (message: string) => void;
@@ -51,6 +56,17 @@ interface Props {
       centreAisle: number;
     } | null,
   ) => void;
+  /** Fired after Place / Add seating section succeeds. */
+  onSeatingApplied?: () => void;
+  /** Live wall-edit overlay for the plan canvas (click wall, drag mid-handle). */
+  onWallEditChange?: (session: WallEditSession | null) => void;
+  /** External wall pick from the canvas. */
+  wallPickIndex?: number | null;
+  /** Ribbon “Edit walls” mode — keeps One wall editing armed. */
+  editWallsMode?: boolean;
+  /** When Edit walls is on, ribbon Push/Curve/Length drives the panel action. */
+  preferredWallAction?: 'push' | 'curve' | 'length';
+  onPreferredWallActionChange?: (action: 'push' | 'curve' | 'length') => void;
 }
 
 /**
@@ -120,6 +136,7 @@ function LengthField({
 }
 
 export default function RoomPanel({
+  mode = 'room',
   doc,
   onDoc,
   onStatus,
@@ -129,6 +146,12 @@ export default function RoomPanel({
   onDrawRoomOutline,
   onRoomAuthored,
   onSeatingStatus,
+  onSeatingApplied,
+  onWallEditChange,
+  wallPickIndex = null,
+  editWallsMode = false,
+  preferredWallAction,
+  onPreferredWallActionChange,
 }: Props) {
   const [model, setModel] = useState<PlanModelView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -188,7 +211,9 @@ export default function RoomPanel({
   }, [drawingRoomOutline]);
 
   // ---- Reshape / curve ----------------------------------------------------
-  const [outlineMode, setOutlineMode] = useState<'build' | 'adjust'>('build');
+  const [outlineMode, setOutlineMode] = useState<'walls' | 'reshape'>('walls');
+  const [wallAction, setWallAction] = useState<'move' | 'length' | 'curve' | 'push' | 'round' | 'corners'>('push');
+  const wallPush = useLength(2 * 120, units);
   const [reshapeOp, setReshapeOp] = useState<'union' | 'difference'>('union');
   const reshapeX = useLength(0, units);
   const reshapeY = useLength(0, units);
@@ -199,11 +224,34 @@ export default function RoomPanel({
   const cornerY = useLength(0, units);
   const cornerRadius = useLength(2 * 120, units);
   const curveRadius = useLength(20 * 120, units);
+  const curveSagitta = useLength(5 * 120, units);
+  const curveArcLength = useLength(50 * 120, units);
+  const [curveAngleText, setCurveAngleText] = useState('90');
+  const [curveMethod, setCurveMethod] = useState<'radius' | 'sagitta' | 'angle' | 'arc-length'>('radius');
   const wallLengthField = useLength(40 * 120, units);
-  const [curveOtherWay, setCurveOtherWay] = useState(false);
+  /** False = bow into the room; true = bow outward. */
+  const [curveOutward, setCurveOutward] = useState(false);
   const [curveMajor, setCurveMajor] = useState(false);
   const selectedWall = room?.wallDetails?.[editCorner];
   const selectedWallCurved = Boolean(selectedWall?.curved);
+  const selectedWallChord = selectedWall?.length ?? 0;
+  const curveAngleValue = Number(curveAngleText);
+  const curveValueReady =
+    curveMethod === 'angle'
+      ? Number.isFinite(curveAngleValue) && curveAngleValue > 0 && curveAngleValue < 360
+      : curveMethod === 'radius'
+        ? curveRadius.positive
+        : curveMethod === 'sagitta'
+          ? curveSagitta.positive
+          : curveArcLength.positive;
+  const curveValue =
+    curveMethod === 'angle'
+      ? curveAngleValue
+      : curveMethod === 'radius'
+        ? curveRadius.value
+        : curveMethod === 'sagitta'
+          ? curveSagitta.value
+          : curveArcLength.value;
   const selectedCornerCanRound = Boolean(
     room?.wallDetails?.length &&
     !room.wallDetails[editCorner]?.curved &&
@@ -211,6 +259,15 @@ export default function RoomPanel({
   );
   const canReshapeRect =
     Boolean(room) && room!.axisAligned && room!.curved === 0;
+
+  type RoomPanelTab = 'outline' | 'seating' | 'more';
+  const [roomPanelTab, setRoomPanelTab] = useState<RoomPanelTab>(() =>
+    mode === 'seating' ? 'seating' : 'outline',
+  );
+
+  useEffect(() => {
+    setRoomPanelTab(mode === 'seating' ? 'seating' : 'outline');
+  }, [mode]);
 
   // Seed the size fields from the room the plan already has.
   //
@@ -238,7 +295,7 @@ export default function RoomPanel({
   useEffect(() => {
     if (!room || shapeSeeded) return;
     setRoomShape(room.shape);
-    if (room.shape === 'custom') setOutlineMode('adjust');
+    if (room.shape === 'custom') setOutlineMode('walls');
     setShapeSeeded(true);
   }, [room, shapeSeeded]);
 
@@ -266,6 +323,12 @@ export default function RoomPanel({
     wallLengthField.setText(detail.lengthText);
     if (detail.curved && detail.radius > 0) {
       curveRadius.setText(detail.radiusText);
+      setCurveMethod('radius');
+    } else if (detail.length > 0) {
+      // Half-chord is a usable starting radius for a gentle bay.
+      curveRadius.setText(formatLength(detail.length / 2, units));
+      curveSagitta.setText(formatLength(detail.length * 0.12, units));
+      curveArcLength.setText(formatLength(detail.length * 1.15, units));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editCorner, room?.wallDetails]);
@@ -276,6 +339,59 @@ export default function RoomPanel({
     if (count === 0) return;
     if (editCorner >= count) setEditCorner(0);
   }, [room?.wallDetails, editCorner]);
+
+  // Canvas picks a wall — sync the inspector picker.
+  useEffect(() => {
+    if (wallPickIndex == null) return;
+    const count = room?.wallDetails?.length ?? 0;
+    if (wallPickIndex >= 0 && wallPickIndex < count) setEditCorner(wallPickIndex);
+  }, [wallPickIndex, room?.wallDetails?.length]);
+
+  // Ribbon Edit walls mode keeps One wall editing armed.
+  useEffect(() => {
+    if (editWallsMode) setOutlineMode('walls');
+  }, [editWallsMode]);
+
+  useEffect(() => {
+    if (preferredWallAction) setWallAction(preferredWallAction);
+  }, [preferredWallAction]);
+
+  // Publish wall-edit overlay while One wall mode is active (or Edit walls is on).
+  useEffect(() => {
+    if (!onWallEditChange) return;
+    const armed = (mode === 'room' && outlineMode === 'walls') || editWallsMode;
+    if (!armed || !room?.wallDetails?.length) {
+      onWallEditChange(null);
+      return;
+    }
+    const gesture =
+      wallAction === 'curve' ? 'curve' : wallAction === 'length' ? 'length' : 'push';
+    onWallEditChange({
+      walls: room.wallDetails.map((wall) => ({
+        index: wall.index,
+        startX: wall.startX,
+        startY: wall.startY,
+        endX: wall.endX,
+        endY: wall.endY,
+        curved: wall.curved,
+        bulge: wall.bulge ?? 0,
+        length: wall.length,
+      })),
+      selected: editCorner,
+      gesture,
+      editable,
+    });
+    return () => onWallEditChange(null);
+  }, [
+    onWallEditChange,
+    mode,
+    outlineMode,
+    editWallsMode,
+    room?.wallDetails,
+    editCorner,
+    wallAction,
+    editable,
+  ]);
 
   // ---- Event Room Data / seating ------------------------------------------
   type ErdTab = 'seating' | 'spacing' | 'av' | 'design';
@@ -296,6 +412,7 @@ export default function RoomPanel({
   const [rowsPerBlock, setRowsPerBlock] = useState(0);
   const [sectionCentre, setSectionCentre] = useState(0);
   const [sectionWing, setSectionWing] = useState(0);
+  const [seatingPlacementMode, setSeatingPlacementMode] = useState<'replace' | 'add'>('replace');
   const [banquetEndChairs, setBanquetEndChairs] = useState(false);
   const [banquetRotate90, setBanquetRotate90] = useState(false);
   const [chairsBothSides, setChairsBothSides] = useState(false);
@@ -378,6 +495,7 @@ export default function RoomPanel({
       tablesAcross: tablesAcross > 0 ? tablesAcross : undefined,
       sectionCentre: sectionCentre > 0 ? sectionCentre : undefined,
       sectionWing: sectionWing > 0 ? sectionWing : undefined,
+      append: seatingPlacementMode === 'add',
     }),
     [
       style,
@@ -405,6 +523,7 @@ export default function RoomPanel({
       tablesAcross,
       sectionCentre,
       sectionWing,
+      seatingPlacementMode,
     ],
   );
 
@@ -525,48 +644,66 @@ export default function RoomPanel({
 
   return (
     <>
+      {mode === 'room' && (
+      <div className="seg tabs room-panel-tabs" role="tablist" aria-label="Room panel">
+        {(
+          [
+            ['outline', 'Outline'],
+            ['more', 'More'],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={roomPanelTab === id}
+            className={roomPanelTab === id ? 'active' : ''}
+            onClick={() => setRoomPanelTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      )}
+
+      {roomPanelTab === 'outline' && (
+        <>
       {/* ---------------------------------------------------------------- */}
       <div className="section">
         <div className="section-title">
           <span>Room</span>
+          {room && (
+            <span className="section-count">
+              {room.sizeText}
+              {room.curved > 0 ? ` · ${room.curved} curved` : ''}
+            </span>
+          )}
         </div>
 
         {room ? (
-          <>
-            <dl className="prop-grid">
-              <dt>Size</dt>
-              <dd>{room.sizeText}</dd>
-              <dt>Floor area</dt>
-              <dd>{room.areaText}</dd>
-              <dt>Perimeter</dt>
-              <dd>{room.perimeterText}</dd>
-              <dt>Walls</dt>
-              <dd>
-                {room.walls}
-                {room.curved > 0 && `, ${room.curved} curved`}
-                {room.holes > 0 && `, ${room.holes} cut-out${room.holes === 1 ? '' : 's'}`}
-              </dd>
-            </dl>
-
-            {room.source === 'extent' && (
-              <div className="notice" role="status">
-                <IconWarning size={14} />
-                <span>
-                  No wall outline could be traced, so this is the extent of the drawing. Treat the area as an
-                  over-estimate.
-                </span>
-              </div>
-            )}
-            {room.problems.map((problem) => (
-              <div className="notice" role="status" key={problem}>
-                <IconWarning size={14} />
-                <span>{problem}</span>
-              </div>
-            ))}
-          </>
+          <p className="room-summary-line">
+            {room.areaText} floor · {room.walls} wall{room.walls === 1 ? '' : 's'}
+            {room.holes > 0 ? ` · ${room.holes} cut-out${room.holes === 1 ? '' : 's'}` : ''}
+          </p>
         ) : (
-          <p className="hint">This plan has no room outline yet. Draw one below and everything else follows from it.</p>
+          <p className="hint">No outline yet — draw one below.</p>
         )}
+
+        {room?.source === 'extent' && (
+          <div className="notice" role="status">
+            <IconWarning size={14} />
+            <span>
+              No wall outline could be traced, so this is the extent of the drawing. Treat the area as an
+              over-estimate.
+            </span>
+          </div>
+        )}
+        {room?.problems.map((problem) => (
+          <div className="notice" role="status" key={problem}>
+            <IconWarning size={14} />
+            <span>{problem}</span>
+          </div>
+        ))}
 
         {model.companion.freshness === 'stale' && model.companion.reason && (
           <div className="notice" role="status">
@@ -616,11 +753,11 @@ export default function RoomPanel({
           <div className={`room-outline-guide${drawingRoomOutline ? ' is-active' : ''}`} role="status">
             <IconDrawPolygon size={18} />
             <span>
-              <strong>{drawingRoomOutline ? 'Custom outline is active' : 'Trace any room shape on the plan'}</strong>
+              <strong>{drawingRoomOutline ? 'Drawing on the plan' : 'Trace the room on the plan'}</strong>
               <small>
                 {drawingRoomOutline
-                  ? 'Click corners in order. Click near the first corner or press Enter to finish; Backspace undoes the last point; Escape cancels.'
-                  : 'Click each corner on the plan. After three or more points, click near the start or press Enter to close the outline.'}
+                  ? 'Click corners in order. Click near the start or press Enter to finish.'
+                  : 'Three or more corners, then click near the first corner or press Enter.'}
               </small>
             </span>
           </div>
@@ -674,56 +811,49 @@ export default function RoomPanel({
             Dimension
           </button>
         </div>
-        <p className="hint">
-          A new room outline replaces the one Groundplan drew before instead of stacking another room on top.
-          Circles keep exact area and perimeter; freeform rooms support angled and concave walls.
-        </p>
       </div>
 
       {room && (
         <div className="section">
           <div className="section-title">
-            <span>Outline editor</span>
-            <span className="section-count">{room.walls} lines</span>
+            <span>Edit walls</span>
+            <span className="section-count">{room.walls}</span>
           </div>
 
-          <div className="room-outline-modes" role="tablist" aria-label="Room outline editing mode">
+          <div className="room-outline-modes" role="tablist" aria-label="Wall editing mode">
             <button
               type="button"
               role="tab"
-              aria-selected={outlineMode === 'build'}
-              className={outlineMode === 'build' ? 'active' : ''}
-              onClick={() => setOutlineMode('build')}
-              disabled={!editable}
-            >
-              <IconPlus size={15} />
-              <span><strong>Build outline</strong><small>Add or cut areas</small></span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={outlineMode === 'adjust'}
-              className={outlineMode === 'adjust' ? 'active' : ''}
-              onClick={() => setOutlineMode('adjust')}
+              aria-selected={outlineMode === 'walls'}
+              className={outlineMode === 'walls' ? 'active' : ''}
+              onClick={() => setOutlineMode('walls')}
               disabled={!editable}
             >
               <IconEdit size={15} />
-              <span><strong>Adjust outline</strong><small>Lines and corners</small></span>
+              <span><strong>One wall</strong><small>Move, length, curve</small></span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={outlineMode === 'reshape'}
+              className={outlineMode === 'reshape' ? 'active' : ''}
+              onClick={() => setOutlineMode('reshape')}
+              disabled={!editable}
+            >
+              <IconPlus size={15} />
+              <span><strong>Add / cut</strong><small>Rectangular patch</small></span>
             </button>
           </div>
 
-          {outlineMode === 'build' ? (
+          {outlineMode === 'reshape' ? (
             <div className="room-outline-pane" role="tabpanel">
-              <div className="room-edit-heading">
-                <strong>Add or remove floor area</strong>
-                <small>
-                  {canReshapeRect
-                    ? 'Place a rectangular patch to extend the room or make a cut-out.'
-                    : room.curved > 0
-                      ? 'Straighten curved walls before adding or cutting a rectangle.'
-                      : 'Add/Cut needs axis-aligned walls. Use Freeform above for angled outlines.'}
-                </small>
-              </div>
+              <p className="hint">
+                {canReshapeRect
+                  ? 'Add a rectangular bay or cut a rectangular opening from the room.'
+                  : room.curved > 0
+                    ? 'Straighten curved walls first, then add or cut.'
+                    : 'Needs a rectangular (axis-aligned) room. Use Freeform above for angled shapes.'}
+              </p>
               <div className="seg tabs seat-kinds" role="tablist" aria-label="Reshape operation">
                 <button
                   type="button"
@@ -773,33 +903,16 @@ export default function RoomPanel({
                     !reshapeW.positive ||
                     !reshapeD.positive
                   }
-                  title={
-                    !canReshapeRect
-                      ? room.curved > 0
-                        ? 'Straighten curved walls before adding or cutting a rectangle'
-                        : 'Add/Cut needs an axis-aligned room outline'
-                      : reshapeOp === 'union'
-                        ? 'Union a rectangle into the room outline'
-                        : 'Subtract a rectangle for a corridor, column pocket or L-cut'
-                  }
                 >
                   <IconPlus size={14} />
                   {reshapeOp === 'union' ? 'Add to room' : 'Cut from room'}
                 </button>
               </div>
-              <p className="hint">Use Freeform above when the new boundary is not rectangular.</p>
             </div>
           ) : (
             <div className="room-outline-pane" role="tabpanel">
-              <div className="room-edit-heading">
-                <strong>Adjust plot lines and corners</strong>
-                <small>
-                  Each entry is one plot line. Its start is Corner N; length and curve apply to that line.
-                </small>
-              </div>
-
               <div className="field room-corner-select">
-                <label htmlFor="outline-line">Plot line (starts at corner)</label>
+                <label htmlFor="outline-line">Wall</label>
                 <select
                   id="outline-line"
                   value={editCorner}
@@ -808,243 +921,464 @@ export default function RoomPanel({
                 >
                   {(room.wallDetails ?? []).map((wall) => (
                     <option key={wall.index} value={wall.index}>
-                      Line {wall.index + 1} from corner {wall.index + 1} · {wall.lengthText}
-                      {wall.curved ? ` · curved R ${wall.radiusText}` : ''}
+                      Wall {wall.index + 1} · {wall.lengthText}
+                      {wall.curved ? ` · curved` : ''}
                     </option>
                   ))}
                 </select>
               </div>
-
-              <div className="room-edit-card is-prominent">
-                <div className="room-edit-card-title">
-                  <strong>Round corners</strong>
-                  <small>Choose a radius, then round this corner or every sharp corner at once.</small>
-                </div>
-                <div className="field-row is-single">
-                  <LengthField id="corner-radius" label="Corner radius" field={cornerRadius} units={units} disabled={!editable} />
-                </div>
-                <div className="actions-row room-edit-actions">
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={() => void run('Corner rounded', () =>
-                      api.roomCornerRound(editCorner, cornerRadius.value!),
-                    )}
-                    disabled={!editable || !cornerRadius.positive || !selectedCornerCanRound}
-                    title={
-                      selectedCornerCanRound
-                        ? 'Round the selected corner with an exact tangent radius'
-                        : 'Select a sharp corner whose adjoining plot lines are straight'
-                    }
-                  >
-                    Round this corner
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void run('All corners rounded', () =>
-                      api.roomCornersRoundAll(cornerRadius.value!),
-                    )}
-                    disabled={!editable || !cornerRadius.positive || room.curved > 0}
-                    title={
-                      room.curved > 0
-                        ? 'Straighten existing curved lines before rounding every corner'
-                        : 'Apply this radius to every corner in the room'
-                    }
-                  >
-                    Round all
-                  </button>
-                </div>
-              </div>
-
-              <div className="room-edit-card">
-                <div className="room-edit-card-title">
-                  <strong>Corner position</strong>
-                  <small>Move the start of the selected line (corner {editCorner + 1}).</small>
-                </div>
-                <div className="field-row">
-                  <LengthField id="corner-x" label="X" field={cornerX} units={units} disabled={!editable} />
-                  <LengthField id="corner-y" label="Y" field={cornerY} units={units} disabled={!editable} />
-                </div>
-                <div className="actions-row room-edit-actions">
-                  <button
-                    type="button"
-                    onClick={() => void run('Corner moved', () =>
-                      api.roomCornerMove(editCorner, cornerX.value!, cornerY.value!),
-                    )}
-                    disabled={!editable || !cornerX.valid || !cornerY.valid}
-                    title="Move this corner and stretch the two connected plot lines"
-                  >
-                    <IconEdit size={13} />
-                    Move corner
-                  </button>
-                </div>
-              </div>
-
-              <div className="room-edit-card">
-                <div className="room-edit-card-title">
-                  <strong>Line structure</strong>
-                  <small>Split the selected line, or remove its start corner.</small>
-                </div>
-                <div className="actions-row room-edit-actions">
-                  <button
-                    type="button"
-                    onClick={() => void run('Plot line added', () => api.roomCornerAdd(editCorner))}
-                    disabled={!editable || selectedWallCurved}
-                    title={
-                      selectedWallCurved
-                        ? 'Straighten this curved line before splitting it'
-                        : 'Split the selected plot line at its midpoint'
-                    }
-                  >
-                    <IconPlus size={13} />
-                    Add plot line
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void run('Corner removed', () => api.roomCornerRemove(editCorner))}
-                    disabled={!editable || room.walls <= 3}
-                    title={
-                      room.walls <= 3
-                        ? 'A room needs at least three corners'
-                        : 'Remove this corner and join the two plot lines'
-                    }
-                  >
-                    <IconTrash size={13} />
-                    Remove corner
-                  </button>
-                </div>
-              </div>
-
-              <div className="room-edit-card">
-                <div className="room-edit-card-title">
-                  <strong>Selected plot line</strong>
-                  <small>
-                    {selectedWallCurved
-                      ? 'Straighten before changing length. Curve radius updates the arc.'
-                      : 'Set its length or bow the whole line into an arc.'}
-                  </small>
-                </div>
-                <div className="field-row is-single">
-                  <LengthField
-                    id="wall-length"
-                    label="Line length"
-                    field={wallLengthField}
-                    units={units}
-                    disabled={!editable || selectedWallCurved}
-                  />
-                </div>
-                <div className="actions-row room-edit-actions">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void run('Plot line length set', () => api.roomWallLength(editCorner, wallLengthField.value!))
-                    }
-                    disabled={
-                      !editable ||
-                      selectedWallCurved ||
-                      !wallLengthField.positive ||
-                      !(room.wallDetails?.length)
-                    }
-                    title={
-                      selectedWallCurved
-                        ? 'Straighten this curved line before changing its length'
-                        : "Set this line's length, keeping its start corner fixed"
-                    }
-                  >
-                    Set line length
-                  </button>
-                </div>
-
-                <div className="field-row is-single room-curve-field">
-                  <LengthField id="curve-radius" label="Wall curve radius" field={curveRadius} units={units} disabled={!editable} />
-                </div>
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={curveOtherWay}
-                    disabled={!editable}
-                    onChange={(e) => setCurveOtherWay(e.target.checked)}
-                  />
-                  <span>Bow the other way</span>
-                </label>
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={curveMajor}
-                    disabled={!editable}
-                    onChange={(e) => setCurveMajor(e.target.checked)}
-                  />
-                  <span>Long way round (major arc)</span>
-                </label>
-                <div className="actions-row room-edit-actions">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const radius = curveRadius.value!;
-                      const signed = curveOtherWay ? -Math.abs(radius) : Math.abs(radius);
-                      void run('Plot line curved', () => api.roomCurve(editCorner, signed, curveMajor));
-                    }}
-                    disabled={!editable || !curveRadius.positive || !(room.wallDetails?.length)}
-                    title="Bow the selected plot line to this radius"
-                  >
-                    Curve line
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void run('Plot line straightened', () => api.roomCurve(editCorner, 0))}
-                    disabled={!editable || !selectedWallCurved}
-                    title={
-                      selectedWallCurved
-                        ? 'Remove the curve from the selected plot line'
-                        : 'This plot line is already straight'
-                    }
-                  >
-                    Straighten
-                  </button>
-                </div>
-              </div>
-              <p className="hint">
-                Corner rounding and curves change the real room geometry, so dimensions, area, print and DXF stay accurate.
+              <p className="hint room-wall-hint">
+                Use <strong>Edit walls</strong> in the top bar, click a wall, then drag the handle.
+                Push moves it · Curve bows it · Length stretches the chord.
+                {selectedWallCurved && selectedWall?.radiusText
+                  ? ` · Wall ${editCorner + 1} radius ${selectedWall.radiusText} · arc ${selectedWall.lengthText}`
+                  : selectedWall
+                    ? ` · Wall ${editCorner + 1} · ${selectedWall.lengthText}`
+                    : ''}
               </p>
+
+              <div className="seg tabs wall-action-tabs" role="tablist" aria-label="What to change">
+                {(
+                  [
+                    ['push', 'Push'],
+                    ['curve', 'Curve'],
+                    ['length', 'Length'],
+                    ['move', 'Move'],
+                    ['round', 'Round'],
+                    ['corners', 'Corners'],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={wallAction === id}
+                    className={wallAction === id ? 'active' : ''}
+                    onClick={() => {
+                      setWallAction(id);
+                      if (id === 'push' || id === 'curve' || id === 'length') {
+                        onPreferredWallActionChange?.(id);
+                      }
+                    }}
+                    disabled={!editable}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {wallAction === 'push' && (
+                <div className="room-edit-card is-prominent">
+                  <div className="room-edit-card-title">
+                    <strong>Push / pull this wall</strong>
+                    <small>
+                      Drag the mid-wall handle on the plan, or set a distance here. Positive grows the room.
+                    </small>
+                  </div>
+                  <SnappySlider
+                    label="Move wall"
+                    values={[-10 * 120, -5 * 120, -2 * 120, 0, 2 * 120, 5 * 120, 10 * 120]}
+                    defaultValue={2 * 120}
+                    min={-20 * 120}
+                    max={20 * 120}
+                    step={10}
+                    compact
+                    disabled={!editable || selectedWallCurved}
+                    value={wallPush.value ?? 2 * 120}
+                    config={{
+                      labelFormatter: (value) => formatLength(value, units),
+                    }}
+                    onChange={(next) => wallPush.setText(formatLength(next, units))}
+                  />
+                  {selectedWallCurved && (
+                    <p className="hint">Straighten the wall (Curve → Straighten) before pushing it.</p>
+                  )}
+                  <div className="actions-row room-edit-actions">
+                    <button
+                      type="button"
+                      className="btn-solid"
+                      disabled={!editable || !wallPush.valid || selectedWallCurved || !(wallPush.value !== 0)}
+                      onClick={() =>
+                        void run('Wall moved', () => api.roomWallOffset(editCorner, wallPush.value!))
+                      }
+                    >
+                      Apply push / pull
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wallAction === 'curve' && (
+                <div className="room-edit-card is-prominent room-curve-card">
+                  <div className="room-edit-card-title">
+                    <strong>Curve this wall</strong>
+                    <small>
+                      {selectedWall
+                        ? `Wall ${editCorner + 1} · chord ${selectedWall.lengthText}${selectedWallCurved ? ` · now R ${selectedWall.radiusText}` : ''}`
+                        : 'Bend the whole wall into a circular arc.'}
+                    </small>
+                  </div>
+
+                  <div className="seg tabs room-curve-methods" role="radiogroup" aria-label="Define curve by">
+                    {(
+                      [
+                        ['radius', 'Radius'],
+                        ['sagitta', 'Bow'],
+                        ['angle', 'Angle'],
+                        ['arc-length', 'Arc len'],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        className={curveMethod === id ? 'active' : ''}
+                        onClick={() => setCurveMethod(id)}
+                        disabled={!editable}
+                        title={
+                          id === 'radius'
+                            ? 'Arc radius to both ends'
+                            : id === 'sagitta'
+                              ? 'How far the wall bows off the chord'
+                              : id === 'angle'
+                                ? 'Included angle of the arc'
+                                : 'Finished wall length along the curve'
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {curveMethod === 'radius' && (
+                    <div className="field-row is-single">
+                      <LengthField id="curve-radius" label="Arc radius" field={curveRadius} units={units} disabled={!editable} />
+                    </div>
+                  )}
+                  {curveMethod === 'sagitta' && (
+                    <div className="field-row is-single">
+                      <LengthField id="curve-sagitta" label="Bow depth at centre" field={curveSagitta} units={units} disabled={!editable} />
+                    </div>
+                  )}
+                  {curveMethod === 'angle' && (
+                    <div className="field">
+                      <label htmlFor="curve-angle">Included angle (degrees)</label>
+                      <input
+                        id="curve-angle"
+                        className="num"
+                        type="number"
+                        min={1}
+                        max={359}
+                        step={5}
+                        value={curveAngleText}
+                        disabled={!editable}
+                        onChange={(e) => setCurveAngleText(e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {curveMethod === 'arc-length' && (
+                    <div className="field-row is-single">
+                      <LengthField id="curve-arc-length" label="Finished wall length" field={curveArcLength} units={units} disabled={!editable} />
+                    </div>
+                  )}
+
+                  {curveMethod === 'radius' && selectedWallChord > 0 && (
+                    <div className="room-curve-presets" role="group" aria-label="Radius presets">
+                      <button
+                        type="button"
+                        disabled={!editable}
+                        onClick={() => curveRadius.setText(formatLength(selectedWallChord / 2, units))}
+                      >
+                        ½ chord
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editable}
+                        onClick={() => curveRadius.setText(formatLength(selectedWallChord, units))}
+                      >
+                        = chord
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editable}
+                        onClick={() => curveRadius.setText(formatLength(selectedWallChord * 1.5, units))}
+                      >
+                        1.5× chord
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="field">
+                    <label>Direction</label>
+                    <div className="seg tabs room-curve-direction" role="radiogroup" aria-label="Curve direction">
+                      <button
+                        type="button"
+                        className={!curveOutward ? 'active' : ''}
+                        onClick={() => setCurveOutward(false)}
+                        disabled={!editable}
+                      >
+                        <strong>Into room</strong>
+                        <small>Gains floor</small>
+                      </button>
+                      <button
+                        type="button"
+                        className={curveOutward ? 'active' : ''}
+                        onClick={() => setCurveOutward(true)}
+                        disabled={!editable}
+                      >
+                        <strong>Out of room</strong>
+                        <small>Bay / bulge</small>
+                      </button>
+                    </div>
+                  </div>
+
+                  {curveMethod === 'radius' && (
+                    <div className="field">
+                      <label>Arc path</label>
+                      <div className="seg tabs room-curve-arc" role="radiogroup" aria-label="Minor or major arc">
+                        <button
+                          type="button"
+                          className={!curveMajor ? 'active' : ''}
+                          onClick={() => setCurveMajor(false)}
+                          disabled={!editable}
+                        >
+                          Short way
+                        </button>
+                        <button
+                          type="button"
+                          className={curveMajor ? 'active' : ''}
+                          onClick={() => setCurveMajor(true)}
+                          disabled={!editable}
+                        >
+                          Long way
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="hint room-curve-summary">
+                    {curveMethod === 'radius'
+                      ? `Radius ${curveRadius.text || '…'} · ${curveOutward ? 'outward' : 'inward'}${curveMajor ? ' · major arc' : ''}`
+                      : curveMethod === 'sagitta'
+                        ? `Bow ${curveSagitta.text || '…'} off the chord · ${curveOutward ? 'outward' : 'inward'}`
+                        : curveMethod === 'angle'
+                          ? `${curveAngleText || '…'}° included · ${curveOutward ? 'outward' : 'inward'}`
+                          : `Arc length ${curveArcLength.text || '…'} · ${curveOutward ? 'outward' : 'inward'}`}
+                  </p>
+
+                  <div className="actions-row room-edit-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => {
+                        if (curveValue == null || !(curveValue > 0)) return;
+                        void run('Wall curved', () =>
+                          api.roomCurve(editCorner, curveValue, {
+                            method: curveMethod,
+                            outward: curveOutward,
+                            major: curveMethod === 'radius' && curveMajor,
+                          }),
+                        );
+                      }}
+                      disabled={!editable || !curveValueReady || !(room.wallDetails?.length)}
+                    >
+                      Apply curve
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void run('Wall straightened', () => api.roomCurve(editCorner, 0))}
+                      disabled={!editable || !selectedWallCurved}
+                      title={selectedWallCurved ? 'Make this wall straight again' : 'Already straight'}
+                    >
+                      Straighten
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wallAction === 'length' && (
+                <div className="room-edit-card">
+                  <div className="room-edit-card-title">
+                    <strong>Wall length</strong>
+                    <small>Keeps the start corner fixed and moves the far end.</small>
+                  </div>
+                  <div className="field-row is-single">
+                    <LengthField
+                      id="wall-length"
+                      label="Length"
+                      field={wallLengthField}
+                      units={units}
+                      disabled={!editable || selectedWallCurved}
+                    />
+                  </div>
+                  <div className="actions-row room-edit-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() =>
+                        void run('Wall length set', () => api.roomWallLength(editCorner, wallLengthField.value!))
+                      }
+                      disabled={
+                        !editable ||
+                        selectedWallCurved ||
+                        !wallLengthField.positive ||
+                        !(room.wallDetails?.length)
+                      }
+                      title={
+                        selectedWallCurved
+                          ? 'Straighten this wall before changing its length'
+                          : 'Set length from the start corner'
+                      }
+                    >
+                      Set length
+                    </button>
+                  </div>
+                  {selectedWallCurved && (
+                    <p className="hint">Straighten the wall first (Curve → Straighten), then set length.</p>
+                  )}
+                </div>
+              )}
+
+              {wallAction === 'move' && (
+                <div className="room-edit-card">
+                  <div className="room-edit-card-title">
+                    <strong>Move corner {editCorner + 1}</strong>
+                    <small>The start of this wall. Both walls that meet here will stretch.</small>
+                  </div>
+                  <div className="field-row">
+                    <LengthField id="corner-x" label="X" field={cornerX} units={units} disabled={!editable} />
+                    <LengthField id="corner-y" label="Y" field={cornerY} units={units} disabled={!editable} />
+                  </div>
+                  <div className="actions-row room-edit-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => void run('Corner moved', () =>
+                        api.roomCornerMove(editCorner, cornerX.value!, cornerY.value!),
+                      )}
+                      disabled={!editable || !cornerX.valid || !cornerY.valid}
+                    >
+                      <IconEdit size={13} />
+                      Move corner
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wallAction === 'round' && (
+                <div className="room-edit-card">
+                  <div className="room-edit-card-title">
+                    <strong>Round corner {editCorner + 1}</strong>
+                    <small>Trims the sharp corner into a smooth arc of this radius.</small>
+                  </div>
+                  <div className="field-row is-single">
+                    <LengthField id="corner-radius" label="Corner radius" field={cornerRadius} units={units} disabled={!editable} />
+                  </div>
+                  <div className="actions-row room-edit-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => void run('Corner rounded', () =>
+                        api.roomCornerRound(editCorner, cornerRadius.value!),
+                      )}
+                      disabled={!editable || !cornerRadius.positive || !selectedCornerCanRound}
+                      title={
+                        selectedCornerCanRound
+                          ? 'Round this corner'
+                          : 'Both walls at this corner must be straight'
+                      }
+                    >
+                      Round corner
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void run('All corners rounded', () =>
+                        api.roomCornersRoundAll(cornerRadius.value!),
+                      )}
+                      disabled={!editable || !cornerRadius.positive || room.curved > 0}
+                      title={
+                        room.curved > 0
+                          ? 'Straighten curved walls before rounding every corner'
+                          : 'Round every corner to this radius'
+                      }
+                    >
+                      Round all
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wallAction === 'corners' && (
+                <div className="room-edit-card">
+                  <div className="room-edit-card-title">
+                    <strong>Add or remove a corner</strong>
+                    <small>Split this wall in half, or remove corner {editCorner + 1}.</small>
+                  </div>
+                  <div className="actions-row room-edit-actions">
+                    <button
+                      type="button"
+                      onClick={() => void run('Corner added', () => api.roomCornerAdd(editCorner))}
+                      disabled={!editable || selectedWallCurved}
+                      title={
+                        selectedWallCurved
+                          ? 'Straighten this curved wall before splitting it'
+                          : 'Split this wall at its midpoint'
+                      }
+                    >
+                      <IconPlus size={13} />
+                      Split wall
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void run('Corner removed', () => api.roomCornerRemove(editCorner))}
+                      disabled={!editable || room.walls <= 3}
+                      title={
+                        room.walls <= 3
+                          ? 'A room needs at least three corners'
+                          : 'Remove this corner'
+                      }
+                    >
+                      <IconTrash size={13} />
+                      Remove corner
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
-
-      {/* ---------------------------------------------------------------- */}
-      {room && (
-        <div className="section">
-          <div className="section-title">
-            <span>Capacity</span>
-          </div>
-          <table className="capacity-table">
-            <thead>
-              <tr>
-                <th>Layout</th>
-                <th>People</th>
-                <th>Each</th>
-              </tr>
-            </thead>
-            <tbody>
-              {room.capacities.map((c) => (
-                <tr key={c.layout}>
-                  <td>{c.layout}</td>
-                  <td>{c.low === c.high ? c.low : `${c.low}–${c.high}`}</td>
-                  <td>{c.squareFeetEach} sq ft</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="hint">
-            Estimated from usable floor area. This is not an occupancy figure — that depends on exits and local code.
-          </p>
-        </div>
+        </>
       )}
+
+      {roomPanelTab === 'seating' && (
+        <>
+      <div className="seating-panel-hero">
+        <span className="seating-panel-hero-icon" aria-hidden>
+          <IconChair size={20} />
+        </span>
+        <span className="seating-panel-hero-copy">
+          <small>Event layout</small>
+          <strong>Seating planner</strong>
+          <span>Configure the room, preview capacity, then place one or more seating sections.</span>
+        </span>
+        {preview && (
+          <span className="seating-panel-hero-count">
+            <strong>{preview.seats.toLocaleString()}</strong>
+            <small>seats</small>
+          </span>
+        )}
+      </div>
+
+      <div className="seating-workflow" aria-label="Seating workflow">
+        <span className={room ? 'is-complete' : 'is-current'}><b>1</b> Room</span>
+        <span className={room && chair ? 'is-complete' : room ? 'is-current' : ''}><b>2</b> Layout</span>
+        <span className={room && chair && preview?.seats ? 'is-current' : ''}><b>3</b> Place</span>
+      </div>
 
       {/* ---------------------------------------------------------------- */}
       <div className="section">
         <div className="section-title">
-          <span>Event Room Data</span>
+          <span>Seating layout</span>
           {preview && (
             <span className="section-count">
               {preview.seats} seat{preview.seats === 1 ? '' : 's'}
@@ -1078,27 +1412,31 @@ export default function RoomPanel({
           Outline size is set above with Draw / Redraw or the Outline editor — not here.
         </p>
 
-        <div className="seg tabs seat-kinds" role="tablist" aria-label="Event Room Data">
-          {(
-            [
-              ['seating', 'Seating'],
-              ['spacing', 'Spacing'],
-              ['av', 'A/V'],
-              ['design', 'Design Options'],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={erdTab === id}
-              className={erdTab === id ? 'active' : ''}
-              onClick={() => setErdTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <label className="seating-section-picker" htmlFor="seating-settings-section">
+          <span>
+            <small>Settings section</small>
+            <strong>
+              {erdTab === 'seating'
+                ? 'Layout and equipment'
+                : erdTab === 'spacing'
+                  ? 'Spacing and clearances'
+                  : erdTab === 'av'
+                    ? 'A/V sightline review'
+                    : 'Advanced sectioning'}
+            </strong>
+          </span>
+          <select
+            id="seating-settings-section"
+            value={erdTab}
+            onChange={(event) => setErdTab(event.target.value as ErdTab)}
+            aria-label="Choose seating settings section"
+          >
+            <option value="seating">Layout</option>
+            <option value="spacing">Spacing</option>
+            <option value="av">A/V review</option>
+            <option value="design">Advanced</option>
+          </select>
+        </label>
 
         {erdTab === 'seating' && (
           <>
@@ -1197,13 +1535,19 @@ export default function RoomPanel({
               </div>
             </div>
 
-            <dl className="prop-grid">
-              <dt>Total seats</dt>
-              <dd>{preview?.seats ?? '—'}</dd>
-              <dt>Tables</dt>
-              <dd>{preview?.tables ?? '—'}</dd>
-              <dt>Rows</dt>
-              <dd>{preview?.rows ?? '—'}</dd>
+            <dl className="prop-grid seating-preview-grid" aria-label="Live seating preview">
+              <div>
+                <dt>Total seats</dt>
+                <dd>{preview?.seats ?? '—'}</dd>
+              </div>
+              <div>
+                <dt>Tables</dt>
+                <dd>{preview?.tables ?? '—'}</dd>
+              </div>
+              <div>
+                <dt>Rows</dt>
+                <dd>{preview?.rows ?? '—'}</dd>
+              </div>
             </dl>
           </>
         )}
@@ -1284,57 +1628,56 @@ export default function RoomPanel({
 
         {erdTab === 'design' && (
           <>
-            <div className="field-row">
-              <div className="field">
-                <label htmlFor="splay">Bank splay °</label>
-                <input
-                  id="splay"
-                  type="number"
-                  min={0}
-                  max={60}
-                  value={splay}
-                  disabled={!editable}
-                  onChange={(e) => setSplay(Math.max(0, Math.min(60, Number(e.target.value) || 0)))}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="tables-across">Tables across</label>
-                <input
-                  id="tables-across"
-                  type="number"
-                  min={0}
-                  max={40}
-                  value={tablesAcross}
-                  disabled={!editable}
-                  onChange={(e) => setTablesAcross(Math.max(0, Number(e.target.value) || 0))}
-                />
-              </div>
-            </div>
-            <div className="field-row">
-              <div className="field">
-                <label htmlFor="section-centre">Section centre</label>
-                <input
-                  id="section-centre"
-                  type="number"
-                  min={0}
-                  max={40}
-                  value={sectionCentre}
-                  disabled={!editable}
-                  onChange={(e) => setSectionCentre(Math.max(0, Number(e.target.value) || 0))}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="section-wing">Section wing</label>
-                <input
-                  id="section-wing"
-                  type="number"
-                  min={0}
-                  max={40}
-                  value={sectionWing}
-                  disabled={!editable}
-                  onChange={(e) => setSectionWing(Math.max(0, Number(e.target.value) || 0))}
-                />
-              </div>
+            <div className="room-slider-stack">
+              <SnappySlider
+                label="Bank splay"
+                values={[0, 15, 30, 45, 60]}
+                defaultValue={0}
+                min={0}
+                max={60}
+                step={1}
+                suffix="°"
+                compact
+                disabled={!editable}
+                value={splay}
+                onChange={(next) => setSplay(Math.max(0, Math.min(60, next)))}
+              />
+              <SnappySlider
+                label="Tables across"
+                values={[0, 4, 8, 12, 20, 40]}
+                defaultValue={0}
+                min={0}
+                max={40}
+                step={1}
+                compact
+                disabled={!editable}
+                value={tablesAcross}
+                onChange={(next) => setTablesAcross(Math.max(0, next))}
+              />
+              <SnappySlider
+                label="Section centre"
+                values={[0, 4, 8, 12, 20, 40]}
+                defaultValue={0}
+                min={0}
+                max={40}
+                step={1}
+                compact
+                disabled={!editable}
+                value={sectionCentre}
+                onChange={(next) => setSectionCentre(Math.max(0, next))}
+              />
+              <SnappySlider
+                label="Section wing"
+                values={[0, 4, 8, 12, 20, 40]}
+                defaultValue={0}
+                min={0}
+                max={40}
+                step={1}
+                compact
+                disabled={!editable}
+                value={sectionWing}
+                onChange={(next) => setSectionWing(Math.max(0, next))}
+              />
             </div>
             <label className="check">
               <input type="checkbox" checked={stagger} disabled={!editable} onChange={(e) => setStagger(e.target.checked)} />
@@ -1383,10 +1726,42 @@ export default function RoomPanel({
           </p>
         ))}
 
+        <div className="seating-placement-mode">
+          <span>Placement mode</span>
+          <div className="seg tabs" role="radiogroup" aria-label="Seating placement mode">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={seatingPlacementMode === 'replace'}
+              className={seatingPlacementMode === 'replace' ? 'active' : ''}
+              onClick={() => setSeatingPlacementMode('replace')}
+              disabled={!editable}
+            >
+              Replace layout
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={seatingPlacementMode === 'add'}
+              className={seatingPlacementMode === 'add' ? 'active' : ''}
+              onClick={() => setSeatingPlacementMode('add')}
+              disabled={!editable}
+            >
+              Add section
+            </button>
+          </div>
+        </div>
+
         <div className="actions-row">
           <button
+            className="btn-primary seating-place-button"
             onClick={() =>
-              void run(`Seating placed`, () => api.seatingApply(seatingRequest, chair, table || undefined))
+              void run(
+                seatingPlacementMode === 'add' ? 'Seating section added' : 'Seating placed',
+                () => api.seatingApply(seatingRequest, chair, table || undefined),
+              ).then((ok) => {
+                if (ok) onSeatingApplied?.();
+              })
             }
             disabled={!editable || !room || !chair || (needsTable && !table) || !preview?.seats}
             title={
@@ -1394,18 +1769,54 @@ export default function RoomPanel({
                 ? 'Draw a room first'
                 : !chair
                   ? 'Choose a chair to place'
-                  : 'Place this layout, replacing the last one'
+                  : seatingPlacementMode === 'add'
+                    ? 'Add this as another seating section'
+                    : 'Place this layout, replacing managed seating'
             }
           >
             <IconPlus size={14} />
-            Place seating
+            {seatingPlacementMode === 'add' ? 'Add seating section' : 'Place seating'}
           </button>
         </div>
         <p className="hint">
           The count above is what the room will actually take — seats that fall outside the walls, inside a column or on
-          reserved floor are left out. Placing again replaces the previous layout.
+          reserved floor are left out. Replace keeps one managed layout; Add section preserves the existing banks for
+          multi-part arrangements.
         </p>
       </div>
+        </>
+      )}
+
+      {roomPanelTab === 'more' && (
+        <>
+      {room && (
+        <div className="section">
+          <div className="section-title">
+            <span>Capacity</span>
+          </div>
+          <table className="capacity-table">
+            <thead>
+              <tr>
+                <th>Layout</th>
+                <th>People</th>
+                <th>Each</th>
+              </tr>
+            </thead>
+            <tbody>
+              {room.capacities.map((c) => (
+                <tr key={c.layout}>
+                  <td>{c.layout}</td>
+                  <td>{c.low === c.high ? c.low : `${c.low}–${c.high}`}</td>
+                  <td>{c.squareFeetEach} sq ft</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hint">
+            Estimated from usable floor area — not an occupancy figure.
+          </p>
+        </div>
+      )}
 
       {/* ---------------------------------------------------------------- */}
       <div className="section">
@@ -1500,6 +1911,8 @@ export default function RoomPanel({
           </button>
         </div>
       </div>
+        </>
+      )}
     </>
   );
 }

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { IconEdit, IconFit, IconPlus, IconSearch, IconTrash, IconDuplicate, IconWarning } from './icons.js';
 import type { InventoryState } from './InventoryView.js';
+import InventoryItemEditor from './InventoryItemEditor.js';
 import { TraceDialog } from './TraceDialog.js';
 
 const api = window.groundplan;
@@ -19,7 +20,14 @@ interface Item {
   symbolPath?: string;
   symbolName?: string;
   mappedBy?: 'auto' | 'user';
+  mapReason?: string;
   tracedIcon?: { paths: Array<{ points: number[]; closed: boolean }>; width: number; height: number };
+  photoDataUrl?: string;
+  hasPhoto?: boolean;
+  notes?: string;
+  timesSeen: number;
+  peakQuantity: number;
+  addedAt: string;
 }
 
 interface Thumb {
@@ -36,7 +44,18 @@ interface Thumb {
  * their own proportions, which still says more than a generic glyph — a 6ft
  * banquet table and an 18in chair are told apart at a glance.
  */
-function Preview({ thumb, width, height }: { thumb?: Thumb | null; width?: number; height?: number }) {
+function Preview({
+  thumb,
+  width,
+  height,
+  photoDataUrl,
+}: {
+  thumb?: Thumb | null;
+  width?: number;
+  height?: number;
+  photoDataUrl?: string;
+}) {
+  // Prefer the outline that will actually place on the plan.
   if (thumb) {
     return (
       <svg className="thumb" viewBox={`0 0 ${thumb.width} ${thumb.height}`} aria-hidden focusable={false}>
@@ -48,6 +67,14 @@ function Preview({ thumb, width, height }: { thumb?: Thumb | null; width?: numbe
           ),
         )}
       </svg>
+    );
+  }
+
+  if (photoDataUrl) {
+    return (
+      <span className="lib-preview">
+        <img src={photoDataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+      </span>
     );
   }
 
@@ -149,12 +176,14 @@ export function InventoryPalette({
   onStatus,
 }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
+  const [editorId, setEditorId] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [wDraft, setWDraft] = useState('');
   const [hDraft, setHDraft] = useState('');
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState('');
   const [thumbs, setThumbs] = useState<Record<string, Thumb | null>>({});
+  const [photos, setPhotos] = useState<Record<string, string | null>>({});
   const [tracing, setTracing] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -162,11 +191,13 @@ export function InventoryPalette({
   // A filter change can hide whatever was being edited.
   useEffect(() => {
     setEditing(null);
+    setEditorId(null);
     setVisibleCount(PAGE_SIZE);
   }, [query, category]);
 
   const items = (inventory?.items ?? []) as Item[];
   const shownItems = items.slice(0, visibleCount);
+  const editorItem = editorId ? items.find((i) => i.id === editorId) ?? null : null;
 
   // Previews are fetched for whatever is on screen, and only for rows that do
   // not have one yet — the main process caches the parsed plans behind this.
@@ -183,11 +214,31 @@ export function InventoryPalette({
     };
   }, [shownItems, thumbs]);
 
+  useEffect(() => {
+    const wanted = shownItems.filter((i) => i.hasPhoto && !(i.id in photos)).map((i) => i.id);
+    if (wanted.length === 0) return;
+    let live = true;
+    void Promise.all(
+      wanted.slice(0, 60).map(async (id) => {
+        const reply = await api.inventoryGetPhoto(id);
+        return [id, reply.ok && reply.photoDataUrl ? reply.photoDataUrl : null] as const;
+      }),
+    ).then((pairs) => {
+      if (!live) return;
+      setPhotos((prev) => {
+        const next = { ...prev };
+        for (const [id, url] of pairs) next[id] = url;
+        return next;
+      });
+    });
+    return () => {
+      live = false;
+    };
+  }, [shownItems, photos]);
+
   const openEditor = (item: Item) => {
-    setEditing(item.id);
-    setNameDraft(item.name);
-    setWDraft(item.width ? formatLength(item.width, units) : '');
-    setHDraft(item.height ? formatLength(item.height, units) : '');
+    setEditorId(item.id);
+    setEditing(null);
   };
 
   const commit = async (item: Item) => {
@@ -215,7 +266,7 @@ export function InventoryPalette({
     if (Object.keys(patch).length === 0) return;
 
     const reply = await api.inventoryUpdate(item.id, patch);
-    if (reply.ok && reply.inventory) {
+    if (reply.ok) {
       onChanged();
       onStatus(
         patch.name
@@ -228,7 +279,7 @@ export function InventoryPalette({
   /** Copies an item and opens the copy for renaming, which is the point of it. */
   const duplicate = async (item: Item) => {
     const reply = await api.inventoryDuplicate(item.id);
-    if (!reply.ok || !reply.inventory) {
+    if (!reply.ok) {
       if (reply.reason) onError(reply.reason);
       return;
     }
@@ -268,7 +319,7 @@ export function InventoryPalette({
     setNewName('');
     if (!name) return;
     const reply = await api.inventoryAdd(name);
-    if (reply.ok && reply.inventory) {
+    if (reply.ok) {
       onChanged();
       onStatus(`Added ${name}`);
     } else if (reply.reason) onError(reply.reason);
@@ -449,6 +500,7 @@ export function InventoryPalette({
                 thumb={item.tracedIcon ? centredToThumb(item.tracedIcon) : thumbs[item.id]}
                 width={item.width}
                 height={item.height}
+                photoDataUrl={photos[item.id] || undefined}
               />
                 <span className="fname">{item.name}</span>
               </button>
@@ -456,8 +508,8 @@ export function InventoryPalette({
               <span className="palette-actions">
                 <button
                   className="icon-btn"
-                  title="Rename or resize"
-                  aria-label={`Rename or resize ${item.name}`}
+                  title="Edit name, size, and icon"
+                  aria-label={`Edit ${item.name}`}
                   onClick={() => openEditor(item)}
                 >
                   <IconEdit size={11} />
@@ -501,6 +553,17 @@ export function InventoryPalette({
           <li className="empty">Nothing in the inventory matches that.</li>
         )}
       </ul>
+
+      {editorItem && (
+        <InventoryItemEditor
+          item={editorItem}
+          units={units}
+          onClose={() => setEditorId(null)}
+          onSaved={onChanged}
+          onError={onError}
+          onStatus={onStatus}
+        />
+      )}
     </>
   );
 }

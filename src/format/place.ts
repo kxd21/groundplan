@@ -24,7 +24,7 @@
 import type { Point, RVDocument, RVNode } from './rv.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from './rv.js';
 import { addRoot, appendChild, duplicateNode, moveNode, type DocumentIndex, type EditResult } from './edit.js';
-import { boxOutline, createShape } from './synthesize.js';
+import { boxOutline, circleOutline, createShape, quarterCircleOutline } from './synthesize.js';
 import { libraryOutline, readLibrary } from './library.js';
 import { planBody } from './plan-skeleton.js';
 
@@ -240,7 +240,7 @@ function resizeRect(doc: RVDocument, segment: RVNode, width: number, height: num
 
 export interface PlaceResult extends EditResult {
   /** How the placed object was produced. */
-  method?: 'matched' | 'synthesized';
+  method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
   size?: Dimensions;
 }
 
@@ -259,6 +259,12 @@ export function placeGear(
   /** Footprint from the equipment inventory, which beats guessing. */
   known?: { width: number; height: number },
 ): PlaceResult {
+  // Circular / curved footprints cannot be made by resizing a rectangle
+  // template — synthesize them so the outline is actually round.
+  if (needsSpecialOutline(description)) {
+    return placeSynthesized(doc, description, x, y, known);
+  }
+
   const matched = findMatchingShape(doc, description);
   const template = matched ?? findTemplateShape(doc);
   if (!template) {
@@ -311,7 +317,7 @@ export function placeGear(
   }
 
   writeBounds(doc, copy, x - size.width / 2, y - size.height / 2, x + size.width / 2, y + size.height / 2);
-  return { ok: true, created: result.created, method: 'synthesized', size };
+  return { ok: true, created: result.created, method: 'box', size };
 }
 
 /**
@@ -332,11 +338,12 @@ function placeSynthesized(
     ? { width: known.width, height: known.height, source: 'parsed' }
     : parseDimensions(description);
 
+  const outline = outlineForDescription(description, size.width, size.height);
   const built = createShape(doc, {
     name: description,
     x,
     y,
-    outline: boxOutline(size.width, size.height),
+    outline,
   });
   if (!built.ok || !built.node) return { ok: false, reason: built.reason };
 
@@ -344,7 +351,31 @@ function placeSynthesized(
   const added = host ? appendChild(doc, host, built.node) : addRoot(doc, built.node);
   if (!added.ok) return { ok: false, reason: added.reason };
 
-  return { ok: true, created: [built.node.id], method: 'synthesized', size };
+  return {
+    ok: true,
+    created: [built.node.id],
+    method: needsSpecialOutline(description) ? 'synthesized' : 'box',
+    size,
+  };
+}
+
+/** Picks a footprint silhouette from the stock name when placing without a library. */
+function outlineForDescription(description: string, width: number, height: number) {
+  if (/\b(circular|round)\b/i.test(description) && /\b(deck|riser|stage)\b/i.test(description)) {
+    return circleOutline(Math.max(width, height));
+  }
+  if (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description)) {
+    return quarterCircleOutline(width, height);
+  }
+  return boxOutline(width, height);
+}
+
+/** True when cloning a rectangle template would lose the intended silhouette. */
+function needsSpecialOutline(description: string): boolean {
+  return (
+    (/\b(circular|round)\b/i.test(description) && /\b(deck|riser|stage)\b/i.test(description)) ||
+    (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description))
+  );
 }
 
 /**
@@ -387,7 +418,7 @@ export function placeFromLibrary(
   return {
     ok: true,
     created: [built.node.id],
-    method: 'synthesized',
+    method: 'library',
     size: {
       width: entry.node.bounds.right - entry.node.bounds.left,
       height: entry.node.bounds.bottom - entry.node.bounds.top,
@@ -425,7 +456,7 @@ export function placeTracedIcon(
   return {
     ok: true,
     created: [built.node.id],
-    method: 'synthesized',
+    method: 'traced',
     size: { width, height, source: 'parsed' },
   };
 }
