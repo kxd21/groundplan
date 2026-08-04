@@ -241,7 +241,28 @@ async function main(): Promise<void> {
   const launchRequested = args.includes('--launch');
   const directory = resolve(args.find((arg) => !arg.startsWith('--')) ?? 'release');
   const apps = findPackagedApps(directory);
-  if (apps.length === 0) throw new Error(`no unpacked Groundplan application found under ${directory}`);
+  if (apps.length === 0) {
+    // Linux packaging targets AppImage only — there is no unpacked tree to
+    // inspect. Confirm the image is present and large enough, then stop.
+    const images = readdirSync(directory)
+      .filter((name) => name.endsWith('.AppImage'))
+      .map((name) => join(directory, name))
+      .filter((path) => existsSync(path));
+    if (images.length === 0) {
+      throw new Error(`no unpacked Groundplan application found under ${directory}`);
+    }
+    console.log(`Inspecting ${images.length} AppImage${images.length === 1 ? '' : 's'}:`);
+    for (const image of images) {
+      const bytes = statSync(image).size;
+      if (bytes < 1024 * 1024) throw new Error(`AppImage is unexpectedly small: ${image}`);
+      console.log(`  pass  ${image}`);
+      console.log(`        ${(bytes / 1024 / 1024).toFixed(1)} MB AppImage (no unpacked tree to launch)`);
+    }
+    if (launchRequested) {
+      console.log('  skip  AppImage launch smoke (use the installer download to verify)');
+    }
+    return;
+  }
 
   console.log(`Inspecting ${apps.length} packaged application${apps.length === 1 ? '' : 's'}:`);
   for (const app of apps) inspect(app);
