@@ -84,17 +84,17 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   print: { scale: '1/8', paper: 'Tabloid', landscape: true, subtitle: '' },
   dxf: { includeSchedule: true, visibleLayersOnly: true },
-  // A foot is the granularity rooms are actually laid out on.
+  // Interactive edits snap at 1″ by default; Shift goes to 0.1″, Alt frees.
   drawing: {
     units: 'imperial',
-    snapStep: 120,
+    snapStep: 10,
     objectSnap: true,
     showGrid: true,
     paperSheet: true,
     autoFitOnOpen: true,
     openPropertiesOnSelect: true,
-    nudgeStep: 120,
-    fineNudgeStep: 10,
+    nudgeStep: 10,
+    fineNudgeStep: 1,
     bulkDeleteWarning: 25,
   },
   catalog: { policy: 'notify', smallUpdateLimitMb: 5, checkIntervalHours: 12 },

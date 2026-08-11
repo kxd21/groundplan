@@ -9,8 +9,8 @@
 
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, type MenuItemConstructorOptions } from 'electron';
 import { join, dirname, basename, extname } from 'node:path';
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { readdir, readFile, stat, mkdir, unlink } from 'node:fs/promises';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
@@ -62,6 +62,8 @@ import {
   recolorNode,
   renameNode,
   rotateNode,
+  rotateNodeAbout,
+  nodeCentre,
   resizeNode,
   measureNode,
   setPoints,
@@ -87,7 +89,9 @@ import { INSERT_TREE, isInsertLeaf, type InsertBranch, type InsertLeaf } from '.
 import { walk, type RVDocument, type RVNode } from '../format/rv.js';
 import { importDetachedObject, listSymbols, importSymbol } from '../format/symbol.js';
 import { snapshotPlanSelection } from '../format/plan-clipboard.js';
-import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions } from '../format/place.js';
+import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions, findMatchingShape } from '../format/place.js';
+import { nearestWallSnap, wantsWallSnap } from '../format/wall-snap.js';
+import { deriveRoom } from '../format/room.js';
 import { isLibrary } from '../format/library.js';
 import { verifyWritable } from '../format/write.js';
 import { Session } from './session.js';
@@ -128,7 +132,9 @@ import {
   type InventoryItem,
   type RemovedInventoryItem,
 } from '../inventory/model.js';
+import { parseSpotlightInventoryXml } from '../inventory/spotlight-xml.js';
 import { mapSymbols, chooseSymbol } from '../inventory/match.js';
+import { resolveInventoryQuery, resolveFailureMessage } from '../inventory/resolve.js';
 import {
   classify,
   CATEGORY_LABELS,
@@ -139,6 +145,18 @@ import {
 import { loadInventoryWithStatus, saveInventory, inventoryPath } from '../inventory/store.js';
 import { exportInventoryPack, importInventoryPack } from '../inventory/share.js';
 import { seedStarterInventory } from '../inventory/seed.js';
+import { applyFullLayoutRecipe } from '../inventory/apply-layout.js';
+import { exportLayoutRecipe } from '../inventory/export-layout-recipe.js';
+import {
+  deleteBankPreset,
+  importLayoutKitFile,
+  listLayoutKits,
+  loadBankPresets,
+  loadLayoutKit,
+  saveBankPreset,
+  saveLayoutKit,
+} from '../inventory/layout-kits.js';
+import { isLayoutRecipe, validateLayoutRecipe } from '../inventory/layout-recipe.js';
 import { atomicWriteFile, atomicWriteJson } from './storage.js';
 import {
   copyShowForSaveAs,
@@ -174,6 +192,7 @@ import {
   createCircularRoom,
   createPolygonalRoom,
   createRectangularRoom,
+  createRoomFromSpec,
   curveRoomWall,
   curveRoomWallThrough,
   drawShape,
@@ -1242,6 +1261,12 @@ const RESULT_CHANNELS = new Set([
   'plan:rotate',
   'plan:resize',
   'plan:add-seating',
+  'plan:apply-layout-recipe',
+  'plan:save-layout-kit',
+  'plan:import-layout-kit',
+  'plan:export-layout-recipe',
+  'plan:save-bank-preset',
+  'plan:delete-bank-preset',
   'plan:add-label',
   'plan:add-dimension',
   'file:save',
@@ -1250,6 +1275,7 @@ const RESULT_CHANNELS = new Set([
   'print:pdf',
   'plan:room-create',
   'plan:room-create-circle',
+  'plan:room-create-from-spec',
   'plan:room-create-polygon',
   'plan:room-corner-move',
   'plan:room-corner-add',
@@ -1269,6 +1295,7 @@ const RESULT_CHANNELS = new Set([
   'plan:draw',
   'plan:background-set',
   'file:new',
+  'file:discard-empty-plan',
 ]);
 
 function handle(
@@ -1302,12 +1329,14 @@ function applyEdit(run: (s: Session) => {
   reason?: string;
   text?: string;
   created?: number[];
+  placed?: number;
   method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
 }): {
   ok: boolean;
   reason?: string;
   text?: string;
   created?: number[];
+  placed?: number;
   method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
   doc?: OpenResult;
 } {
@@ -1324,6 +1353,7 @@ function applyEdit(run: (s: Session) => {
     reason?: string;
     text?: string;
     created?: number[];
+    placed?: number;
     method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
   };
   try {
@@ -1359,6 +1389,7 @@ function applyEdit(run: (s: Session) => {
       ok: true,
       text: result.text,
       created: result.created,
+      placed: result.placed,
       method: result.method,
       doc: describe(s),
     };
@@ -1706,6 +1737,24 @@ async function showSaveFailure(result: { reason?: string; conflict?: boolean }):
   };
   if (mainWindow) await dialog.showMessageBox(mainWindow, options);
   else await dialog.showMessageBox(options);
+}
+
+/**
+ * Resolve an automation save path without relying on a single env var that
+ * may be truncated when it contains spaces (shell / Electron argv quirks).
+ */
+function resolveE2eSavePath(): string | undefined {
+  const direct = process.env.GROUNDPLAN_E2E_SAVE_PATH?.trim();
+  if (direct) return direct;
+  const dir = process.env.GROUNDPLAN_E2E_SAVE_DIR?.trim();
+  const name = process.env.GROUNDPLAN_E2E_SAVE_NAME?.trim();
+  if (dir && name) return join(dir, name);
+  const pathFile = process.env.GROUNDPLAN_E2E_SAVE_PATH_FILE?.trim();
+  if (pathFile && existsSync(pathFile)) {
+    const contents = readFileSync(pathFile, 'utf8').trim();
+    if (contents) return contents;
+  }
+  return undefined;
 }
 
 async function confirmDiscard(kind: 'plan' | 'gear' | 'all'): Promise<boolean> {
@@ -2492,12 +2541,14 @@ function buildMenu(): void {
         { role: 'delete' },
         { type: 'separator' },
         {
-          // Not the `selectAll` role: that always acts on the web page, which
-          // would take Cmd+A away from the drawing. The renderer decides based
-          // on whether a text field has focus.
           label: 'Select All',
           accelerator: 'CmdOrCtrl+A',
           click: () => mainWindow?.webContents.send('menu:select-all'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Edit Walls',
+          click: () => mainWindow?.webContents.send('menu:edit-walls'),
         },
       ],
     },
@@ -3228,9 +3279,13 @@ app.whenReady().then(async () => {
       title: 'Add to the equipment inventory',
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: 'Gear list, spreadsheet or shapes', extensions: ['pdf', 'csv', 'rv4', 'rs4', 'se4', 'add', 'stk', 'lib'] },
+        {
+          name: 'Gear list, spreadsheet, Spotlight inventory or shapes',
+          extensions: ['pdf', 'csv', 'xml', 'rv4', 'rs4', 'se4', 'add', 'stk', 'lib'],
+        },
         { name: 'Gear list PDF', extensions: ['pdf'] },
         { name: 'CSV', extensions: ['csv'] },
+        { name: 'Vectorworks Spotlight inventory', extensions: ['xml'] },
         { name: 'Plans and shape libraries', extensions: ['rv4', 'rs4', 'se4', 'add', 'stk', 'lib'] },
       ],
     });
@@ -3238,6 +3293,7 @@ app.whenReady().then(async () => {
 
     let added = 0;
     let updated = 0;
+    const inventoryLabels: string[] = [];
     for (const source of result.filePaths) {
       const lower = source.toLowerCase();
 
@@ -3260,6 +3316,21 @@ app.whenReady().then(async () => {
             label: basename(source),
           },
         );
+        added += summary.added;
+        updated += summary.updated;
+        continue;
+      }
+
+      if (lower.endsWith('.xml')) {
+        const parsed = parseSpotlightInventoryXml(await readFile(source, 'utf8'));
+        if (!parsed.ok) return { ok: false, reason: parsed.reason };
+        const label = parsed.meta.name?.trim() || basename(source);
+        if (parsed.meta.name?.trim()) inventoryLabels.push(parsed.meta.name.trim());
+        const summary = mergeItems(inventory, parsed.items, new Date(), {
+          type: 'spotlight-xml',
+          sourcePath: source,
+          label,
+        });
         added += summary.added;
         updated += summary.updated;
         continue;
@@ -3311,7 +3382,13 @@ app.whenReady().then(async () => {
     }
 
     await persistInventory();
-    return inventoryMutateOk({ added, updated, files: result.filePaths.length });
+    return inventoryMutateOk({
+      added,
+      updated,
+      files: result.filePaths.length,
+      inventoryName: inventoryLabels.length === 1 ? inventoryLabels[0] : undefined,
+      inventoryNames: inventoryLabels.length > 0 ? inventoryLabels : undefined,
+    });
   });
 
   handle('inventory:add', async (_event, name: string, department?: string) => {
@@ -3340,6 +3417,7 @@ app.whenReady().then(async () => {
         width?: number;
         height?: number;
         notes?: string;
+        quantityOwned?: number | null;
         tracedIcon?: {
           paths: Array<{ points: number[]; closed: boolean }>;
           width: number;
@@ -3592,15 +3670,51 @@ app.whenReady().then(async () => {
     const item = locateInventoryItem(inventory, id);
     if (!item) return { ok: false, reason: 'item no longer exists' };
 
+    let atX = x;
+    let atY = y;
+    let alignAngle: number | null = null;
+    if (wantsWallSnap(item.name) && session) {
+      try {
+        const derived = deriveRoom(session.loaded.document);
+        const snap = nearestWallSnap(derived.room.walls, x, y);
+        if (snap) {
+          atX = snap.x;
+          atY = snap.y;
+          alignAngle = snap.angle;
+        }
+      } catch {
+        // Keep free placement.
+      }
+    }
+
+    const finish = (reply: {
+      ok: boolean;
+      reason?: string;
+      created?: number[];
+      method?: string;
+      doc?: OpenResult;
+    }) => {
+      if (!reply.ok || alignAngle == null || !reply.created?.length) return reply;
+      const rotated = applyEdit((s) => {
+        const node = s.index.byId.get(reply.created![0]);
+        if (!node) return { ok: false, reason: 'placed item missing' };
+        return rotateNode(s.loaded.document, node, alignAngle!);
+      });
+      if (!rotated.ok) return reply;
+      return { ...reply, doc: rotated.doc, created: reply.created, method: reply.method };
+    };
+
     const placeAsBox = () =>
-      applyEdit((s) =>
-        placeGear(
-          s.loaded.document,
-          s.index,
-          item.name,
-          x,
-          y,
-          item.width && item.height ? { width: item.width, height: item.height } : undefined,
+      finish(
+        applyEdit((s) =>
+          placeGear(
+            s.loaded.document,
+            s.index,
+            item.name,
+            atX,
+            atY,
+            item.width && item.height ? { width: item.width, height: item.height } : undefined,
+          ),
         ),
       );
 
@@ -3621,8 +3735,10 @@ app.whenReady().then(async () => {
         // Prefer the item's own traced silhouette over a generic box when the
         // harvested symbol file is missing.
         if (item.tracedIcon?.paths?.length) {
-          return applyEdit((s) =>
-            placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+          return finish(
+            applyEdit((s) =>
+              placeTracedIcon(s.loaded.document, s.index, item.name, atX, atY, item.tracedIcon!),
+            ),
           );
         }
         return placeAsBox();
@@ -3637,17 +3753,19 @@ app.whenReady().then(async () => {
       // put down from the palette the same kind of object as everything else on
       // the drawing.
       if (isLibrary(from)) {
-        const built = applyEdit((s) => placeFromLibrary(s.loaded.document, from, lookFor, x, y));
-        if (built.ok) return { ...built, method: built.method ?? 'library' };
+        const built = applyEdit((s) => placeFromLibrary(s.loaded.document, from, lookFor, atX, atY));
+        if (built.ok) return finish({ ...built, method: built.method ?? 'library' });
       }
-      const imported = applyEdit((s) => importSymbol(s.loaded.document, s.index, from, lookFor, x, y));
+      const imported = applyEdit((s) => importSymbol(s.loaded.document, s.index, from, lookFor, atX, atY));
       // Fall through to a drawn box only if the symbol could not be brought in.
-      if (imported.ok) return { ...imported, method: imported.method ?? 'symbol' };
+      if (imported.ok) return finish({ ...imported, method: imported.method ?? 'symbol' });
     }
 
     if (item.tracedIcon?.paths?.length) {
-      return applyEdit((s) =>
-        placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+      return finish(
+        applyEdit((s) =>
+          placeTracedIcon(s.loaded.document, s.index, item.name, atX, atY, item.tracedIcon!),
+        ),
       );
     }
 
@@ -3921,6 +4039,46 @@ app.whenReady().then(async () => {
     // has a real silhouette — absorb and harvest are wasted if gear placement
     // always synthesizes a bare box.
     const desc = description.trim();
+    let atX = x;
+    let atY = y;
+    let alignAngle: number | null = null;
+    // Doors belong on the room perimeter — free-floating swings never match a print.
+    if (wantsWallSnap(desc) && session) {
+      try {
+        const derived = deriveRoom(session.loaded.document);
+        const snap = nearestWallSnap(derived.room.walls, x, y);
+        if (snap) {
+          atX = snap.x;
+          atY = snap.y;
+          alignAngle = snap.angle;
+        }
+      } catch {
+        // Leave the click where it was if the room cannot be derived.
+      }
+    }
+
+    const alignIfDoor = (reply: {
+      ok: boolean;
+      reason?: string;
+      created?: number[];
+      method?: string;
+      doc?: OpenResult;
+    }) => {
+      if (!reply.ok || alignAngle == null || !reply.created?.length) return reply;
+      const rotated = applyEdit((s) => {
+        const node = s.index.byId.get(reply.created![0]);
+        if (!node) return { ok: false, reason: 'placed item missing' };
+        return rotateNode(s.loaded.document, node, alignAngle!);
+      });
+      if (!rotated.ok) return reply;
+      return {
+        ...reply,
+        doc: rotated.doc,
+        created: reply.created,
+        method: reply.method,
+      };
+    };
+
     const match = inventory.items.find(
       (item) => normaliseName(item.name) === normaliseName(desc),
     );
@@ -3937,26 +4095,42 @@ app.whenReady().then(async () => {
           }
           const lookFor = item.symbolName ?? item.name;
           if (isLibrary(source)) {
-            const built = applyEdit((s) => placeFromLibrary(s.loaded.document, source!, lookFor, x, y));
-            if (built.ok) return { ...built, method: built.method ?? 'library' };
+            const built = applyEdit((s) =>
+              placeFromLibrary(s.loaded.document, source!, lookFor, atX, atY),
+            );
+            if (built.ok) return alignIfDoor({ ...built, method: built.method ?? 'library' });
           }
           const imported = applyEdit((s) =>
-            importSymbol(s.loaded.document, s.index, source!, lookFor, x, y),
+            importSymbol(s.loaded.document, s.index, source!, lookFor, atX, atY),
           );
-          if (imported.ok) return { ...imported, method: imported.method ?? 'symbol' };
+          if (imported.ok) return alignIfDoor({ ...imported, method: imported.method ?? 'symbol' });
         } catch {
           // Fall through to traced / sized box.
         }
       }
       if (item.tracedIcon?.paths?.length) {
-        return applyEdit((s) =>
-          placeTracedIcon(s.loaded.document, s.index, item.name, x, y, item.tracedIcon!),
+        return alignIfDoor(
+          applyEdit((s) =>
+            placeTracedIcon(s.loaded.document, s.index, item.name, atX, atY, item.tracedIcon!),
+          ),
         );
       }
-      return applyEdit((s) => placeGear(s.loaded.document, s.index, item.name, x, y, known));
+      return alignIfDoor(
+        applyEdit((s) => placeGear(s.loaded.document, s.index, item.name, atX, atY, known)),
+      );
     };
 
     if (match) return placeMatched(match);
+
+    // Exact miss — resolve under the fidelity contract. Ambiguous names
+    // (Mixer vs Bottle - Mixer, Fastfold sizes) must not silently pick first.
+    const resolved = resolveInventoryQuery(inventory, desc);
+    if (resolved.status === 'exact' || resolved.status === 'unique') {
+      return placeMatched(resolved.item);
+    }
+    if (resolved.status === 'ambiguous') {
+      return { ok: false, reason: resolveFailureMessage(resolved) ?? 'ambiguous inventory name' };
+    }
 
     // Exact name miss — still try a classified symbol so gear lines like
     // "Panasonic PT-RZ21KU" can place as the shop's LCD projector silhouette.
@@ -3970,19 +4144,23 @@ app.whenReady().then(async () => {
         }
         const lookFor = choice.symbolName;
         if (isLibrary(source)) {
-          const built = applyEdit((s) => placeFromLibrary(s.loaded.document, source!, lookFor, x, y));
-          if (built.ok) return { ...built, method: built.method ?? 'library' };
+          const built = applyEdit((s) =>
+            placeFromLibrary(s.loaded.document, source!, lookFor, atX, atY),
+          );
+          if (built.ok) return alignIfDoor({ ...built, method: built.method ?? 'library' });
         }
         const imported = applyEdit((s) =>
-          importSymbol(s.loaded.document, s.index, source!, lookFor, x, y),
+          importSymbol(s.loaded.document, s.index, source!, lookFor, atX, atY),
         );
-        if (imported.ok) return { ...imported, method: imported.method ?? 'symbol' };
+        if (imported.ok) return alignIfDoor({ ...imported, method: imported.method ?? 'symbol' });
       } catch {
         // Fall through to synthesis.
       }
     }
 
-    return applyEdit((s) => placeGear(s.loaded.document, s.index, description, x, y));
+    return alignIfDoor(
+      applyEdit((s) => placeGear(s.loaded.document, s.index, description, atX, atY)),
+    );
   });
 
   handle('plan:rotate', (_event, nodeId: number, degrees: number) =>
@@ -4005,9 +4183,129 @@ app.whenReady().then(async () => {
     }),
   );
 
-  handle('plan:add-seating', (_event, request: SeatingRequest) =>
-    applyEdit((s) => addSeating(s.loaded.document, s.index, request)),
-  );
+  handle('plan:add-seating', async (_event, request: SeatingRequest) => {
+    // Create → Place seating must land real inventory silhouettes on a blank
+    // plan, not labelled boxes. Equipment placement already resolves symbols;
+    // seating used to call placeGear alone, so the first chair synthesized a
+    // box and every later clone copied that box. Seed the chair/table from the
+    // inventory once (off-plan), let addSeating clone them, then drop the seeds.
+    const byName = (name: string) =>
+      inventory.items.find((item) => normaliseName(item.name) === normaliseName(name));
+
+    const loadSymbolDoc = async (symbolPath: string | undefined) => {
+      if (!symbolPath || !existsSync(symbolPath)) return undefined;
+      try {
+        let source = symbolCache.get(symbolPath);
+        if (!source) {
+          source = loadBuffer(await readFile(symbolPath), symbolPath).document;
+          symbolCache.set(symbolPath, source);
+        }
+        return source;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const chairItem = byName(request.chair);
+    const tableItem = request.table ? byName(request.table) : undefined;
+    const chairChoice =
+      chairItem?.symbolPath ? null : chooseSymbol(inventory, request.chair);
+    const tableChoice =
+      request.table && !tableItem?.symbolPath
+        ? chooseSymbol(inventory, request.table)
+        : null;
+
+    const chairSource = await loadSymbolDoc(chairItem?.symbolPath ?? chairChoice?.symbolPath);
+    const tableSource = await loadSymbolDoc(tableItem?.symbolPath ?? tableChoice?.symbolPath);
+
+    const enriched: SeatingRequest = {
+      ...request,
+      chairSize:
+        chairItem?.width && chairItem?.height
+          ? { width: chairItem.width, height: chairItem.height }
+          : request.chairSize,
+      tableSize:
+        tableItem?.width && tableItem?.height
+          ? { width: tableItem.width, height: tableItem.height }
+          : request.tableSize,
+    };
+
+    return applyEdit((s) => {
+      // Far outside any real room so the seed never collides with the stamp.
+      const PARK = 500_000;
+      const seeds: number[] = [];
+      let live = s.index;
+
+      const placeSeed = (
+        name: string,
+        item: InventoryItem | undefined,
+        source: ReturnType<typeof loadBuffer>['document'] | undefined,
+        symbolName?: string,
+      ) => {
+        if (findMatchingShape(s.loaded.document, name)) return;
+        const known =
+          item?.width && item?.height ? { width: item.width, height: item.height } : undefined;
+        const lookFor = item?.symbolName ?? symbolName ?? name;
+        let placed:
+          | { ok: boolean; reason?: string; created?: number[]; method?: string }
+          | undefined;
+
+        if (source) {
+          if (isLibrary(source)) {
+            placed = placeFromLibrary(s.loaded.document, source, lookFor, PARK, PARK);
+          }
+          if (!placed?.ok) {
+            placed = importSymbol(s.loaded.document, live, source, lookFor, PARK, PARK);
+          }
+        }
+        if (!placed?.ok && item?.tracedIcon?.paths?.length) {
+          placed = placeTracedIcon(
+            s.loaded.document,
+            live,
+            item.name,
+            PARK,
+            PARK,
+            item.tracedIcon,
+          );
+        }
+        if (!placed?.ok) {
+          placed = placeGear(s.loaded.document, live, name, PARK, PARK, known);
+        }
+        if (placed.ok && placed.created?.length) {
+          const seedId = placed.created[0];
+          live = indexDocument(s.loaded.document);
+          const seedNode = live.byId.get(seedId);
+          // Catalogue name on the stamp must match the Create dialog chair —
+          // library symbols often ship under a shorter name ("Chair").
+          if (seedNode) renameNode(s.loaded.document, seedNode, name);
+          seeds.push(seedId);
+          live = indexDocument(s.loaded.document);
+        }
+      };
+
+      placeSeed(request.chair, chairItem, chairSource, chairChoice?.symbolName);
+      if (request.table) {
+        placeSeed(request.table, tableItem, tableSource, tableChoice?.symbolName);
+      }
+
+      const result = addSeating(s.loaded.document, live, enriched);
+      if (!result.ok) return result;
+
+      live = indexDocument(s.loaded.document);
+      for (const id of seeds) {
+        const node = live.byId.get(id);
+        if (!node) continue;
+        deleteNode(s.loaded.document, live, node);
+        live = indexDocument(s.loaded.document);
+      }
+
+      const seedSet = new Set(seeds);
+      return {
+        ...result,
+        created: result.created?.filter((id) => !seedSet.has(id)),
+      };
+    });
+  });
 
   handle('plan:add-label', (_event, text: string, x: number, y: number, color?: number) =>
     applyEdit((s) => createLabel(
@@ -4089,6 +4387,10 @@ app.whenReady().then(async () => {
 
   handle('plan:room-create-circle', (_event, diameter: number) =>
     applyEdit((s) => createCircularRoom(s, diameter, unitSystem())),
+  );
+
+  handle('plan:room-create-from-spec', (_event, room: NewRoomSpec) =>
+    applyEdit((s) => createRoomFromSpec(s, room, unitSystem())),
   );
 
   handle('plan:room-create-polygon', (_event, points: Array<{ x: number; y: number }>) =>
@@ -4229,6 +4531,99 @@ app.whenReady().then(async () => {
     applyEdit((s) => applySeatingModel(s, request, chair, table)),
   );
 
+  handle('plan:list-layout-kits', () => listLayoutKits(app.getPath('userData')));
+
+  handle('plan:load-layout-kit', (_event, kitId: string) => {
+    const recipe = loadLayoutKit(app.getPath('userData'), kitId);
+    if (!recipe) return { ok: false, reason: 'kit not found' };
+    return { ok: true, recipe };
+  });
+
+  handle(
+    'plan:apply-layout-recipe',
+    (
+      _event,
+      recipeOrKitId: unknown,
+      options?: { replaceExistingSeating?: boolean; kitId?: string },
+    ) => {
+      let recipe = recipeOrKitId;
+      if (typeof options?.kitId === 'string') {
+        recipe = loadLayoutKit(app.getPath('userData'), options.kitId);
+        if (!recipe) return { ok: false, reason: 'kit not found' };
+      } else if (typeof recipeOrKitId === 'string') {
+        recipe = loadLayoutKit(app.getPath('userData'), recipeOrKitId);
+        if (!recipe) return { ok: false, reason: 'kit not found' };
+      }
+      if (!isLayoutRecipe(recipe)) return { ok: false, reason: 'not a valid layout recipe' };
+      const layout = recipe;
+      const validated = validateLayoutRecipe(layout, inventory);
+      if (!validated.ok) return { ok: false, reason: validated.reason };
+
+      return applyEdit((s) => {
+        const result = applyFullLayoutRecipe(s, layout, {
+          inventory,
+          replaceExistingSeating: Boolean(options?.replaceExistingSeating),
+          createRoomIfMissing: true,
+          units: unitSystem(),
+        });
+        if (!result.ok) return { ok: false, reason: result.reason };
+        return {
+          ok: true,
+          text: result.status,
+          created: result.created,
+          placed: result.chairsPlaced,
+        };
+      });
+    },
+  );
+
+  handle('plan:save-layout-kit', (_event, recipe: unknown, fileName?: string) => {
+    if (!isLayoutRecipe(recipe)) return { ok: false, reason: 'not a valid layout recipe' };
+    return saveLayoutKit(app.getPath('userData'), recipe, fileName);
+  });
+
+  handle('plan:import-layout-kit', async () => {
+    const picked = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Import layout recipe',
+      filters: [{ name: 'Layout recipe', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, cancelled: true };
+    return importLayoutKitFile(app.getPath('userData'), picked.filePaths[0]);
+  });
+
+  handle('plan:export-layout-recipe', async () => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const recipe = exportLayoutRecipe(session.loaded.document);
+    const defaultName = `${recipe.identity?.event ?? 'show-kit'}.json`.replace(/[^\w.\- ]+/g, '');
+    const picked = await dialog.showSaveDialog(mainWindow!, {
+      title: 'Export layout recipe',
+      defaultPath: defaultName,
+      filters: [{ name: 'Layout recipe', extensions: ['json'] }],
+    });
+    if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true };
+    writeFileSync(picked.filePath, JSON.stringify(recipe, null, 2));
+    const saved = saveLayoutKit(app.getPath('userData'), recipe, defaultName.replace(/\.json$/i, ''));
+    return { ok: true, path: picked.filePath, kitId: saved.ok ? saved.id : undefined, recipe };
+  });
+
+  handle('plan:list-bank-presets', () => loadBankPresets(app.getPath('userData')));
+
+  handle('plan:save-bank-preset', (_event, preset: { name: string; block: unknown; id?: string }) => {
+    if (!preset?.name || !preset.block) return { ok: false, reason: 'name and block required' };
+    const saved = saveBankPreset(app.getPath('userData'), {
+      id: preset.id,
+      name: preset.name,
+      block: preset.block as never,
+    });
+    return { ok: true, preset: saved };
+  });
+
+  handle('plan:delete-bank-preset', (_event, id: string) => {
+    deleteBankPreset(app.getPath('userData'), id);
+    return { ok: true };
+  });
+
   handle(
     'plan:stage-add',
     (
@@ -4317,6 +4712,7 @@ app.whenReady().then(async () => {
         room?: NewRoomSpec;
         sheetSize?: { width: number; depth: number };
         autoDimensions?: boolean;
+        autosave?: boolean;
         identity?: { date?: string; venue?: string; event?: string; contact?: string };
       },
     ) => {
@@ -4342,28 +4738,48 @@ app.whenReady().then(async () => {
     });
     if (!built.ok || !built.file) return { ok: false, reason: built.reason };
 
-    // Same Save / Discard / Cancel gate as Open. Without it, finishing New Plan
-    // would replace a dirty session via openPath and drop unsaved edits.
-    if (!(await confirmDiscard('plan'))) return { ok: false, cancelled: true };
+    // CDP / UI automation cannot click macOS native sheets.
+    // Prefer GROUNDPLAN_E2E_SAVE_PATH; if it may contain spaces, use
+    // GROUNDPLAN_E2E_SAVE_DIR + GROUNDPLAN_E2E_SAVE_NAME, or a path file.
+    const e2eSavePath = resolveE2eSavePath();
+    if (!e2eSavePath) {
+      if (!(await confirmDiscard('plan'))) return { ok: false, cancelled: true };
+    }
 
-    const suggested = `${roomName || 'Untitled plan'}.rv4`;
-    const target = await dialog.showSaveDialog(mainWindow!, {
-      title: 'Save new plan',
-      defaultPath: suggested,
-      filters: [
-        {
-          name: 'Room Viewer plan',
-          extensions: PLAN_EXTENSIONS.map((extension) => extension.slice(1)),
-        },
-      ],
-    });
-    if (target.canceled || !target.filePath) return { ok: false, cancelled: true };
+    const safeBase = (roomName || 'Untitled plan').replace(/[\\/:*?"<>|]/g, '-').trim() || 'Untitled plan';
+    const suggested = `${safeBase}.rv4`;
+    let targetPath: string | undefined;
+    if (e2eSavePath) {
+      targetPath = e2eSavePath;
+    } else if (options?.autosave) {
+      const folder = join(app.getPath('documents'), 'Groundplan');
+      await mkdir(folder, { recursive: true });
+      let candidate = join(folder, suggested);
+      if (existsSync(candidate)) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        candidate = join(folder, `${safeBase} ${stamp}.rv4`);
+      }
+      targetPath = candidate;
+    } else {
+      const picked = await dialog.showSaveDialog(mainWindow!, {
+        title: 'Save new plan',
+        defaultPath: suggested,
+        filters: [
+          {
+            name: 'Room Viewer plan',
+            extensions: PLAN_EXTENSIONS.map((extension) => extension.slice(1)),
+          },
+        ],
+      });
+      if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true };
+      targetPath = picked.filePath;
+    }
 
-    await atomicWriteFile(target.filePath, built.file, {
-      backupPath: existsSync(target.filePath) ? `${target.filePath}.bak` : undefined,
+    await atomicWriteFile(targetPath, built.file, {
+      backupPath: existsSync(targetPath) ? `${targetPath}.bak` : undefined,
     });
-    grantPath(target.filePath);
-    await openPath(target.filePath);
+    grantPath(targetPath);
+    await openPath(targetPath);
 
     // RV4 stores arcs as faithful polylines. The companion keeps the exact
     // radius/bulge model so the Room panel can reopen and continue editing the
@@ -4385,6 +4801,49 @@ app.whenReady().then(async () => {
 
     if (!session) return { ok: false, reason: 'the new plan could not be opened' };
     return { ok: true, doc: describe(session) };
+  });
+
+  handle('file:discard-empty-plan', async () => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const path = session.path;
+    const model = planModelView(session, unitSystem());
+    const walls = model?.room?.walls ?? 0;
+    const hasRoom = walls >= 3 && model?.room?.source !== 'extent' && model?.room?.source !== 'none';
+    if (hasRoom) {
+      return { ok: false, reason: 'this plan already has a room — close it normally instead' };
+    }
+    if (session.dirty) {
+      const confirmed = await dialog.showMessageBox(mainWindow!, {
+        type: 'warning',
+        buttons: ['Discard', 'Keep'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Discard empty plan?',
+        message: 'Delete this empty plan file and close it?',
+        detail: basename(path),
+      });
+      if (confirmed.response !== 0) return { ok: false, cancelled: true };
+    }
+    cancelPlanRecoverySchedule();
+    session = null;
+    clearObjectLinks();
+    resetPlanModel();
+    planSidecarPending = false;
+    activePlanRecoveryId = null;
+    dimensionAssociations = {
+      format: 'groundplan-dimension-associations',
+      version: 1,
+      entries: [],
+    };
+    dimensionAssociationWarning = undefined;
+    resetDimensionHistory();
+    try {
+      if (existsSync(path)) await unlink(path);
+    } catch (error) {
+      console.error('[groundplan] could not delete empty plan:', error);
+      return { ok: false, reason: 'the empty plan was closed but the file could not be deleted' };
+    }
+    return { ok: true };
   });
 
   handle('plan:preview-gear', (_event, description: string) => parseDimensions(description));
@@ -4454,15 +4913,37 @@ app.whenReady().then(async () => {
         }
         const newByOld = new Map<number, number>();
 
+        // Multi-select rotate orbits the selection about its collective centre
+        // so a bank of chairs turns as one piece (angled wings), not each icon
+        // spinning on a fixed grid. Single-item rotate still spins in place.
+        let rotatePivot: { x: number; y: number } | null = null;
+        if (kind === 'rotate' && targets.length > 1) {
+          let sx = 0;
+          let sy = 0;
+          let n = 0;
+          for (const target of targets) {
+            const centre = nodeCentre(target);
+            if (!centre) continue;
+            sx += centre.x;
+            sy += centre.y;
+            n++;
+          }
+          if (n > 0) rotatePivot = { x: sx / n, y: sy / n };
+        }
+
         for (const node of targets) {
           let result: { ok: boolean; reason?: string; created?: number[] };
           switch (kind) {
             case 'move':
               result = moveNode(s.loaded.document, node, a, b);
               break;
-            case 'rotate':
-              result = rotateNode(s.loaded.document, node, (a * Math.PI) / 180);
+            case 'rotate': {
+              const radians = (a * Math.PI) / 180;
+              result = rotatePivot
+                ? rotateNodeAbout(s.loaded.document, node, radians, rotatePivot)
+                : rotateNode(s.loaded.document, node, radians);
               break;
+            }
             case 'duplicate':
               result = duplicateNode(s.loaded.document, s.index, node, a, b);
               if (result.ok && result.created?.[0] != null) {

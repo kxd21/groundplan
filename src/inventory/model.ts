@@ -27,6 +27,7 @@ export type InventoryImportType =
   | 'csv'
   | 'plan'
   | 'symbol-library'
+  | 'spotlight-xml'
   | 'manual'
   | 'unknown';
 
@@ -85,6 +86,14 @@ export interface InventoryItem {
   provenanceIds?: string[];
   /** Largest quantity seen on any one job — a useful stocking hint. */
   peakQuantity: number;
+  /**
+   * Explicit on-hand stock from a Spotlight inventory XML (Stock) or a CSV
+   * Quantity column. Distinct from peakQuantity, which tracks the largest job
+   * demand seen — not necessarily what the shop owns.
+   */
+  quantityOwned?: number | null;
+  /** Spotlight virtual / independent virtual part (catalogue accessory). */
+  virtual?: boolean;
   notes?: string;
   /**
    * File this item's drawn symbol comes from.
@@ -124,14 +133,14 @@ export interface InventoryItem {
 export interface Inventory {
   /** Older files carry `groundplan-library`; the loader accepts both. */
   format: 'groundplan-inventory' | 'groundplan-library';
-  version: 2;
+  version: 3;
   items: InventoryItem[];
   /** Deduplicated import ledger referenced by each item's provenanceIds. */
   imports: InventoryImportRecord[];
 }
 
 export function emptyInventory(): Inventory {
-  return { format: 'groundplan-inventory', version: 2, items: [], imports: [] };
+  return { format: 'groundplan-inventory', version: 3, items: [], imports: [] };
 }
 
 /** Names vary in case, quoting and spacing; match on a normalised form. */
@@ -142,6 +151,21 @@ export function normaliseName(name: string): string {
     .replace(/[’‘]/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Ranking for catalogue search / resolve — exact and shorter names beat
+ * popularity (timesSeen), so "Mixer" wins over a heavily-used "Bottle - Mixer".
+ */
+export function inventoryMatchScore(itemName: string, query: string): number {
+  const q = normaliseName(query);
+  const name = normaliseName(itemName);
+  if (!q) return 0;
+  if (name === q) return 400;
+  if (name.startsWith(q + ' ') || name.startsWith(q)) return 300;
+  if (name.includes(q)) return 200 - Math.min(100, name.length);
+  if (q.includes(name) && name.length >= 3) return 100;
+  return 0;
 }
 
 /**
@@ -180,6 +204,8 @@ export interface IncomingItem {
   tracedIcon?: InventoryItem['tracedIcon'];
   photoDataUrl?: string;
   symbolAsset?: InventorySymbolAsset;
+  /** Spotlight virtual / independent virtual part. */
+  virtual?: boolean;
 }
 
 function shortHash(value: string): string {
@@ -305,6 +331,11 @@ export function mergeItems(
         legacyTimesSeen: provenanceId ? 0 : 1,
         provenanceIds: provenanceId ? [provenanceId] : [],
         peakQuantity: item.quantity ?? 0,
+        quantityOwned:
+          item.quantity != null && Number.isFinite(item.quantity)
+            ? Math.max(0, Math.round(item.quantity))
+            : undefined,
+        virtual: item.virtual || undefined,
         addedAt: at,
       };
       entry.timesSeen = entry.legacyTimesSeen! + entry.provenanceIds!.length;
@@ -320,6 +351,17 @@ export function mergeItems(
     if (sighting.duplicate) duplicateSightings++;
     if ((item.quantity ?? 0) > existing.peakQuantity) {
       existing.peakQuantity = item.quantity ?? 0;
+      changed = true;
+    }
+    if (item.quantity != null && Number.isFinite(item.quantity)) {
+      const owned = Math.max(0, Math.round(item.quantity));
+      if (existing.quantityOwned == null || owned > existing.quantityOwned) {
+        existing.quantityOwned = owned;
+        changed = true;
+      }
+    }
+    if (item.virtual && !existing.virtual) {
+      existing.virtual = true;
       changed = true;
     }
     if (!existing.department && item.department) {
@@ -381,6 +423,8 @@ export interface InventoryItemPatch {
   notes?: string;
   width?: number;
   height?: number;
+  /** Explicit on-hand stock; pass null to clear. */
+  quantityOwned?: number | null;
   /** Set or replace the traced outline; pass null to clear it. */
   tracedIcon?: InventoryItem['tracedIcon'] | null;
   /** Set or replace the photo preview; pass null to clear it. */
@@ -442,6 +486,22 @@ export function updateInventoryItem(
   const department = patch.department === undefined ? item.department : patch.department.trim() || undefined;
   const notes = patch.notes === undefined ? item.notes : patch.notes.trim() || undefined;
 
+  let ownedChanged = false;
+  if (patch.quantityOwned !== undefined) {
+    if (patch.quantityOwned === null) {
+      ownedChanged = item.quantityOwned != null;
+    } else if (
+      typeof patch.quantityOwned !== 'number' ||
+      !Number.isFinite(patch.quantityOwned) ||
+      patch.quantityOwned < 0
+    ) {
+      return { ok: false, reason: 'owned quantity must be a non-negative number' };
+    } else {
+      const next = Math.round(patch.quantityOwned);
+      ownedChanged = item.quantityOwned !== next;
+    }
+  }
+
   let tracedChanged = false;
   if (patch.tracedIcon !== undefined) {
     if (patch.tracedIcon === null) {
@@ -472,6 +532,7 @@ export function updateInventoryItem(
     wantedName !== item.name ||
     department !== item.department ||
     notes !== item.notes ||
+    ownedChanged ||
     tracedChanged ||
     photoChanged ||
     (hasWidth && (patch.width !== item.width || patch.height !== item.height || item.sizeSource !== 'user'));
@@ -488,6 +549,11 @@ export function updateInventoryItem(
   }
   item.department = department;
   item.notes = notes;
+  if (patch.quantityOwned === null) {
+    delete item.quantityOwned;
+  } else if (typeof patch.quantityOwned === 'number' && ownedChanged) {
+    item.quantityOwned = Math.round(patch.quantityOwned);
+  }
   if (hasWidth) {
     item.width = patch.width;
     item.height = patch.height;
@@ -611,7 +677,15 @@ export function searchInventory(
       ];
       return haystack.some((text) => normaliseName(text).includes(q));
     })
-    .sort((a, b) => b.timesSeen - a.timesSeen || a.name.localeCompare(b.name));
+    .sort((a, b) => {
+      if (!q) return b.timesSeen - a.timesSeen || a.name.localeCompare(b.name);
+      // Same scoring as resolveInventoryQuery so the palette list and auto-resolve agree.
+      return (
+        inventoryMatchScore(b.name, q) - inventoryMatchScore(a.name, q) ||
+        b.timesSeen - a.timesSeen ||
+        a.name.localeCompare(b.name)
+      );
+    });
 }
 
 /** Parses a CSV export back into items, for bulk loading from a spreadsheet. */

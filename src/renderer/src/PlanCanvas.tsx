@@ -9,12 +9,57 @@ import type { EditablePointPath } from './PointEditor.js';
 import type { PlanBackground } from '../../format/companion.js';
 import { constrainRoomCorner, type CustomRoomAngleLock } from './custom-room.js';
 import type { WallEditSession } from './wall-edit.js';
+import { flattenWall } from '../../format/room.js';
 
 const UNITS_PER_FOOT = 120;
+const UNITS_PER_INCH = 10;
 /** Width of the ruler gutters along the top and left edges. */
 const RULER = 22;
 /** Hit-testing every pointer move gets expensive on very large plans. */
 const HOVER_PRIMITIVE_LIMIT = 24000;
+
+type SnapKeys = { shift: boolean; alt: boolean };
+
+/**
+ * Step used while dragging / placing on the plan.
+ *
+ * Plan snap is often a full foot — too coarse for careful edits — so interactive
+ * tools clamp to 1″ (or 1 cm) unless Shift asks for a finer step, or Alt leaves
+ * the value free (returns 0).
+ */
+function editSnapStep(snapStep: number, units: UnitSystem, keys: SnapKeys): number {
+  if (keys.alt) return 0;
+  const inchOrCm = units === 'metric' ? UNITS_PER_METRE / 100 : UNITS_PER_INCH;
+  const fine = units === 'metric' ? UNITS_PER_METRE / 1000 : 1; // 1 mm or 0.1″
+  const coarse = snapStep > 0 ? Math.min(snapStep, inchOrCm) : inchOrCm;
+  return keys.shift ? fine : coarse;
+}
+
+function snapScalar(value: number, step: number): number {
+  if (!(step > 0)) return value;
+  return Math.round(value / step) * step;
+}
+
+function snapPlanPoint(
+  point: { x: number; y: number },
+  snapStep: number,
+  units: UnitSystem,
+  keys: SnapKeys,
+): { x: number; y: number } {
+  const step = editSnapStep(snapStep, units, keys);
+  if (!(step > 0)) return point;
+  return { x: snapScalar(point.x, step), y: snapScalar(point.y, step) };
+}
+
+/** Snap a single-axis drag delta (walls, nudges). */
+function snapDragDelta(
+  delta: number,
+  snapStep: number,
+  units: UnitSystem,
+  keys: SnapKeys,
+): number {
+  return snapScalar(delta, editSnapStep(snapStep, units, keys));
+}
 
 export interface View {
   scale: number;
@@ -143,9 +188,10 @@ function wallChordMeta(wall: { startX: number; startY: number; endX: number; end
   const ny = -dx / length;
   const midX = (wall.startX + wall.endX) / 2;
   const midY = (wall.startY + wall.endY) / 2;
-  // Positive bulge bows along the left normal (= −outward). Sagitta = bulge × half-chord.
+  // Positive bulge is a CCW arc whose centre sits inward; the wall itself bows
+  // outward (opposite the centre). Sagitta = bulge × half-chord.
   const bulge = wall.bulge ?? 0;
-  const existingOutward = bulge ? -(bulge * length) / 2 : 0;
+  const existingOutward = bulge ? (bulge * length) / 2 : 0;
   return {
     dx,
     dy,
@@ -168,9 +214,26 @@ function hitTestWall(
 ): number | null {
   let best: { index: number; distance: number } | null = null;
   for (const wall of walls) {
-    const distance = distanceToSegment(x, y, wall.startX, wall.startY, wall.endX, wall.endY);
     const meta = wallChordMeta(wall);
     const handleDist = Math.hypot(x - meta.handleX, y - meta.handleY);
+    let distance = distanceToSegment(x, y, wall.startX, wall.startY, wall.endX, wall.endY);
+    // Deep bays sit far off the chord — hit the flattened arc too.
+    if (wall.curved && wall.bulge) {
+      const pts = flattenWall(
+        {
+          id: 'hit',
+          start: { x: wall.startX, y: wall.startY },
+          end: { x: wall.endX, y: wall.endY },
+          bulge: wall.bulge,
+        },
+        Math.max(2, meta.length / 32),
+      );
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i]!;
+        const b = pts[i + 1]!;
+        distance = Math.min(distance, distanceToSegment(x, y, a.x, a.y, b.x, b.y));
+      }
+    }
     const d = Math.min(distance, handleDist);
     if (d <= tolerance && (!best || d < best.distance)) best = { index: wall.index, distance: d };
   }
@@ -350,6 +413,8 @@ export function PlanCanvas({
   const [wallDragPreview, setWallDragPreview] = useState<{
     index: number;
     amount: number;
+    baseAmount: number;
+    baseLength: number;
     nx: number;
     ny: number;
     tx: number;
@@ -848,9 +913,25 @@ export function PlanCanvas({
         ctx.beginPath();
         ctx.moveTo(tx(wall.startX + ox), ty(wall.startY + oy));
         if (preview?.gesture === 'curve' || (wall.curved && preview?.gesture !== 'length')) {
-          const mx = meta.midX + meta.nx * curveOff + ox;
-          const my = meta.midY + meta.ny * curveOff + oy;
-          ctx.quadraticCurveTo(tx(mx), ty(my), tx(ex), ty(ey));
+          // Circular arc through the handle — same geometry the model stores.
+          const sag = curveOff;
+          const chord = Math.hypot(ex - (wall.startX + ox), ey - (wall.startY + oy)) || meta.length;
+          const bulge = chord > 0 ? (2 * sag) / chord : 0;
+          if (Math.abs(bulge) < 1e-9) {
+            ctx.lineTo(tx(ex), ty(ey));
+          } else {
+            const pts = flattenWall(
+              {
+                id: 'preview',
+                start: { x: wall.startX + ox, y: wall.startY + oy },
+                end: { x: ex, y: ey },
+                bulge,
+              },
+              // Keep the overlay smooth even when the sheet is zoomed far out.
+              Math.min(meta.length / 48, Math.max(0.5, 2 / Math.max(view.scale, 0.02))),
+            );
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(tx(pts[i]!.x), ty(pts[i]!.y));
+          }
         } else {
           ctx.lineTo(tx(ex), ty(ey));
         }
@@ -872,15 +953,32 @@ export function PlanCanvas({
           ctx.fill();
           ctx.stroke();
           ctx.fillStyle = paper ? 'rgba(11, 110, 203, 0.92)' : 'rgba(180, 220, 255, 0.95)';
-          ctx.font = '600 10px Inter, system-ui, sans-serif';
+          ctx.font = '600 11px Inter, system-ui, sans-serif';
           ctx.textAlign = 'center';
           const tip =
             wallEdit.gesture === 'curve'
-              ? 'Drag to curve'
+              ? 'Curve'
               : wallEdit.gesture === 'length'
-                ? 'Drag to stretch length'
-                : 'Drag to push / pull';
-          ctx.fillText(tip, tx(hx), ty(hy) - 12);
+                ? 'Length'
+                : 'Push';
+          let measure = '';
+          if (preview) {
+            const delta = preview.amount - preview.baseAmount;
+            if (preview.gesture === 'length') {
+              measure = formatLength(preview.baseLength + preview.amount, units);
+            } else if (preview.gesture === 'curve') {
+              const bow = formatLength(Math.abs(preview.amount), units);
+              measure = `${preview.amount >= 0 ? 'out' : 'in'} ${bow}`;
+            } else {
+              const signed = `${delta >= 0 ? '+' : '−'}${formatLength(Math.abs(delta), units)}`;
+              measure = signed;
+            }
+          }
+          ctx.fillText(measure ? `${tip} · ${measure}` : `Drag · ${tip}`, tx(hx), ty(hy) - 14);
+          if (!preview) {
+            ctx.font = '500 9px Inter, system-ui, sans-serif';
+            ctx.fillText('Shift fine · Alt free', tx(hx), ty(hy) - 26);
+          }
         }
         ctx.restore();
       }
@@ -1134,13 +1232,15 @@ export function PlanCanvas({
               ny: meta.ny,
               tx: meta.dx / meta.length,
               ty: meta.dy / meta.length,
-              baseLength: wall.length,
+              baseLength: meta.length,
               baseAmount: activeGesture === 'curve' ? meta.existingOutward : 0,
               amount: activeGesture === 'curve' ? meta.existingOutward : 0,
             };
             setWallDragPreview({
               index: wallHit,
               amount: activeGesture === 'curve' ? meta.existingOutward : 0,
+              baseAmount: activeGesture === 'curve' ? meta.existingOutward : 0,
+              baseLength: meta.length,
               nx: meta.nx,
               ny: meta.ny,
               tx: meta.dx / meta.length,
@@ -1166,11 +1266,8 @@ export function PlanCanvas({
         ? (hitTest(prepared, visibleLayers, point.x, point.y, 8 / view.scale) ?? undefined)
         : undefined;
       const coordinate =
-        pointerMode.snap === 'grid' && snapStep
-          ? {
-              x: Math.round(point.x / snapStep) * snapStep,
-              y: Math.round(point.y / snapStep) * snapStep,
-            }
+        pointerMode.snap === 'grid'
+          ? snapPlanPoint(point, snapStep, units, { shift: e.shiftKey, alt: e.altKey })
           : point;
       const constrained =
         pointerMode.mode === 'path' && pathPoints.length
@@ -1256,12 +1353,7 @@ export function PlanCanvas({
     if (pointerMode.mode === 'span' || pointerMode.mode === 'path') setPointer(plan);
 
     if (pointMoveRef.current) {
-      const next = snapStep && !e.altKey
-        ? {
-            x: Math.round(plan.x / snapStep) * snapStep,
-            y: Math.round(plan.y / snapStep) * snapStep,
-          }
-        : plan;
+      const next = snapPlanPoint(plan, snapStep, units, { shift: e.shiftKey, alt: e.altKey });
       setPointPreview({ ...pointMoveRef.current, ...next });
       return;
     }
@@ -1274,18 +1366,24 @@ export function PlanCanvas({
         drag.gesture === 'length'
           ? dx * drag.tx + dy * drag.ty
           : dx * drag.nx + dy * drag.ny;
+      delta = snapDragDelta(delta, snapStep, units, { shift: e.shiftKey, alt: e.altKey });
       if (drag.gesture === 'length') {
-        // Keep a minimal positive chord.
-        delta = Math.max(delta, 1 - drag.baseLength);
+        // Keep a minimal positive chord (~0.1″).
+        delta = Math.max(delta, UNITS_PER_INCH / 10 - drag.baseLength);
       }
-      if (snapStep && !e.altKey) {
-        delta = Math.round(delta / snapStep) * snapStep;
+      let amount = drag.baseAmount + delta;
+      if (drag.gesture === 'curve') {
+        // Past half-chord the three-point fit becomes a major arc and the room
+        // balloons. Keep canvas drags on the minor (bay) side of a semicircle.
+        const maxSag = Math.max(0, drag.baseLength / 2 - 1);
+        amount = Math.max(-maxSag, Math.min(maxSag, amount));
       }
-      const amount = drag.baseAmount + delta;
       drag.amount = amount;
       setWallDragPreview({
         index: drag.index,
         amount,
+        baseAmount: drag.baseAmount,
+        baseLength: drag.baseLength,
         nx: drag.nx,
         ny: drag.ny,
         tx: drag.tx,
@@ -1305,7 +1403,10 @@ export function PlanCanvas({
     if (moving) {
       const raw = { dx: plan.x - moving.startX, dy: plan.y - moving.startY };
       const snapped = scene
-        ? applySnap(objectBounds, selection, raw, snapStep, view.scale, objectSnap)
+        ? applySnap(objectBounds, selection, raw, snapStep, view.scale, objectSnap, units, {
+            shift: e.shiftKey,
+            alt: e.altKey,
+          })
         : { ...raw, guides: {} };
       setGuides(snapped.guides);
       setNudge({ dx: snapped.dx, dy: snapped.dy });
@@ -1339,7 +1440,8 @@ export function PlanCanvas({
       const drag = wallDragRef.current;
       wallDragRef.current = null;
       setWallDragPreview(null);
-      if (Math.abs(drag.amount) > 1) {
+      // Commit on a real move (0.1″ / 1 unit), comparing against the pre-drag value.
+      if (Math.abs(drag.amount - drag.baseAmount) >= 1) {
         onWallGesture?.(drag.index, drag.gesture, drag.amount);
       }
       return;
@@ -1466,11 +1568,12 @@ export function PlanCanvas({
           if ((!id || !onDropItem) && (!description || !onDropGear)) return;
           e.preventDefault();
           const { x, y } = toPlan(e);
-          const step = snapStep ?? 0;
-          const snappedX = step ? Math.round(x / step) * step : x;
-          const snappedY = step ? Math.round(y / step) * step : y;
-          if (description && onDropGear) onDropGear(description, snappedX, snappedY);
-          else if (id && onDropItem) onDropItem(id, snappedX, snappedY);
+          const snapped = snapPlanPoint({ x, y }, snapStep, units, {
+            shift: e.shiftKey,
+            alt: e.altKey,
+          });
+          if (description && onDropGear) onDropGear(description, snapped.x, snapped.y);
+          else if (id && onDropItem) onDropItem(id, snapped.x, snapped.y);
         }}
       />
       {textEditor && editingTextPrimitive && inlineTextStyle && (
@@ -1548,9 +1651,11 @@ function applySnap(
   objectBounds: Map<number, Bounds>,
   selection: number[],
   raw: { dx: number; dy: number },
-  step: number,
+  snapStep: number,
   viewScale: number,
   objectSnap: boolean,
+  units: UnitSystem = 'imperial',
+  keys: SnapKeys = { shift: false, alt: false },
 ): { dx: number; dy: number; guides: { x?: number; y?: number } } {
   if (!selection.length) return { ...raw, guides: {} };
 
@@ -1571,7 +1676,7 @@ function applySnap(
   let bestX: { at: number; gap: number } | null = null;
   let bestY: { at: number; gap: number } | null = null;
 
-  if (objectSnap) {
+  if (objectSnap && !keys.alt) {
     for (const [id, bounds] of objectBounds) {
       if (selected.has(id)) continue;
       const { minX, minY, maxX, maxY } = bounds;
@@ -1587,18 +1692,20 @@ function applySnap(
     }
   }
 
+  const gridStep = editSnapStep(snapStep, units, keys);
+
   if (bestX) {
     dx += bestX.at - centre.x;
     guides.x = bestX.at;
-  } else if (step > 0) {
-    dx += Math.round(centre.x / step) * step - centre.x;
+  } else if (gridStep > 0) {
+    dx += snapScalar(centre.x, gridStep) - centre.x;
   }
 
   if (bestY) {
     dy += bestY.at - centre.y;
     guides.y = bestY.at;
-  } else if (step > 0) {
-    dy += Math.round(centre.y / step) * step - centre.y;
+  } else if (gridStep > 0) {
+    dy += snapScalar(centre.y, gridStep) - centre.y;
   }
 
   return { dx, dy, guides };

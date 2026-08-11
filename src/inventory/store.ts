@@ -24,7 +24,7 @@ import {
 } from './model.js';
 
 export const INVENTORY_FILENAME = 'inventory.json';
-export const INVENTORY_FILE_VERSION = 2;
+export const INVENTORY_FILE_VERSION = 3;
 export const INVENTORY_ASSET_DIRECTORY = 'inventory-assets';
 
 /** What the file was called before the inventory got its current name. */
@@ -33,7 +33,7 @@ const FORMATS = ['groundplan-inventory', 'groundplan-library'] as const;
 const SIZE_SOURCES = new Set<SizeSource>(['parsed', 'user', 'unknown', 'symbol']);
 
 export interface InventoryMigrationReport {
-  fromVersion: 1 | 2;
+  fromVersion: 1 | 2 | 3;
   assignedIds: number;
   repairedDuplicateIds: number;
   migratedSightings: number;
@@ -84,6 +84,7 @@ function normaliseImport(raw: unknown): InventoryImportRecord | null {
       entry.type === 'csv' ||
       entry.type === 'plan' ||
       entry.type === 'symbol-library' ||
+      entry.type === 'spotlight-xml' ||
       entry.type === 'manual'
         ? entry.type
         : 'unknown',
@@ -135,7 +136,7 @@ export function migrateInventory(value: unknown): {
   if (!payload || !FORMATS.includes(payload.format as (typeof FORMATS)[number])) {
     throw new Error('not a Groundplan inventory file');
   }
-  if (payload.version !== 1 && payload.version !== 2) {
+  if (payload.version !== 1 && payload.version !== 2 && payload.version !== 3) {
     throw new Error(`unsupported Groundplan inventory version ${String(payload.version)}`);
   }
   if (!Array.isArray(payload.items)) throw new Error('inventory items are not an array');
@@ -199,6 +200,18 @@ export function migrateInventory(value: unknown): {
       typeof item.peakQuantity === 'number' && Number.isFinite(item.peakQuantity)
         ? Math.max(0, Math.round(item.peakQuantity))
         : 0;
+    if (item.quantityOwned === null) {
+      // Explicit clear is preserved.
+    } else if (typeof item.quantityOwned === 'number' && Number.isFinite(item.quantityOwned)) {
+      item.quantityOwned = Math.max(0, Math.round(item.quantityOwned));
+    } else if (item.quantityOwned !== undefined) {
+      delete item.quantityOwned;
+      report.changed = true;
+    }
+    if (item.virtual !== undefined && typeof item.virtual !== 'boolean') {
+      delete item.virtual;
+      report.changed = true;
+    }
     const oldTimes =
       typeof item.timesSeen === 'number' && Number.isFinite(item.timesSeen)
         ? Math.max(0, Math.round(item.timesSeen))

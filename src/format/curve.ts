@@ -164,8 +164,8 @@ export interface CurveReadout {
   angle: number;
   /**
    * How far the wall bows off its chord, signed the same way as the bulge —
-   * *not* by world axis. A positive sagitta means it bows to the right of the
-   * line from start to end, which is the side a positive bulge sweeps toward.
+   * *not* by world axis. A positive sagitta means the wall bows to the right of
+   * the directed chord (the side opposite the arc centre for a minor arc).
    */
   sagitta: number;
   chord: number;

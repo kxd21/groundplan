@@ -337,6 +337,10 @@ async function main(): Promise<void> {
     const rows = parseCsv('Name,Department,Quantity\nFixture Table,Furniture,4\n65" Display,Video,2\n');
     check('inventory CSV parser produces two rows', rows.length === 2);
     check('inventory merge adds both rows', mergeItems(inventory, rows).added === 2);
+    check(
+      'inventory CSV quantity sets quantityOwned',
+      inventory.items.find((i) => i.name === 'Fixture Table')?.quantityOwned === 4,
+    );
     check('inventory search finds classified text', searchInventory(inventory, 'display', null).length === 1);
     const inventoryFile = join(temporary, 'inventory.json');
     await saveInventory(inventoryFile, inventory);

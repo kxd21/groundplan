@@ -404,10 +404,9 @@ console.log('\n3. a reply that lands late keeps its hands off a newer tool\n');
 {
   const armed = reduce(initialToolState(EDITABLE), { type: 'pick', choice: SEATING }).state;
   const after = reduce(armed, { type: 'settled', epoch: armed.epoch, ok: true }).state;
-  check('seating is one-shot — the drop consumes the block', after.tool.kind === 'select');
-  check('seating and completed room outlines are deliberately one-shot',
-    !staysAfterUse(armed.tool) &&
-      !staysAfterUse(reduce(initialToolState(EDITABLE), { type: 'pick', choice: roomOutlineChoice }).state.tool));
+  check('seating stays in hand so sixteen banks is sixteen clicks', isPressed(after, SEATING));
+  check('completed room outlines are deliberately one-shot',
+    !staysAfterUse(reduce(initialToolState(EDITABLE), { type: 'pick', choice: roomOutlineChoice }).state.tool));
 }
 
 {

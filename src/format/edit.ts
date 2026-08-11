@@ -572,6 +572,41 @@ function refreshShapeBounds(doc: RVDocument, node: RVNode): void {
   setBounds(doc, node, cx + box.minX, cy + box.minY, cx + box.maxX, cy + box.maxY);
 }
 
+/** World-space centre of a placed node (bounds midpoint). */
+export function nodeCentre(node: RVNode): { x: number; y: number } | null {
+  const box = node.bounds;
+  if (!box) return null;
+  return { x: (box.left + box.right) / 2, y: (box.top + box.bottom) / 2 };
+}
+
+/**
+ * Rotates a placed item about an arbitrary world pivot.
+ *
+ * The placement orbits the pivot, then the outline spins about the item's own
+ * centre — so a selected bank of chairs turns as one piece (angled wings)
+ * instead of each chair spinning in place on a fixed grid.
+ */
+export function rotateNodeAbout(
+  doc: RVDocument,
+  node: RVNode,
+  radians: number,
+  pivot: { x: number; y: number },
+): EditResult {
+  if (!radians) return { ok: true };
+  const centre = nodeCentre(node);
+  if (!centre) return rotateNode(doc, node, radians);
+
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = centre.x - pivot.x;
+  const dy = centre.y - pivot.y;
+  const nx = pivot.x + dx * cos - dy * sin;
+  const ny = pivot.y + dx * sin + dy * cos;
+  const moved = moveNode(doc, node, nx - centre.x, ny - centre.y);
+  if (!moved.ok) return moved;
+  return rotateNode(doc, node, radians);
+}
+
 /**
  * Rotates a placed item by `radians`, clockwise on screen.
  *

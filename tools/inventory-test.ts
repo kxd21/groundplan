@@ -109,6 +109,8 @@ async function main() {
   check('parses CSV with quoted commas', parsed.length === 2 && parsed[1].name === 'Truss, 12in x 10ft');
   const csvSummary = mergeItems(inventory, parsed);
   check('merges CSV rows', csvSummary.added === 2);
+  const genie = inventory.items.find((i) => i.name === 'Genie Lift AWP-30');
+  check('CSV quantity sets quantityOwned', genie?.quantityOwned === 2, String(genie?.quantityOwned));
 
   // Persistence.
   const dir = mkdtempSync(join(tmpdir(), 'groundplan-lib-'));

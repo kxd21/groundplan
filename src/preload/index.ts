@@ -77,7 +77,7 @@ export interface PlanFolderReply {
  */
 const api = {
   openFileDialog: (): Promise<OpenResult | null> => ipcRenderer.invoke('dialog:open-file'),
-  /** Creates a plan, asks where to put it, and opens it. */
+  /** Creates a plan, optionally autosaves to Documents/Groundplan, and opens it. */
   newPlan: (options: {
     name?: string;
     width?: number;
@@ -86,9 +86,14 @@ const api = {
     /** Empty-sheet fit bounds for custom room tracing (no walls drawn). */
     sheetSize?: { width: number; depth: number };
     autoDimensions?: boolean;
+    /** Skip the Save dialog and write under Documents/Groundplan. */
+    autosave?: boolean;
     identity?: { date?: string; venue?: string; event?: string; contact?: string };
   }): Promise<{ ok: boolean; cancelled?: boolean; reason?: string; doc?: OpenResult }> =>
     ipcRenderer.invoke('file:new', options),
+  /** Close and delete an empty new plan that never got a room outline. */
+  discardEmptyPlan: (): Promise<{ ok: boolean; cancelled?: boolean; reason?: string }> =>
+    ipcRenderer.invoke('file:discard-empty-plan'),
   roomPresets: (): Promise<Array<{ label: string; width: number; depth: number }>> =>
     ipcRenderer.invoke('plan:room-presets'),
   openFolderDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-folder'),
@@ -317,6 +322,8 @@ const api = {
     ipcRenderer.invoke('plan:room-create', width, height),
   roomCreateCircle: (diameter: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-create-circle', diameter),
+  roomCreateFromSpec: (room: NewRoomSpec): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-create-from-spec', room),
   roomCreatePolygon: (points: Array<{ x: number; y: number }>): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-create-polygon', points),
   roomCornerMove: (index: number, x: number, y: number): Promise<EditReply & { note?: string }> =>
@@ -381,6 +388,64 @@ const api = {
   ): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:seating-apply', request, chair, table),
 
+  listLayoutKits: (): Promise<
+    Array<{
+      id: string;
+      name: string;
+      source: 'bundled' | 'user';
+      chairs: number;
+      banks: number;
+      gear: number;
+      event?: string;
+      venue?: string;
+    }>
+  > => ipcRenderer.invoke('plan:list-layout-kits'),
+  loadLayoutKit: (
+    kitId: string,
+  ): Promise<{ ok: boolean; reason?: string; recipe?: unknown }> =>
+    ipcRenderer.invoke('plan:load-layout-kit', kitId),
+  applyLayoutRecipe: (
+    recipeOrKitId: unknown,
+    options?: { replaceExistingSeating?: boolean; kitId?: string },
+  ): Promise<EditReply & { placed?: number }> =>
+    ipcRenderer.invoke('plan:apply-layout-recipe', recipeOrKitId, options),
+  saveLayoutKit: (
+    recipe: unknown,
+    fileName?: string,
+  ): Promise<{ ok: boolean; reason?: string; path?: string; id?: string }> =>
+    ipcRenderer.invoke('plan:save-layout-kit', recipe, fileName),
+  importLayoutKit: (): Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    reason?: string;
+    path?: string;
+    id?: string;
+  }> => ipcRenderer.invoke('plan:import-layout-kit'),
+  exportLayoutRecipe: (): Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    reason?: string;
+    path?: string;
+    kitId?: string;
+    recipe?: unknown;
+  }> => ipcRenderer.invoke('plan:export-layout-recipe'),
+  listBankPresets: (): Promise<
+    Array<{
+      id: string;
+      name: string;
+      savedAt: string;
+      block: Record<string, unknown>;
+    }>
+  > => ipcRenderer.invoke('plan:list-bank-presets'),
+  saveBankPreset: (preset: {
+    name: string;
+    block: unknown;
+    id?: string;
+  }): Promise<{ ok: boolean; reason?: string; preset?: unknown }> =>
+    ipcRenderer.invoke('plan:save-bank-preset', preset),
+  deleteBankPreset: (id: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('plan:delete-bank-preset', id),
+
   stageAdd: (
     x: number,
     y: number,
@@ -440,6 +505,8 @@ const api = {
     added: number;
     updated: number;
     files: number;
+    inventoryName?: string;
+    inventoryNames?: string[];
   } | null> => ipcRenderer.invoke('inventory:import'),
   inventoryAbsorbGear: (): Promise<{
     ok: boolean;
@@ -477,6 +544,7 @@ const api = {
       width?: number;
       height?: number;
       notes?: string;
+      quantityOwned?: number | null;
       tracedIcon?: {
         paths: Array<{ points: number[]; closed: boolean }>;
         width: number;
@@ -622,6 +690,7 @@ const api = {
       'menu:insert-leaf',
       'menu:shape-wizard',
       'menu:build-stage',
+      'menu:edit-walls',
     ];
     const listeners = channels.map((channel) => {
       const listener = (_event: IpcRendererEvent, arg?: string) => handler(channel, arg);

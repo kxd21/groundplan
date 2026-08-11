@@ -234,6 +234,7 @@ export default function PlanToolDock({
                 className={item.active ? 'is-active' : ''}
                 onClick={item.onClick}
                 disabled={item.disabled}
+                data-tool-id={item.id}
                 aria-label={tip}
                 aria-pressed={item.active || undefined}
                 title={tip}

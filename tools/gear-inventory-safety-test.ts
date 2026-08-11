@@ -272,7 +272,7 @@ async function main(): Promise<void> {
       version: number;
       items: Array<{ name: string; symbolPath?: string }>;
     };
-    check('inventory saves schema v2', savedInventory.version === INVENTORY_FILE_VERSION);
+    check('inventory saves schema v3', savedInventory.version === INVENTORY_FILE_VERSION);
     check(
       'managed symbol path is portable on disk',
       savedInventory.items.find((item) => item.name === 'Managed lectern')?.symbolPath?.startsWith(

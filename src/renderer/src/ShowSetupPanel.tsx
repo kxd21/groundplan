@@ -14,6 +14,17 @@ export interface PlanIdentityFields {
   contact: string;
 }
 
+export interface ShowKitInfo {
+  id: string;
+  name: string;
+  source: 'bundled' | 'user';
+  chairs: number;
+  banks: number;
+  gear: number;
+  event?: string;
+  venue?: string;
+}
+
 interface Props {
   editable: boolean;
   hasRoom: boolean;
@@ -24,11 +35,19 @@ interface Props {
   identityBusy?: boolean;
   onOpenRoom: () => void;
   onDrawRoomOutline: () => void;
+  onFinishRoomAsRectangle?: () => void;
+  onDiscardEmptyPlan?: () => void;
   onBuildStage: () => void;
   onInsert: () => void;
   onRepeat: () => void;
   onSeating: () => void;
   onPrint: () => void;
+  kits?: ShowKitInfo[];
+  kitsBusy?: boolean;
+  onRefreshKits?: () => void;
+  onApplyKit?: (kitId: string) => void;
+  onImportKit?: () => void;
+  onExportRecipe?: () => void;
   completed?: {
     stage?: boolean;
     insert?: boolean;
@@ -52,21 +71,35 @@ export default function ShowSetupPanel({
   identityBusy,
   onOpenRoom,
   onDrawRoomOutline,
+  onFinishRoomAsRectangle,
+  onDiscardEmptyPlan,
   onBuildStage,
   onInsert,
   onRepeat,
   onSeating,
   onPrint,
+  kits = [],
+  kitsBusy,
+  onRefreshKits,
+  onApplyKit,
+  onImportKit,
+  onExportRecipe,
   completed = {},
 }: Props) {
   const [draft, setDraft] = useState<PlanIdentityFields>(identity);
+  const [selectedKit, setSelectedKit] = useState<string>('');
 
   useEffect(() => {
     setDraft(identity);
   }, [identity.date, identity.venue, identity.event, identity.contact]);
 
+  useEffect(() => {
+    if (!selectedKit && kits[0]) setSelectedKit(kits[0].id);
+  }, [kits, selectedKit]);
+
   const dirty = !sameIdentity(draft, identity);
   const roomStatus = drawingRoomOutline ? 'drawing' : hasRoom ? 'ready' : 'needed';
+  const selected = kits.find((k) => k.id === selectedKit);
 
   const setField = (key: keyof PlanIdentityFields, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -92,16 +125,36 @@ export default function ShowSetupPanel({
           </div>
         </div>
         {hasRoom && !drawingRoomOutline ? (
-          <p className="hint show-setup-ok">Boundary is in place — continue with show details below.</p>
+          <div className="show-setup-ready">
+            <p className="hint show-setup-ok">Room ready — next: build the stage.</p>
+            <div className="show-setup-actions">
+              <button type="button" className="btn-solid" disabled={!editable} onClick={onBuildStage}>
+                Build stage
+              </button>
+              <button type="button" className="link-btn" onClick={onOpenRoom}>
+                Open Room panel
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="show-setup-actions">
             <button type="button" className="btn-outline" disabled={!editable} onClick={onDrawRoomOutline}>
               <IconDrawPolygon size={14} />
               {drawingRoomOutline ? 'Cancel outline' : 'Draw room outline'}
             </button>
+            {onFinishRoomAsRectangle && (
+              <button type="button" className="btn-outline" disabled={!editable} onClick={onFinishRoomAsRectangle}>
+                Finish as rectangle
+              </button>
+            )}
             <button type="button" className="link-btn" onClick={onOpenRoom}>
               Open Room panel
             </button>
+            {onDiscardEmptyPlan && !hasRoom && (
+              <button type="button" className="link-btn is-danger" onClick={onDiscardEmptyPlan}>
+                Discard empty plan
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -184,8 +237,71 @@ export default function ShowSetupPanel({
         <div className="show-setup-phase-head">
           <span className="show-setup-phase-index">3</span>
           <div>
+            <strong>Show kits</strong>
+            <small>
+              Apply a whole-show layout recipe (stage, banks, gear, labels). Humans and AI share the same JSON.
+            </small>
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="show-kit-select">Kit</label>
+          <select
+            id="show-kit-select"
+            value={selectedKit}
+            disabled={!editable || kitsBusy || !kits.length}
+            onChange={(e) => setSelectedKit(e.target.value)}
+          >
+            {!kits.length ? <option value="">No kits yet</option> : null}
+            {kits.map((kit) => (
+              <option key={kit.id} value={kit.id}>
+                {kit.name} · {kit.chairs.toLocaleString()} chairs · {kit.banks} banks
+                {kit.source === 'bundled' ? ' (bundled)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        {selected ? (
+          <p className="hint" style={{ marginBottom: 8 }}>
+            {selected.venue ? `${selected.venue} · ` : ''}
+            {selected.gear} gear spots · {selected.source}
+          </p>
+        ) : null}
+        <div className="show-setup-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <button
+            type="button"
+            className="btn-solid"
+            disabled={!editable || !hasRoom || !selectedKit || kitsBusy}
+            onClick={() => selectedKit && onApplyKit?.(selectedKit)}
+          >
+            {kitsBusy ? 'Applying…' : 'Apply kit'}
+          </button>
+          <button type="button" className="btn-outline" disabled={kitsBusy} onClick={() => onImportKit?.()}>
+            Import recipe…
+          </button>
+          <button
+            type="button"
+            className="btn-outline"
+            disabled={!hasRoom || kitsBusy}
+            onClick={() => onExportRecipe?.()}
+          >
+            Export recipe…
+          </button>
+          <button type="button" className="link-btn" disabled={kitsBusy} onClick={() => onRefreshKits?.()}>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div className={`show-setup-phase${hasRoom ? '' : ' is-gated'}`}>
+        <div className="show-setup-phase-head">
+          <span className="show-setup-phase-index">4</span>
+          <div>
             <strong>Set up the show</strong>
-            <small>{hasRoom ? 'Stage, objects, seating, then print.' : 'Finish the room outline first.'}</small>
+            <small>
+              {hasRoom
+                ? 'Or build piece by piece — stage, objects, seating, then print.'
+                : 'Finish the room outline first.'}
+            </small>
           </div>
         </div>
         <div className="create-flow-steps">

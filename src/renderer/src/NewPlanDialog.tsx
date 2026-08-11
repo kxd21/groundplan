@@ -1,7 +1,7 @@
 /**
- * New Plan is the room's first authoring workspace, not only a Save prompt.
- * The exact same pure builder powers this preview and the main process, so a
- * circle, recess, fillet, or bowed wall shown here is what reaches the file.
+ * New Plan is room-first: pick a shape (or venue preset), then land on the plan.
+ * Show details (venue / event / date) belong in Show setup after the room exists.
+ * The same pure builder powers this preview and the main process write path.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -44,13 +44,22 @@ interface Props {
 
 const FT = 120;
 
-type Step = 'details' | 'room';
 type RoomChoice = NewRoomShape | 'custom';
 type WallTreatment = 'straight' | 'curve';
 
-const STEPS: Array<{ id: Step; label: string; blurb: string }> = [
-  { id: 'details', label: 'Event', blurb: 'Name and show information' },
-  { id: 'room', label: 'Room builder', blurb: 'Shape, curves, and dimensions' },
+/** One-click common rooms — create immediately (except Draw custom). */
+const QUICK_START: Array<{
+  id: string;
+  label: string;
+  detail: string;
+  width?: number;
+  depth?: number;
+  custom?: boolean;
+}> = [
+  { id: 'meeting', label: 'Meeting room', detail: "30' × 20'", width: 30, depth: 20 },
+  { id: 'ballroom', label: 'Ballroom', detail: "60' × 40'", width: 60, depth: 40 },
+  { id: 'exhibit', label: 'Exhibit hall', detail: "100' × 80'", width: 100, depth: 80 },
+  { id: 'custom', label: 'Draw custom', detail: 'Trace next', custom: true },
 ];
 
 const SHAPES: Array<{
@@ -207,13 +216,9 @@ function RoomPreview({
 }
 
 export default function NewPlanDialog({ units, onCreated, onCancel, onError }: Props) {
-  const [step, setStep] = useState<Step>('details');
   const [presets, setPresets] = useState<Preset[]>([]);
   const [name, setName] = useState('Untitled plan');
-  const [venue, setVenue] = useState('');
-  const [event, setEvent] = useState('');
-  const [date, setDate] = useState('');
-  const [contact, setContact] = useState('');
+  const [nameOpen, setNameOpen] = useState(false);
 
   const [shape, setShape] = useState<RoomChoice>('rectangle');
   const [width, setWidth] = useState(() => formatLength(60 * FT, units));
@@ -265,7 +270,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const curveValue = curveMethod === 'angle'
     ? Number(curveValues.angle)
     : parseLength(curveValues[curveMethod], units);
-  const detailsReady = name.trim().length >= 2;
+  const planName = name.trim() || 'Untitled plan';
   const customRoom = shape === 'custom';
   const curveEligible = shape === 'rectangle' || shape === 'l-shape' || shape === 'u-shape';
 
@@ -283,8 +288,8 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   }, [shape, parsed.width, parsed.depth, parsed.diameter, parsed.cornerRadius, parsed.notchWidth, parsed.notchDepth]);
 
   const baseRoom = useMemo(
-    () => baseSpec ? buildNewRoom(baseSpec, name.trim() || 'Room') : null,
-    [baseSpec, name],
+    () => baseSpec ? buildNewRoom(baseSpec, planName) : null,
+    [baseSpec, planName],
   );
   const wallCount = baseRoom?.room?.walls.length ?? 0;
   const selectedWall = Math.min(curveWall, Math.max(0, wallCount - 1));
@@ -305,8 +310,8 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   }, [baseSpec, curveEligible, wallTreatment, selectedWall, curveMethod, curveValue, curveOutward, curveMajor]);
 
   const preview = useMemo(
-    () => roomSpec ? buildNewRoom(roomSpec, name.trim() || 'Room') : null,
-    [roomSpec, name],
+    () => roomSpec ? buildNewRoom(roomSpec, planName) : null,
+    [roomSpec, planName],
   );
   const roomReady =
     customRoom
@@ -334,33 +339,35 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     setDepth(formatLength(preset.depth * FT, units));
   };
 
-  const create = async () => {
-    if (!detailsReady || !roomReady) return;
+  const create = async (override?: {
+    room?: NewRoomSpec;
+    custom?: CustomRoomPrefs;
+    name?: string;
+  }) => {
+    const usingCustom = override?.custom != null || (override?.room == null && customRoom);
+    if (!override && !roomReady) return;
     setBusy(true);
     try {
-      const customPrefs: CustomRoomPrefs | undefined =
-        customRoom && (parsed.width ?? 0) > 0 && (parsed.depth ?? 0) > 0
-          ? {
-              guideWidth: parsed.width!,
-              guideDepth: parsed.depth!,
-              angleLock: customAngleLock,
-              showGuide: customShowGuide,
-              autoDimensions: customAutoDimensions,
-            }
-          : undefined;
+      const customPrefs: CustomRoomPrefs | undefined = override?.custom
+        ?? (
+          usingCustom && (parsed.width ?? 0) > 0 && (parsed.depth ?? 0) > 0
+            ? {
+                guideWidth: parsed.width!,
+                guideDepth: parsed.depth!,
+                angleLock: customAngleLock,
+                showGuide: customShowGuide,
+                autoDimensions: customAutoDimensions,
+              }
+            : undefined
+        );
       const reply = await api.newPlan({
-        name: name.trim() || 'Untitled plan',
-        room: customRoom ? undefined : roomSpec ?? undefined,
+        name: override?.name ?? planName,
+        room: customPrefs ? undefined : override?.room ?? roomSpec ?? undefined,
         sheetSize: customPrefs
           ? { width: customPrefs.guideWidth, depth: customPrefs.guideDepth }
           : undefined,
-        autoDimensions: !customRoom && autoDimensions,
-        identity: {
-          venue: venue.trim() || undefined,
-          event: event.trim() || undefined,
-          date: date.trim() || undefined,
-          contact: contact.trim() || undefined,
-        },
+        autoDimensions: !customPrefs && autoDimensions,
+        autosave: true,
       });
       if (reply.cancelled) return;
       if (!reply.ok || !reply.doc) {
@@ -368,7 +375,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         return;
       }
       onCreated(reply.doc, {
-        startRoomOutline: customRoom,
+        startRoomOutline: Boolean(customPrefs),
         customRoom: customPrefs,
       });
     } finally {
@@ -376,21 +383,23 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     }
   };
 
-  const goNext = () => {
-    if (step === 'details') {
-      if (!detailsReady) {
-        onError('Enter a plan name of at least two characters.');
-        return;
-      }
-      setStep('room');
+  const quickStart = (item: (typeof QUICK_START)[number]) => {
+    if (item.custom) {
+      setShape('custom');
+      setWallTreatment('straight');
+      setWidth(formatLength(60 * FT, units));
+      setDepth(formatLength(40 * FT, units));
       return;
     }
-    void create();
-  };
-
-  const goBack = () => {
-    if (step === 'room') setStep('details');
-    else onCancel();
+    if (!(item.width && item.depth)) return;
+    setShape('rectangle');
+    setWallTreatment('straight');
+    setWidth(formatLength(item.width * FT, units));
+    setDepth(formatLength(item.depth * FT, units));
+    void create({
+      room: { shape: 'rectangle', width: item.width * FT, depth: item.depth * FT },
+      name: item.label,
+    });
   };
 
   const curveInputLabel = curveMethod === 'radius'
@@ -420,84 +429,30 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
       >
         <div className="new-plan-head">
           <div>
-            <span className="new-plan-eyebrow">Plan setup</span>
-            <h2 id="new-plan-title">Create a new plan</h2>
-            <p>Set the show identity, build exact room geometry, and choose what should be drawn on day one.</p>
+            <span className="new-plan-eyebrow">New plan</span>
+            <h2 id="new-plan-title">Build the room</h2>
+            <p>Start from a venue size or shape. Venue and event details come later in Show setup.</p>
           </div>
           <span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>
         </div>
 
-        <ol className="new-plan-steps" aria-label="New plan steps">
-          {STEPS.map((item, index) => {
-            const active = item.id === step;
-            const done = item.id === 'details' && step === 'room';
-            return (
-              <li key={item.id} className={active ? 'is-active' : done ? 'is-done' : undefined}>
-                <button
-                  type="button"
-                  disabled={busy || (item.id === 'room' && !detailsReady)}
-                  onClick={() => {
-                    if (item.id === 'room' && !detailsReady) return;
-                    setStep(item.id);
-                  }}
-                >
-                  <span className="new-plan-step-index">{done ? '✓' : index + 1}</span>
-                  <span className="new-plan-step-copy">
-                    <strong>{item.label}</strong>
-                    <span>{item.blurb}</span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
+        <div className="new-plan-quick-start" role="group" aria-label="Common rooms">
+          {QUICK_START.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={item.custom && customRoom ? 'is-on' : undefined}
+              disabled={busy}
+              onClick={() => quickStart(item)}
+            >
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+            </button>
+          ))}
+        </div>
 
-        <div className={step === 'room' ? 'new-plan-body is-room-builder' : 'new-plan-body'}>
-          {step === 'details' ? (
-            <div className="new-plan-details-grid">
-              <div className="field new-plan-name-field">
-                <label htmlFor="new-plan-name">Plan / room name</label>
-                <input
-                  id="new-plan-name"
-                  type="text"
-                  value={name}
-                  autoFocus
-                  aria-invalid={name.trim() !== '' && !detailsReady}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && detailsReady) {
-                      e.preventDefault();
-                      setStep('room');
-                    }
-                  }}
-                />
-                <span className="field-help">Used on the drawing and as the suggested `.rv4` file name.</span>
-              </div>
-
-              <div className="field">
-                <label htmlFor="new-plan-venue">Venue</label>
-                <input id="new-plan-venue" value={venue} placeholder="Venue or building" onChange={(e) => setVenue(e.target.value)} />
-              </div>
-              <div className="field">
-                <label htmlFor="new-plan-event">Event</label>
-                <input id="new-plan-event" value={event} placeholder="Show or event name" onChange={(e) => setEvent(e.target.value)} />
-              </div>
-              <div className="field">
-                <label htmlFor="new-plan-date">Event date</label>
-                <input id="new-plan-date" value={date} placeholder="Optional" onChange={(e) => setDate(e.target.value)} />
-              </div>
-              <div className="field">
-                <label htmlFor="new-plan-contact">Client / contact</label>
-                <input id="new-plan-contact" value={contact} placeholder="Optional" onChange={(e) => setContact(e.target.value)} />
-              </div>
-
-              <div className="new-plan-details-note">
-                <strong>Saved with the plan</strong>
-                <span>This information follows the file into print setup, reports, recent shows, and title-block workflows.</span>
-              </div>
-            </div>
-          ) : (
-            <div className="new-plan-room-workspace">
+        <div className="new-plan-body is-room-builder">
+          <div className="new-plan-room-workspace">
               <div className="new-plan-room-controls">
                 <section className="new-plan-builder-section">
                   <div className="new-plan-section-title">
@@ -940,14 +895,43 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                 </div>
               </aside>
             </div>
-          )}
         </div>
 
         <div className="new-plan-foot">
-          <span className="new-plan-foot-note">{step === 'room' ? 'A Save dialog opens next.' : 'Required fields are marked by validation.'}</span>
-          <button type="button" onClick={goBack} disabled={busy}>{step === 'details' ? 'Cancel' : 'Back'}</button>
-          <button type="button" className="primary" onClick={goNext} disabled={busy || (step === 'details' ? !detailsReady : !roomReady)}>
-            {step === 'details' ? 'Continue to room' : <><IconPlus size={14} />{busy ? 'Creating…' : customRoom ? 'Create & draw…' : 'Create plan…'}</>}
+          <div className="new-plan-foot-meta">
+            {nameOpen ? (
+              <div className="field new-plan-name-inline">
+                <label htmlFor="new-plan-name">Plan name</label>
+                <input
+                  id="new-plan-name"
+                  type="text"
+                  value={name}
+                  disabled={busy}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && roomReady) {
+                      e.preventDefault();
+                      void create();
+                    }
+                  }}
+                />
+              </div>
+            ) : (
+              <button type="button" className="link-btn" disabled={busy} onClick={() => setNameOpen(true)}>
+                Rename from “{planName}”
+              </button>
+            )}
+            <span className="new-plan-foot-note">Saves to Documents/Groundplan — rename anytime with Save As.</span>
+          </div>
+          <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => void create()}
+            disabled={busy || !roomReady}
+          >
+            <IconPlus size={14} />
+            {busy ? 'Creating…' : customRoom ? 'Create & draw…' : 'Create plan'}
           </button>
         </div>
       </div>

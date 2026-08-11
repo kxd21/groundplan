@@ -33,6 +33,7 @@ import { resolveInstances, SpecLibrary, type PlacedItem } from '../format/defini
 import { dimensionRoom as dimensionRoomDrawings } from '../format/dimension.js';
 import { renderDimensions } from '../format/dimension-render.js';
 import { buildLegend, defaultLayers, titleBlockFor } from '../format/layers.js';
+import { buildNewRoom, type NewRoomSpec } from '../format/new-room.js';
 import { buildReport } from '../format/report.js';
 import {
   allCapacities,
@@ -639,6 +640,14 @@ export function createCircularRoom(session: Session, diameter: number, units: Un
   return replaceAuthoredRoom(session, room, units);
 }
 
+/** Draws advanced New Plan geometry (L/U/stadium/rounded/curves) onto the open plan. */
+export function createRoomFromSpec(session: Session, spec: NewRoomSpec, units: UnitSystem): ModelEdit {
+  const name = state.rendered?.name ?? planName(session.loaded.document) ?? 'Room';
+  const built = buildNewRoom(spec, name);
+  if (!built.ok || !built.room) return { ok: false, reason: built.reason ?? 'that room could not be built' };
+  return replaceAuthoredRoom(session, built.room, units);
+}
+
 const OUTLINE_TOLERANCE = 1;
 
 function orientation(a: Point, b: Point, c: Point): number {
@@ -741,7 +750,16 @@ function commitRoomEdit(
   if (!drawn.ok) return { ok: false, reason: drawn.reason };
   state.rendered = edited.room;
   setRoom(doc, edited.room, units);
-  return { ok: true, created: drawn.createdIds };
+  return {
+    ok: true,
+    created: drawn.createdIds,
+    note:
+      drawn.unmatched > 0
+        ? `${drawn.unmatched} wall${drawn.unmatched === 1 ? '' : 's'} from the previous room could not be found and ${
+            drawn.unmatched === 1 ? 'was' : 'were'
+          } left alone.`
+        : undefined,
+  };
 }
 
 /** Moves one outline corner and stretches its adjoining plot lines. */
@@ -831,7 +849,7 @@ export function curveRoomWall(
     curved = curveWall(room, wallIndex, 0);
   } else {
     const method = options.method ?? 'radius';
-    const direction = options.outward ? -1 : 1;
+    const direction = options.outward ? 1 : -1;
     if (method === 'radius') {
       curved = setWallRadius(room, wallIndex, direction * Math.abs(value), options.major === true);
     } else if (method === 'sagitta') {
@@ -840,9 +858,9 @@ export function curveRoomWall(
       curved = setWallAngle(room, wallIndex, direction * Math.abs(value));
     } else {
       curved = setWallArcLength(room, wallIndex, Math.abs(value));
-      if (curved.ok && curved.room && options.outward) {
+      if (curved.ok && curved.room) {
         const bulge = curved.room.walls[wallIndex]?.bulge ?? 0;
-        curved = curveWall(curved.room, wallIndex, -Math.abs(bulge));
+        curved = curveWall(curved.room, wallIndex, direction * Math.abs(bulge));
       }
     }
   }
@@ -853,7 +871,16 @@ export function curveRoomWall(
 
   state.rendered = curved.room;
   setRoom(doc, curved.room, units);
-  return { ok: true, created: drawn.createdIds };
+  return {
+    ok: true,
+    created: drawn.createdIds,
+    note:
+      drawn.unmatched > 0
+        ? `${drawn.unmatched} wall${drawn.unmatched === 1 ? '' : 's'} from the previous room could not be found and ${
+            drawn.unmatched === 1 ? 'was' : 'were'
+          } left alone.`
+        : undefined,
+  };
 }
 
 /**
@@ -873,7 +900,23 @@ export function curveRoomWallThrough(
     return { ok: false, reason: 'that curve point is not valid' };
   }
 
-  const curved = fitWallThroughPoint(room, wallIndex, through);
+  const target = room.walls[wallIndex];
+  if (!target) return { ok: false, reason: 'no such wall' };
+  // Keep canvas through-points on the minor arc unless the panel asks for major.
+  const chord = Math.hypot(target.end.x - target.start.x, target.end.y - target.start.y);
+  const mid = { x: (target.start.x + target.end.x) / 2, y: (target.start.y + target.end.y) / 2 };
+  const dx = target.end.x - target.start.x;
+  const dy = target.end.y - target.start.y;
+  const nx = chord > 0 ? dy / chord : 0;
+  const ny = chord > 0 ? -dx / chord : 0;
+  const sag = (through.x - mid.x) * nx + (through.y - mid.y) * ny;
+  const maxSag = Math.max(0, chord / 2 - 1);
+  const clamped =
+    Math.abs(sag) > maxSag && maxSag > 0
+      ? { x: mid.x + nx * Math.sign(sag) * maxSag, y: mid.y + ny * Math.sign(sag) * maxSag }
+      : through;
+
+  const curved = fitWallThroughPoint(room, wallIndex, clamped);
   if (!curved.ok || !curved.room) return { ok: false, reason: curved.reason };
 
   const drawn = applyRoom(doc, curved.room, state.rendered ?? room);
@@ -881,7 +924,16 @@ export function curveRoomWallThrough(
 
   state.rendered = curved.room;
   setRoom(doc, curved.room, units);
-  return { ok: true, created: drawn.createdIds };
+  return {
+    ok: true,
+    created: drawn.createdIds,
+    note:
+      drawn.unmatched > 0
+        ? `${drawn.unmatched} wall${drawn.unmatched === 1 ? '' : 's'} from the previous room could not be found and ${
+            drawn.unmatched === 1 ? 'was' : 'were'
+          } left alone.`
+        : undefined,
+  };
 }
 
 /** Sets one wall's length, keeping its start corner fixed. */

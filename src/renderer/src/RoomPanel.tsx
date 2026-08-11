@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
+import type { NewRoomShape, NewRoomSpec } from '../../format/new-room.js';
 import type { Doc } from './App.js';
 import {
   IconChair,
@@ -35,8 +36,8 @@ import type { WallEditSession } from './wall-edit.js';
 const api = window.groundplan;
 
 interface Props {
-  /** Room keeps outline/more; seating is promoted to its own inspector destination. */
-  mode?: 'room' | 'seating';
+  /** Room keeps outline/more; seating and refine are dedicated destinations. */
+  mode?: 'room' | 'seating' | 'refine';
   doc: Doc;
   onDoc: (doc: Doc) => void;
   onStatus: (message: string) => void;
@@ -64,6 +65,8 @@ interface Props {
   wallPickIndex?: number | null;
   /** Ribbon “Edit walls” mode — keeps One wall editing armed. */
   editWallsMode?: boolean;
+  /** Room layout workspace focus: walls vs whole-room reshape. */
+  workspaceFocus?: 'walls' | 'room';
   /** When Edit walls is on, ribbon Push/Curve/Length drives the panel action. */
   preferredWallAction?: 'push' | 'curve' | 'length';
   onPreferredWallActionChange?: (action: 'push' | 'curve' | 'length') => void;
@@ -150,6 +153,7 @@ export default function RoomPanel({
   onWallEditChange,
   wallPickIndex = null,
   editWallsMode = false,
+  workspaceFocus,
   preferredWallAction,
   onPreferredWallActionChange,
 }: Props) {
@@ -202,13 +206,49 @@ export default function RoomPanel({
   const editable = doc.editable && !busy;
 
   // ---- Room ---------------------------------------------------------------
-  const [roomShape, setRoomShape] = useState<'rectangle' | 'circle' | 'custom'>('rectangle');
+  const [roomShape, setRoomShape] = useState<NewRoomShape | 'custom'>('rectangle');
   const width = useLength(40 * 120, units);
   const depth = useLength(30 * 120, units);
+  const roomCornerRadius = useLength(4 * 120, units);
+  const roomNotchWidth = useLength(20 * 120, units);
+  const roomNotchDepth = useLength(15 * 120, units);
 
   useEffect(() => {
     if (drawingRoomOutline) setRoomShape('custom');
   }, [drawingRoomOutline]);
+
+  const roomSpecReady = (() => {
+    if (roomShape === 'custom') return false;
+    if (roomShape === 'circle') return width.positive;
+    if (roomShape === 'rounded') return width.positive && depth.positive && roomCornerRadius.positive;
+    if (roomShape === 'l-shape' || roomShape === 'u-shape') {
+      return width.positive && depth.positive && roomNotchWidth.positive && roomNotchDepth.positive;
+    }
+    return width.positive && depth.positive;
+  })();
+
+  const buildRoomSpec = (): NewRoomSpec | null => {
+    if (roomShape === 'custom' || !roomSpecReady) return null;
+    if (roomShape === 'circle') return { shape: 'circle', diameter: width.value! };
+    if (roomShape === 'rounded') {
+      return {
+        shape: 'rounded',
+        width: width.value!,
+        depth: depth.value!,
+        cornerRadius: roomCornerRadius.value!,
+      };
+    }
+    if (roomShape === 'l-shape' || roomShape === 'u-shape') {
+      return {
+        shape: roomShape,
+        width: width.value!,
+        depth: depth.value!,
+        notchWidth: roomNotchWidth.value!,
+        notchDepth: roomNotchDepth.value!,
+      };
+    }
+    return { shape: roomShape, width: width.value!, depth: depth.value! };
+  };
 
   // ---- Reshape / curve ----------------------------------------------------
   const [outlineMode, setOutlineMode] = useState<'walls' | 'reshape'>('walls');
@@ -268,6 +308,14 @@ export default function RoomPanel({
   useEffect(() => {
     setRoomPanelTab(mode === 'seating' ? 'seating' : 'outline');
   }, [mode]);
+
+  // Refine workspace arms wall editing; focus picks walls vs whole-room reshape.
+  useEffect(() => {
+    if (mode === 'refine') {
+      setOutlineMode(workspaceFocus === 'room' ? 'reshape' : 'walls');
+      setRoomPanelTab('outline');
+    }
+  }, [mode, workspaceFocus]);
 
   // Seed the size fields from the room the plan already has.
   //
@@ -347,10 +395,10 @@ export default function RoomPanel({
     if (wallPickIndex >= 0 && wallPickIndex < count) setEditCorner(wallPickIndex);
   }, [wallPickIndex, room?.wallDetails?.length]);
 
-  // Ribbon Edit walls mode keeps One wall editing armed.
+  // Ribbon Edit walls (inspector) keeps One wall armed — not the refine dock.
   useEffect(() => {
-    if (editWallsMode) setOutlineMode('walls');
-  }, [editWallsMode]);
+    if (editWallsMode && mode !== 'refine') setOutlineMode('walls');
+  }, [editWallsMode, mode]);
 
   useEffect(() => {
     if (preferredWallAction) setWallAction(preferredWallAction);
@@ -359,7 +407,10 @@ export default function RoomPanel({
   // Publish wall-edit overlay while One wall mode is active (or Edit walls is on).
   useEffect(() => {
     if (!onWallEditChange) return;
-    const armed = (mode === 'room' && outlineMode === 'walls') || editWallsMode;
+    const armed =
+      (mode === 'room' && outlineMode === 'walls') ||
+      editWallsMode ||
+      mode === 'refine';
     if (!armed || !room?.wallDetails?.length) {
       onWallEditChange(null);
       return;
@@ -644,6 +695,17 @@ export default function RoomPanel({
 
   return (
     <>
+      {mode === 'refine' && (
+        <div className="room-refine-panel-hero">
+          <strong>{workspaceFocus === 'walls' ? 'Wall editing' : 'Whole-room layout'}</strong>
+          <small>
+            {workspaceFocus === 'walls'
+              ? 'Select a wall on the plan, then push, curve, or stretch it.'
+              : 'Change overall size, add or cut space, then refine each wall on the plan.'}
+          </small>
+        </div>
+      )}
+
       {mode === 'room' && (
       <div className="seg tabs room-panel-tabs" role="tablist" aria-label="Room panel">
         {(
@@ -712,11 +774,15 @@ export default function RoomPanel({
           </div>
         )}
 
-        <div className="room-shape-picker" role="radiogroup" aria-label="Room shape">
+        <div className="room-shape-picker is-expanded" role="radiogroup" aria-label="Room shape">
           {(
             [
               ['rectangle', 'Rectangle', 'Width and depth', IconDrawRect],
+              ['rounded', 'Rounded', 'True-radius corners', IconDrawRect],
               ['circle', 'Circle', 'Exact diameter', IconDrawEllipse],
+              ['stadium', 'Stadium', 'Semicircle ends', IconDrawEllipse],
+              ['l-shape', 'L-shaped', 'One recessed corner', IconDrawPolygon],
+              ['u-shape', 'U-shaped', 'Centred recess', IconDrawPolygon],
               ['custom', 'Freeform', 'Click every corner', IconDrawPolygon],
             ] as const
           ).map(([shape, label, description, Icon]) => (
@@ -738,15 +804,25 @@ export default function RoomPanel({
           ))}
         </div>
 
-        {roomShape === 'rectangle' && (
+        {roomShape === 'circle' ? (
+          <div className="field-row room-shape-fields is-single">
+            <LengthField id="room-diameter" label="Diameter" field={width} units={units} disabled={!editable} />
+          </div>
+        ) : roomShape !== 'custom' ? (
           <div className="field-row room-shape-fields">
             <LengthField id="room-width" label="Width" field={width} units={units} disabled={!editable} />
             <LengthField id="room-depth" label="Depth" field={depth} units={units} disabled={!editable} />
           </div>
-        )}
-        {roomShape === 'circle' && (
+        ) : null}
+        {roomShape === 'rounded' && (
           <div className="field-row room-shape-fields is-single">
-            <LengthField id="room-diameter" label="Diameter" field={width} units={units} disabled={!editable} />
+            <LengthField id="room-corner-radius" label="Corner radius" field={roomCornerRadius} units={units} disabled={!editable} />
+          </div>
+        )}
+        {(roomShape === 'l-shape' || roomShape === 'u-shape') && (
+          <div className="field-row room-shape-fields">
+            <LengthField id="room-notch-width" label="Recess width" field={roomNotchWidth} units={units} disabled={!editable} />
+            <LengthField id="room-notch-depth" label="Recess depth" field={roomNotchDepth} units={units} disabled={!editable} />
           </div>
         )}
         {roomShape === 'custom' && (
@@ -778,21 +854,21 @@ export default function RoomPanel({
             <button
               onClick={() =>
                 void (async () => {
+                  const spec = buildRoomSpec();
+                  if (!spec) return;
                   const ok = await run(
-                    roomShape === 'circle' ? 'Circular room drawn' : 'Room drawn',
-                    () => roomShape === 'circle'
-                      ? api.roomCreateCircle(width.value!)
-                      : api.roomCreate(width.value!, depth.value!),
+                    room && room.source === 'companion' ? `Redraw ${roomShape}` : `Drew ${roomShape} room`,
+                    () => api.roomCreateFromSpec(spec),
                   );
                   if (ok) await onRoomAuthored?.();
                 })()
               }
-              disabled={!editable || !width.positive || (roomShape === 'rectangle' && !depth.positive)}
+              disabled={!editable || !roomSpecReady}
               title={
                 doc.editable
-                  ? roomShape === 'circle'
-                    ? 'Draw an exact circular room'
-                    : 'Draw a rectangular room'
+                  ? room
+                    ? `Redraw as ${roomShape}`
+                    : `Draw a ${roomShape} room`
                   : 'This plan is open read-only'
               }
             >
@@ -929,7 +1005,7 @@ export default function RoomPanel({
               </div>
               <p className="hint room-wall-hint">
                 Use <strong>Edit walls</strong> in the top bar, click a wall, then drag the handle.
-                Push moves it · Curve bows it · Length stretches the chord.
+                Push · Curve · Length snap to <strong>1″</strong> (Shift = fine, Alt = free). Arrow keys nudge the selected wall.
                 {selectedWallCurved && selectedWall?.radiusText
                   ? ` · Wall ${editCorner + 1} radius ${selectedWall.radiusText} · arc ${selectedWall.lengthText}`
                   : selectedWall
@@ -977,11 +1053,11 @@ export default function RoomPanel({
                   </div>
                   <SnappySlider
                     label="Move wall"
-                    values={[-10 * 120, -5 * 120, -2 * 120, 0, 2 * 120, 5 * 120, 10 * 120]}
+                    values={[-10 * 120, -5 * 120, -2 * 120, -120, -60, -10, 0, 10, 60, 120, 2 * 120, 5 * 120, 10 * 120]}
                     defaultValue={2 * 120}
                     min={-20 * 120}
                     max={20 * 120}
-                    step={10}
+                    step={1}
                     compact
                     disabled={!editable || selectedWallCurved}
                     value={wallPush.value ?? 2 * 120}

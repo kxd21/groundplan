@@ -47,6 +47,7 @@ import {
 } from '../src/format/units.js';
 import { fixturePlanBuffer } from './test-fixture.js';
 import { buildNewRoom, type NewRoomCurveMethod } from '../src/format/new-room.js';
+import { offsetWall } from '../src/format/room-edit.js';
 
 let passed = 0;
 let failed = 0;
@@ -265,6 +266,42 @@ console.log('\nnew-plan room builder\n');
     });
     check(`New Plan curves a wall by ${method}`, curved.ok && !!curved.room?.walls[0].bulge, curved.reason);
   }
+
+  const outwardArea = buildNewRoom({
+    shape: 'rectangle',
+    width,
+    depth,
+    curve: { wallIndex: 0, method: 'arc-length', value: 70 * UNITS_PER_FOOT, outward: true },
+  });
+  const inwardArea = buildNewRoom({
+    shape: 'rectangle',
+    width,
+    depth,
+    curve: { wallIndex: 0, method: 'arc-length', value: 70 * UNITS_PER_FOOT, outward: false },
+  });
+  const flatArea = roomArea(rectangularRoom(width, depth));
+  check(
+    'New Plan arc-length outward grows the floor',
+    outwardArea.ok && roomArea(outwardArea.room!) > flatArea,
+  );
+  check(
+    'New Plan arc-length inward shrinks the floor',
+    inwardArea.ok && roomArea(inwardArea.room!) < flatArea && (inwardArea.room!.walls[0].bulge ?? 0) < 0,
+    `bulge=${inwardArea.room?.walls[0].bulge} area=${inwardArea.ok ? roomArea(inwardArea.room!) : 'n/a'}`,
+  );
+
+  const cw = roomFromPolygon([
+    { x: 0, y: 0 },
+    { x: 0, y: 30 * UNITS_PER_FOOT },
+    { x: 40 * UNITS_PER_FOOT, y: 30 * UNITS_PER_FOOT },
+    { x: 40 * UNITS_PER_FOOT, y: 0 },
+  ]);
+  const pushed = offsetWall(cw, 0, 2 * UNITS_PER_FOOT);
+  check(
+    'a clockwise-traced room still pushes outward',
+    pushed.ok && roomArea(pushed.room!) > roomArea(cw),
+    pushed.reason,
+  );
 }
 
 // ---------------------------------------------------------------------------

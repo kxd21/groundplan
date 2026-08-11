@@ -228,5 +228,47 @@ const FIXTURE = fixturePlanBuffer();
   check('every drawn point is on the true circle', offCurve < 1e-6, `${offCurve}`);
 }
 
+{
+  // Regression: an outward (negative-bulge) bay must not walk backward past the
+  // start corner. That bug drew the triangular spur when dragging a curve out.
+  const start = { x: -9476.84376918993, y: 1302.9954624852753 };
+  const end = { x: -1937.8567412322964, y: 353.7230055787046 };
+  const bulge = -0.3911290107505649;
+  const segment = wall(start, end, bulge);
+  const curved = { ...segment, start, end, bulge };
+  const flat = flattenWall(curved, 0.1);
+  const chord = Math.hypot(end.x - start.x, end.y - start.y);
+  const chordDir = { x: (end.x - start.x) / chord, y: (end.y - start.y) / chord };
+  const ts = flat.map((p) => (p.x - start.x) * chordDir.x + (p.y - start.y) * chordDir.y);
+  const arc = arcOf(curved)!;
+  const endAngle = Math.atan2(end.y - arc.centre.y, end.x - arc.centre.x);
+  const angleErr = Math.abs(
+    ((((arc.startAngle + arc.sweep - endAngle) % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI)) - Math.PI,
+  );
+  check('an inward bay does not spur past its start corner', Math.min(...ts) >= -1e-6, `${Math.min(...ts)}`);
+  check('and its sweep lands on the end point', angleErr < 1e-9, `${angleErr}`);
+
+  const rect = rectangularRoom(40 * F, 30 * F);
+  const top = rect.walls[0]!;
+  const topChord = Math.hypot(top.end.x - top.start.x, top.end.y - top.start.y);
+  const topMid = { x: (top.start.x + top.end.x) / 2, y: (top.start.y + top.end.y) / 2 };
+  const topOut = {
+    x: (top.end.y - top.start.y) / topChord,
+    y: -(top.end.x - top.start.x) / topChord,
+  };
+  const through = { x: topMid.x + topOut.x * 12 * F, y: topMid.y + topOut.y * 12 * F };
+  const bay = fitWallThroughPoint(rect, 0, through);
+  check('dragging a bay outward succeeds', bay.ok, bay.reason);
+  if (bay.ok && bay.room) {
+    const pts = flattenWall(bay.room.walls[0]!, 0.1);
+    const w0 = bay.room.walls[0]!;
+    const c = Math.hypot(w0.end.x - w0.start.x, w0.end.y - w0.start.y);
+    const dir = { x: (w0.end.x - w0.start.x) / c, y: (w0.end.y - w0.start.y) / c };
+    const along = pts.map((p) => (p.x - w0.start.x) * dir.x + (p.y - w0.start.y) * dir.y);
+    check('an outward bay has no start-corner spur', Math.min(...along) >= -1e-6, `${Math.min(...along)}`);
+    check('and keeps a positive (outward) bulge', (w0.bulge ?? 0) > 0, `${w0.bulge}`);
+  }
+}
+
 console.log(`\n${passed}/${passed + failed} checks passed`);
 if (failed) process.exit(1);

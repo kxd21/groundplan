@@ -25,6 +25,7 @@ interface InventoryItem {
   hasPhoto?: boolean;
   timesSeen: number;
   peakQuantity: number;
+  quantityOwned?: number | null;
   notes?: string;
   addedAt: string;
 }
@@ -318,8 +319,8 @@ export function InventoryView({
         {harvestStatus}
         <h1>Your equipment inventory is empty</h1>
         <p>
-          Import the gear lists your rental system prints and every item on them joins the inventory. It builds up
-          across jobs, so the next plan can be drawn from your real inventory.
+          Import gear lists, CSV, Spotlight inventory XML, or shape libraries and every item joins the inventory. It
+          builds up across jobs, so the next plan can be drawn from your real inventory.
         </p>
         <div className="placeholder-actions">
           <button
@@ -332,7 +333,15 @@ export function InventoryView({
                 return;
               }
               onChanged();
-              onStatus(`Added ${reply.added} items from ${reply.files} file${reply.files === 1 ? '' : 's'}`);
+              const from =
+                reply.inventoryName != null
+                  ? ` from ${reply.inventoryName}`
+                  : reply.inventoryNames && reply.inventoryNames.length > 1
+                    ? ` from ${reply.inventoryNames.length} inventories`
+                    : '';
+              onStatus(
+                `Added ${reply.added} items from ${reply.files} file${reply.files === 1 ? '' : 's'}${from}`,
+              );
             }}
           >
             <IconExport size={14} />
@@ -389,8 +398,15 @@ export function InventoryView({
               return;
             }
             onChanged();
-            onStatus(`Added ${reply.added} new, updated ${reply.updated}`);
+            const from =
+              reply.inventoryName != null
+                ? ` · ${reply.inventoryName}`
+                : reply.inventoryNames && reply.inventoryNames.length > 1
+                  ? ` · ${reply.inventoryNames.length} Spotlight inventories`
+                  : '';
+            onStatus(`Added ${reply.added} new, updated ${reply.updated}${from}`);
           }}
+          title="Import gear lists, CSV, Spotlight inventory XML, or shape libraries"
         >
           <IconExport size={13} />
           Upload…

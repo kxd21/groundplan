@@ -28,6 +28,7 @@ export interface EditableInventoryItem {
   notes?: string;
   timesSeen: number;
   peakQuantity: number;
+  quantityOwned?: number | null;
   addedAt: string;
 }
 
@@ -110,6 +111,9 @@ export default function InventoryItemEditor({
   const [wDraft, setWDraft] = useState(item.width ? formatLength(item.width, units) : '');
   const [hDraft, setHDraft] = useState(item.height ? formatLength(item.height, units) : '');
   const [notes, setNotes] = useState(item.notes ?? '');
+  const [ownedDraft, setOwnedDraft] = useState(
+    item.quantityOwned != null && Number.isFinite(item.quantityOwned) ? String(item.quantityOwned) : '',
+  );
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(item.photoDataUrl ?? null);
   const [tracedIcon, setTracedIcon] = useState(item.tracedIcon ?? null);
   const [clearPhoto, setClearPhoto] = useState(false);
@@ -182,6 +186,7 @@ export default function InventoryItemEditor({
         {
           threshold,
           invert,
+          useAlpha: true,
           simplify: smoothing,
           targetWidth: width ?? undefined,
           targetDepth: depth ?? undefined,
@@ -259,6 +264,17 @@ export default function InventoryItemEditor({
     if (width != null && height != null && width > 0 && height > 0) {
       patch.width = width;
       patch.height = height;
+    }
+    const ownedTrim = ownedDraft.trim();
+    if (!ownedTrim) {
+      if (item.quantityOwned != null) patch.quantityOwned = null;
+    } else {
+      const owned = Number(ownedTrim);
+      if (!Number.isFinite(owned) || owned < 0 || !Number.isInteger(owned)) {
+        onError('Owned quantity must be a whole non-negative number');
+        return;
+      }
+      patch.quantityOwned = owned;
     }
     if (clearTrace) patch.tracedIcon = null;
     else if (
@@ -362,6 +378,19 @@ export default function InventoryItemEditor({
               />
             </div>
             <span className="field-help">{sizeHint(units)}</span>
+          </div>
+
+          <div className="field">
+            <label htmlFor="item-edit-owned">Owned</label>
+            <input
+              id="item-edit-owned"
+              className="num"
+              inputMode="numeric"
+              value={ownedDraft}
+              placeholder="On-hand stock"
+              onChange={(e) => setOwnedDraft(e.target.value)}
+            />
+            <span className="field-help">Company stock on hand (from Spotlight inventory or CSV)</span>
           </div>
 
           <div className="field">

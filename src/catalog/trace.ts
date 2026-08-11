@@ -72,6 +72,47 @@ const EMPTY: TraceResult = {
   coverage: 0,
 };
 
+/**
+ * Picks a threshold from the image luma histogram (Otsu).
+ * Better starting point than a fixed 128 for photos and line art.
+ */
+export function estimateThreshold(image: RasterImage): number {
+  if (!image.width || !image.height) return 128;
+  const hist = new Float64Array(256);
+  let total = 0;
+  const { data } = image;
+  for (let p = 0; p + 3 < data.length; p += 4) {
+    if (data[p + 3] < 128) continue;
+    const luma = Math.round(0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2]);
+    hist[Math.max(0, Math.min(255, luma))] += 1;
+    total += 1;
+  }
+  if (total < 16) return 128;
+
+  let sumAll = 0;
+  for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+
+  let sumBg = 0;
+  let weightBg = 0;
+  let best = 128;
+  let bestVar = -1;
+  for (let t = 0; t < 256; t++) {
+    weightBg += hist[t];
+    if (weightBg === 0) continue;
+    const weightFg = total - weightBg;
+    if (weightFg === 0) break;
+    sumBg += t * hist[t];
+    const meanBg = sumBg / weightBg;
+    const meanFg = (sumAll - sumBg) / weightFg;
+    const between = weightBg * weightFg * (meanBg - meanFg) ** 2;
+    if (between > bestVar) {
+      bestVar = between;
+      best = t;
+    }
+  }
+  return Math.max(20, Math.min(240, best));
+}
+
 /** Builds the ink mask. */
 function mask(image: RasterImage, options: TraceOptions): Uint8Array {
   const { width, height, data } = image;

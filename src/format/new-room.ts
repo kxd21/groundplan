@@ -31,7 +31,7 @@ export interface NewRoomCurveSpec {
   method: NewRoomCurveMethod;
   /** Logical units, except angle which is stated in degrees. */
   value: number;
-  /** The same convention used by the Room panel: negative bows out. */
+  /** Same as the Room panel: true = bay / bulge out of the room. */
   outward?: boolean;
   /** Radius only: use the longer of the two arcs that join the endpoints. */
   major?: boolean;
@@ -161,7 +161,7 @@ function curveRoom(room: RoomModel, spec: NewRoomCurveSpec): RoomEditResult {
     return { ok: false, reason: 'Enter a positive curve measurement.' };
   }
 
-  const direction = spec.outward ? -1 : 1;
+  const direction = spec.outward ? 1 : -1;
   if (spec.method === 'radius') {
     return setWallRadius(room, spec.wallIndex, direction * spec.value, spec.major === true);
   }
@@ -173,9 +173,10 @@ function curveRoom(room: RoomModel, spec: NewRoomCurveSpec): RoomEditResult {
   }
 
   const edited = setWallArcLength(room, spec.wallIndex, spec.value);
-  if (!edited.ok || !edited.room || !spec.outward) return edited;
+  if (!edited.ok || !edited.room) return edited;
   const bulge = edited.room.walls[spec.wallIndex]?.bulge ?? 0;
-  return curveWall(edited.room, spec.wallIndex, -Math.abs(bulge));
+  // setWallArcLength always yields a positive bulge; flip for inward bays.
+  return curveWall(edited.room, spec.wallIndex, direction * Math.abs(bulge));
 }
 
 /** Build and validate the exact room that New Plan will write. */

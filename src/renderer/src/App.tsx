@@ -8,6 +8,7 @@ import {
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import { formatLength, parseLength } from '../../format/units.js';
 import { PlanCanvas } from './PlanCanvas.js';
@@ -100,13 +101,17 @@ import ShapeEditorWizard from './ShapeEditorWizard.js';
 import BuildStageDialog from './BuildStageDialog.js';
 import PointEditor, { type EditablePointPath } from './PointEditor.js';
 import SpaceCalculator from './SpaceCalculator.js';
+import RoomRefineWorkspace from './RoomRefineWorkspace.js';
+import WallEditHud from './WallEditHud.js';
+import WallEditToolbar from './WallEditToolbar.js';
+import CreateDialog from './CreateDialog.js';
+import InventoryItemEditor, { type EditableInventoryItem } from './InventoryItemEditor.js';
 import BackgroundLayerPanel from './BackgroundLayerPanel.js';
 import BackgroundImageDialog from './BackgroundImageDialog.js';
 import PlanFolderWorkspace from './PlanFolderWorkspace.js';
 import WelcomeHome from './WelcomeHome.js';
-import TextToolPanel from './TextToolPanel.js';
 import { flattenInsertLeaves, matchInsertItem, type InsertGroupId } from '../../inventory/insert-catalog.js';
-import ShowSetupPanel, { type PlanIdentityFields } from './ShowSetupPanel.js';
+import { type PlanIdentityFields } from './ShowSetupPanel.js';
 import NewPlanDialog from './NewPlanDialog.js';
 import OpenPlanChooser from './OpenPlanChooser.js';
 import { SnappySlider } from './SnappySlider.js';
@@ -318,8 +323,9 @@ interface PlanTab {
   editable: boolean;
 }
 
-/** One foot in logical units — the arrow-key nudge and duplicate offset. */
+/** One foot in logical units — duplicate offset and coarse layout. */
 const FOOT = 120;
+const UNITS_PER_INCH = 10;
 
 /** Same steps as Settings → Drawing → Snap. Values are logical units (0.1"). */
 const SNAP_STEPS = [
@@ -381,6 +387,8 @@ export function App() {
   const [openPlanChooserOpen, setOpenPlanChooserOpen] = useState(false);
   const [startNewRoomOutline, setStartNewRoomOutline] = useState(false);
   const [customRoomPrefs, setCustomRoomPrefs] = useState<CustomRoomPrefs | null>(null);
+  /** Sticky custom-draw recovery until the outline exists or the empty plan is discarded. */
+  const [awaitingRoomOutline, setAwaitingRoomOutline] = useState(false);
   /**
    * New Plan → Custom writes an empty file first, then the user traces walls.
    * Kept in a ref so cancelling/re-arming the outline tool cannot drop the
@@ -503,8 +511,8 @@ export function App() {
   const [objectSnap, setObjectSnap] = useState(true);
   const [autoFitOnOpen, setAutoFitOnOpen] = useState(true);
   const [openPropertiesOnSelect, setOpenPropertiesOnSelect] = useState(true);
-  const [nudgeStep, setNudgeStep] = useState(FOOT);
-  const [fineNudgeStep, setFineNudgeStep] = useState(10);
+  const [nudgeStep, setNudgeStep] = useState(UNITS_PER_INCH);
+  const [fineNudgeStep, setFineNudgeStep] = useState(1);
   const [bulkDeleteWarning, setBulkDeleteWarning] = useState(25);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -519,6 +527,36 @@ export function App() {
   const [buildStageOpen, setBuildStageOpen] = useState(false);
   const [seatingOpen, setSeatingOpen] = useState(false);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
+  const [refineRoomOpen, setRefineRoomOpen] = useState(false);
+  const [roomWorkspaceFocus, setRoomWorkspaceFocus] = useState<'walls' | 'room'>('room');
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [layoutKits, setLayoutKits] = useState<
+    Array<{
+      id: string;
+      name: string;
+      source: 'bundled' | 'user';
+      chairs: number;
+      banks: number;
+      gear: number;
+      event?: string;
+      venue?: string;
+    }>
+  >([]);
+  const [kitsBusy, setKitsBusy] = useState(false);
+  const [bankPresets, setBankPresets] = useState<
+    Array<{
+      id: string;
+      name: string;
+      savedAt: string;
+      block: Record<string, unknown>;
+    }>
+  >([]);
+  const [newItemEditor, setNewItemEditor] = useState<EditableInventoryItem | null>(null);
+  const [newItemProvisional, setNewItemProvisional] = useState(false);
+  const [createMenuPos, setCreateMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const createMenuRef = useRef<HTMLDivElement | null>(null);
+  const createMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [backgroundOpen, setBackgroundOpen] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [setupCompleted, setSetupCompleted] = useState({
@@ -532,6 +570,21 @@ export function App() {
   const [dimAngleDraft, setDimAngleDraft] = useState('');
   const [dimScaleDraft, setDimScaleDraft] = useState('');
   const [armedInventoryId, setArmedInventoryId] = useState<string | null>(null);
+  const [recentInventory, setRecentInventory] = useState<Array<{ id: string; name: string }>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('groundplan:recent-inventory') ?? '[]');
+      return Array.isArray(saved)
+        ? saved
+            .filter(
+              (row): row is { id: string; name: string } =>
+                !!row && typeof row.id === 'string' && typeof row.name === 'string',
+            )
+            .slice(0, 8)
+        : [];
+    } catch {
+      return [];
+    }
+  });
   const [rotationDraft, setRotationDraft] = useState('15');
   const [arrayCountDraft, setArrayCountDraft] = useState('7');
   const [arrayDirection, setArrayDirection] = useState<'right' | 'left' | 'down' | 'up'>('right');
@@ -544,7 +597,6 @@ export function App() {
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('layers');
   const [wallEdit, setWallEdit] = useState<import('./wall-edit.js').WallEditSession | null>(null);
   const [wallPickIndex, setWallPickIndex] = useState<number | null>(null);
-  const [editWallsMode, setEditWallsMode] = useState(false);
   const [wallEditGesture, setWallEditGesture] = useState<'push' | 'curve' | 'length'>('push');
   const [layerQuery, setLayerQuery] = useState('');
   const [openLayerGroups, setOpenLayerGroups] = useState<Set<LayerGroupId>>(() => {
@@ -588,7 +640,7 @@ export function App() {
   const annotationInputRef = useRef<HTMLTextAreaElement | null>(null);
   const inspectorRef = useRef<HTMLElement | null>(null);
   /** Snap step in logical units; 0 is off. Object alignment always applies. */
-  const [snapStep, setSnapStep] = useState(FOOT);
+  const [snapStep, setSnapStep] = useState(UNITS_PER_INCH);
   /** Last non-zero snap, so the magnet toggle can restore Off ↔ step. */
   const lastSnapStepRef = useRef(FOOT);
   const [printOpen, setPrintOpen] = useState(false);
@@ -631,6 +683,10 @@ export function App() {
   const [seatCount, setSeatCount] = useState(10);
   const [seatRows, setSeatRows] = useState(6);
   const [seatPerRow, setSeatPerRow] = useState(10);
+  const [seatAngle, setSeatAngle] = useState(0);
+  const [seatSpacingFt, setSeatSpacingFt] = useState(2);
+  const [seatRowSpacingFt, setSeatRowSpacingFt] = useState(3);
+  const [seatRowLengths, setSeatRowLengths] = useState('');
   const [gear, setGear] = useState<{
     path?: string;
     dirty: boolean;
@@ -650,12 +706,76 @@ export function App() {
       )?.text ?? '');
 
   useEffect(() => {
+    // Room layout mode forces a transient collapse — don't persist that.
+    if (refineRoomOpen) return;
     localStorage.setItem('groundplan:rail-open', String(railOpen));
-  }, [railOpen]);
+  }, [railOpen, refineRoomOpen]);
 
   useEffect(() => {
+    if (refineRoomOpen) return;
     localStorage.setItem('groundplan:inspector-open', String(inspectorOpen));
-  }, [inspectorOpen]);
+  }, [inspectorOpen, refineRoomOpen]);
+
+  const layoutBeforeRefineRef = useRef<{ rail: boolean; inspector: boolean } | null>(null);
+
+  const beginRoomWorkspaceLayout = () => {
+    if (!layoutBeforeRefineRef.current) {
+      layoutBeforeRefineRef.current = { rail: railOpen, inspector: inspectorOpen };
+    }
+    setRailOpen(false);
+    setInspectorOpen(false);
+  };
+
+  const restoreRoomWorkspaceLayout = () => {
+    const prev = layoutBeforeRefineRef.current;
+    if (prev) {
+      setRailOpen(prev.rail);
+      setInspectorOpen(prev.inspector);
+      layoutBeforeRefineRef.current = null;
+    }
+  };
+
+  const closeRoomWorkspace = () => {
+    setRefineRoomOpen(false);
+    setWallPickIndex(null);
+    restoreRoomWorkspaceLayout();
+  };
+
+  useEffect(() => {
+    if (!createMenuOpen) {
+      setCreateMenuPos(null);
+      return;
+    }
+    const place = () => {
+      const button = createMenuButtonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      if (rect.width <= 0 && rect.height <= 0) return;
+      setCreateMenuPos({
+        top: Math.round(rect.bottom + 6),
+        left: Math.max(8, Math.round(rect.left)),
+      });
+    };
+    place();
+    const onPointerDown = (event: PointerEvent) => {
+      const root = createMenuRef.current;
+      const button = createMenuButtonRef.current;
+      const target = event.target as Node;
+      if (root?.contains(target) || button?.contains(target)) return;
+      setCreateMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCreateMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [createMenuOpen]);
 
   useEffect(() => {
     localStorage.setItem('groundplan:appearance', appearance);
@@ -681,6 +801,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('groundplan:tool-dock-open', String(toolDockOpen));
   }, [toolDockOpen]);
+
+  useEffect(() => {
+    localStorage.setItem('groundplan:recent-inventory', JSON.stringify(recentInventory));
+  }, [recentInventory]);
 
   useEffect(() => {
     localStorage.setItem('groundplan:tool-dock-compact', String(toolDockCompact));
@@ -859,6 +983,8 @@ export function App() {
     setTextEditingId(null);
     setTextEditingOriginal(null);
     saveNewRoomOutlineRef.current = false;
+    setAwaitingRoomOutline(false);
+    setCustomRoomPrefs(null);
     setSetupCompleted({
       stage: false,
       insert: false,
@@ -1132,6 +1258,130 @@ export function App() {
     }, duration);
   }, []);
 
+  const toggleCreatePanel = useCallback(() => {
+    setCreateDialogOpen((open) => {
+      const next = !open;
+      if (next) {
+        setRefineRoomOpen(false);
+        setWallPickIndex(null);
+        setSeatingOpen(false);
+        setCalculatorOpen(false);
+        setInspectorOpen(false);
+        setCreateMenuOpen(false);
+        showStatus('Create · show setup, text, and quick seating', 3500);
+      }
+      return next;
+    });
+  }, [showStatus]);
+
+  const openCreateDialog = useCallback(() => {
+    setRefineRoomOpen(false);
+    setWallPickIndex(null);
+    setSeatingOpen(false);
+    setCalculatorOpen(false);
+    setInspectorOpen(false);
+    setCreateMenuOpen(false);
+    setCreateDialogOpen(true);
+    void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
+    void api.listBankPresets().then(setBankPresets).catch(() => undefined);
+  }, []);
+
+  const refreshLayoutKits = useCallback(() => {
+    void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
+  }, []);
+
+  const openNewShapeDialog = useCallback(() => {
+    setCreateMenuOpen(false);
+    setCreateDialogOpen(false);
+    setShapeWizardOpen(true);
+  }, []);
+
+  const openNewItemDialog = useCallback(async () => {
+    setCreateMenuOpen(false);
+    setCreateDialogOpen(false);
+    try {
+      const taken = new Set((inventory?.items ?? []).map((item) => item.name.trim().toLowerCase()));
+      let name = 'New item';
+      let suffix = 2;
+      while (taken.has(name.toLowerCase())) {
+        name = `New item ${suffix++}`;
+      }
+      const reply = await api.inventoryAdd(name);
+      if (!reply.ok || !reply.id) {
+        notify(reply.reason ?? 'That item could not be created');
+        return;
+      }
+      inventoryChanged();
+      setNewItemProvisional(true);
+      setNewItemEditor({
+        id: reply.id,
+        name,
+        sizeSource: 'unknown',
+        timesSeen: 0,
+        peakQuantity: 0,
+        addedAt: new Date().toISOString(),
+      });
+      showStatus('New item — set the name, size, and icon', 4000);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err));
+    }
+  }, [inventory, inventoryChanged, notify, showStatus]);
+
+  const closeNewItemEditor = useCallback(
+    async (saved: boolean) => {
+      const pending = newItemEditor;
+      const provisional = newItemProvisional;
+      setNewItemEditor(null);
+      setNewItemProvisional(false);
+      if (!saved && provisional && pending?.id) {
+        try {
+          await api.inventoryRemove(pending.id);
+          inventoryChanged();
+          showStatus('New item cancelled', 2500);
+        } catch {
+          inventoryChanged();
+        }
+      }
+    },
+    [inventoryChanged, newItemEditor, newItemProvisional, showStatus],
+  );
+
+  const toggleEditWalls = useCallback(() => {
+    if (!doc?.editable || !doc?.hasRoom) {
+      notify(
+        doc?.editable
+          ? 'Open a plan with a room to edit walls'
+          : 'Open an editable plan to edit walls',
+      );
+      return;
+    }
+    if (refineRoomOpen && roomWorkspaceFocus === 'walls') {
+      closeRoomWorkspace();
+      showStatus('Room layout workspace closed');
+      return;
+    }
+    beginRoomWorkspaceLayout();
+    setRoomWorkspaceFocus('walls');
+    setRefineRoomOpen(true);
+    setSeatingOpen(false);
+    setCalculatorOpen(false);
+    setSelectedIds([]);
+    // Create lives in the top toolbar now — leave the side inspector closed.
+    setInspectorOpen(false);
+    const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
+    if (refusal) notify(refusal);
+    showStatus('Edit walls · click a wall, then Push / Curve / Length on the plan', 4500);
+    setFitToken((t) => t + 1);
+  }, [
+    doc?.editable,
+    doc?.hasRoom,
+    refineRoomOpen,
+    roomWorkspaceFocus,
+    notify,
+    showStatus,
+    dispatchTool,
+  ]);
+
   const savePlanIdentity = useCallback(
     async (next: PlanIdentityFields) => {
       if (!doc?.editable) return;
@@ -1181,6 +1431,7 @@ export function App() {
     setInspectorTab('room');
     setSelectedIds([]);
     saveNewRoomOutlineRef.current = true;
+    setAwaitingRoomOutline(true);
     const { refusal } = dispatchTool({ type: 'pick', choice: roomOutlineChoice });
     if (refusal) {
       notify(refusal);
@@ -1202,6 +1453,10 @@ export function App() {
     showStatus,
     startNewRoomOutline,
   ]);
+
+  useEffect(() => {
+    if (doc?.hasRoom) setAwaitingRoomOutline(false);
+  }, [doc?.hasRoom]);
 
   const acceptPlanFolderState = useCallback(
     (state: PlanFolderState | undefined) => {
@@ -1415,8 +1670,8 @@ export function App() {
           }
         }
         setCustomRoomPrefs(null);
-        setInspectorOpen(true);
-        setInspectorTab('create');
+        setAwaitingRoomOutline(false);
+        openCreateDialog();
       }
       if (result.ok && result.doc) {
         setDoc(result.doc as Doc);
@@ -1427,9 +1682,15 @@ export function App() {
         }
         if (result.status) {
           const keepPlacing =
-            effect.do === 'placeInventory' || effect.do === 'placeGear' || effect.do === 'placeLabel';
+            effect.do === 'placeInventory' ||
+            effect.do === 'placeGear' ||
+            effect.do === 'placeLabel' ||
+            effect.do === 'placeSeating';
           if (effect.do === 'placeInventory' || effect.do === 'placeGear') {
             setSetupCompleted((current) => ({ ...current, insert: true }));
+          }
+          if (effect.do === 'placeSeating') {
+            setSetupCompleted((current) => ({ ...current, seating: true }));
           }
           showStatus(
             keepPlacing ? `${result.status} · click again or Done placing` : result.status,
@@ -1440,13 +1701,72 @@ export function App() {
       }
       dispatchTool({ type: 'settled', epoch: effect.epoch, ok: result.ok });
     },
-    [dispatchTool, notify, persistNewRoomOutlineIfNeeded, showStatus, customRoomPrefs],
+    [dispatchTool, notify, openCreateDialog, persistNewRoomOutlineIfNeeded, showStatus, customRoomPrefs],
   );
 
   const finishRoomOutline = useCallback(() => {
     const { effect, refusal } = dispatchTool({ type: 'finish' });
     void applyToolEffect(effect, refusal);
   }, [applyToolEffect, dispatchTool]);
+
+  const openRoomPanel = useCallback(() => {
+    setCreateDialogOpen(false);
+    setSeatingOpen(false);
+    setRefineRoomOpen(false);
+    setInspectorOpen(true);
+    setInspectorTab('room');
+  }, []);
+
+  const finishPendingRoomAsRectangle = useCallback(async () => {
+    if (!doc?.editable) return;
+    const prefs = customRoomPrefs;
+    const width = prefs?.guideWidth ?? 60 * 120;
+    const depth = prefs?.guideDepth ?? 40 * 120;
+    if (toolRef.current.tool.kind === 'path') {
+      dispatchTool({ type: 'pick', choice: SELECT });
+    }
+    try {
+      const reply = await api.roomCreate(width, depth);
+      if (!reply.ok) {
+        notify(reply.reason ?? 'Could not finish as a rectangle');
+        return;
+      }
+      if (reply.doc) setDoc(reply.doc as Doc);
+      saveNewRoomOutlineRef.current = false;
+      setAwaitingRoomOutline(false);
+      setCustomRoomPrefs(null);
+      if (prefs?.autoDimensions) {
+        try {
+          const dimmed = await api.roomDimension();
+          if (dimmed.ok && dimmed.doc) setDoc(dimmed.doc as Doc);
+        } catch {
+          /* optional */
+        }
+      }
+      openCreateDialog();
+      showStatus('Room ready — finished as a rectangle · next: build stage', 5200);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error));
+    }
+  }, [customRoomPrefs, dispatchTool, doc?.editable, notify, openCreateDialog, showStatus, toolRef]);
+
+  const discardEmptyPlan = useCallback(async () => {
+    const reply = await api.discardEmptyPlan();
+    if (reply.cancelled) return;
+    if (!reply.ok) {
+      notify(reply.reason ?? 'Could not discard the empty plan');
+      return;
+    }
+    saveNewRoomOutlineRef.current = false;
+    setAwaitingRoomOutline(false);
+    setCustomRoomPrefs(null);
+    setDoc(null);
+    setActivePlanPath(null);
+    setPlanTabs([]);
+    setCreateDialogOpen(false);
+    showStatus('Empty plan discarded', 3200);
+    refreshRecent();
+  }, [notify, refreshRecent, showStatus]);
 
   const cancelPlacement = useCallback(() => {
     const wasPath = toolRef.current.tool.kind === 'path';
@@ -1456,14 +1776,14 @@ export function App() {
     setArmedInventoryId(null);
     dispatchTool({ type: 'pick', choice: SELECT });
     if (abandonedNewOutline) {
-      setInspectorOpen(true);
-      setInspectorTab('create');
+      setAwaitingRoomOutline(true);
+      openCreateDialog();
       showStatus(
-        'Room outline cancelled — plan file is on disk empty until you Draw outline on Create or Room',
+        'Outline cancelled — draw corners, finish as rectangle, or discard this empty plan',
         6400,
       );
     }
-  }, [dispatchTool, showStatus, toolRef]);
+  }, [dispatchTool, openCreateDialog, showStatus, toolRef]);
 
   /** Leave stamp mode and open Properties so rotate / repeat are one click away. */
   const finishPlacement = useCallback(() => {
@@ -1554,14 +1874,19 @@ export function App() {
         return;
       }
       setView('plan');
-      showStatus(`Click the plan to place ${description} · Done placing when finished`);
+      showStatus(`Click the plan to place ${description} · stays armed until Done placing`);
     },
     [dispatchTool, notify, showStatus],
   );
 
+  const rememberRecentInventory = useCallback((id: string, name: string) => {
+    setRecentInventory((prev) => [{ id, name }, ...prev.filter((row) => row.id !== id)].slice(0, 8));
+  }, []);
+
   const armInventory = useCallback(
     (id: string, name: string) => {
       setArmedInventoryId(id);
+      rememberRecentInventory(id, name);
       const { refusal } = dispatchTool({
         type: 'pick',
         choice: { kind: 'stamp', stamp: { what: 'inventory', id, name } },
@@ -1571,9 +1896,9 @@ export function App() {
         return;
       }
       setView('plan');
-      showStatus(`Click the plan to place ${name} · Done placing when finished`);
+      showStatus(`Click the plan to place ${name} · stays armed until Done placing`);
     },
-    [dispatchTool, notify, showStatus],
+    [dispatchTool, notify, rememberRecentInventory, showStatus],
   );
 
   const inventoryRows = useMemo(
@@ -1653,15 +1978,23 @@ export function App() {
       return;
     }
     if (!annotationDraft.trim()) setAnnotationDraft(text);
-    setInspectorOpen(true);
-    setInspectorTab('create');
+    openCreateDialog();
     showStatus('Text tool armed — edit the label, then click the plan to place it');
     window.setTimeout(() => {
       const input = annotationInputRef.current;
       input?.focus();
       if (!annotationDraft.trim()) input?.select();
     }, 0);
-  }, [annotationColor, annotationDraft, dispatchTool, doc?.editable, notify, showStatus, toolRef]);
+  }, [
+    annotationColor,
+    annotationDraft,
+    dispatchTool,
+    doc?.editable,
+    notify,
+    openCreateDialog,
+    showStatus,
+    toolRef,
+  ]);
 
   const editAnnotationDraft = useCallback(
     (next: string) => {
@@ -2008,8 +2341,11 @@ export function App() {
         created?: number[];
       };
       if (reply.ok && reply.doc) {
-        dispatchTool({ type: 'pick', choice: SELECT });
-        setArmedInventoryId(null);
+        const name =
+          inventoryRows.find((row) => row.id === id)?.name ??
+          recentInventory.find((row) => row.id === id)?.name ??
+          'item';
+        rememberRecentInventory(id, name);
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
           setSelectedIds(reply.created);
@@ -2018,12 +2354,18 @@ export function App() {
         setInspectorOpen(true);
         setInspectorTab('properties');
         setSetupCompleted((current) => ({ ...current, insert: true }));
-        showStatus(`${placeMethodStatus(reply.method)} · ready to edit or Repeat`);
+        // Keep the same SKU armed so drag and click share one keep-placing flow.
+        setArmedInventoryId(id);
+        dispatchTool({
+          type: 'pick',
+          choice: { kind: 'stamp', stamp: { what: 'inventory', id, name } },
+        });
+        showStatus(`${placeMethodStatus(reply.method)} · still armed — click or drag again`);
       } else {
         notify(reply.reason ?? 'Could not place that item');
       }
     },
-    [dispatchTool, doc, notify, showStatus],
+    [dispatchTool, doc, inventoryRows, notify, recentInventory, rememberRecentInventory, showStatus],
   );
 
   /** Places one gear-list line at the drop point without arming repeat placement. */
@@ -2041,8 +2383,6 @@ export function App() {
         created?: number[];
       };
       if (reply.ok && reply.doc) {
-        dispatchTool({ type: 'pick', choice: SELECT });
-        setArmedInventoryId(null);
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
           setSelectedIds(reply.created);
@@ -2051,7 +2391,11 @@ export function App() {
         setInspectorOpen(true);
         setInspectorTab('properties');
         setSetupCompleted((current) => ({ ...current, insert: true }));
-        showStatus(`${placeMethodStatus(reply.method, description)} · ready to edit or Repeat`);
+        dispatchTool({
+          type: 'pick',
+          choice: { kind: 'stamp', stamp: { what: 'gear', description } },
+        });
+        showStatus(`${placeMethodStatus(reply.method, description)} · still armed — click or drag again`);
       } else {
         notify(reply.reason ?? `Could not place ${description}`);
       }
@@ -2479,6 +2823,7 @@ export function App() {
       } else if (command === 'menu:insert-leaf' && arg) armInsertLeaf(arg);
       else if (command === 'menu:shape-wizard') setShapeWizardOpen(true);
       else if (command === 'menu:build-stage') setBuildStageOpen(true);
+      else if (command === 'menu:edit-walls' && view === 'plan') toggleEditWalls();
     });
   }, [
     openFile,
@@ -2495,6 +2840,7 @@ export function App() {
     selectAll,
     armInsertLeaf,
     openNewPlanDialog,
+    toggleEditWalls,
   ]);
 
   useEffect(() => {
@@ -2508,6 +2854,16 @@ export function App() {
         if (newPlanOpen) {
           e.preventDefault();
           setNewPlanOpen(false);
+          return;
+        }
+        if (createDialogOpen) {
+          e.preventDefault();
+          setCreateDialogOpen(false);
+          return;
+        }
+        if (newItemEditor) {
+          e.preventDefault();
+          void closeNewItemEditor(false);
           return;
         }
         if (settingsOpen) {
@@ -2533,6 +2889,11 @@ export function App() {
         if (seatingOpen) {
           e.preventDefault();
           setSeatingOpen(false);
+          return;
+        }
+        if (refineRoomOpen) {
+          e.preventDefault();
+          closeRoomWorkspace();
           return;
         }
         if (calculatorOpen) {
@@ -2628,6 +2989,11 @@ export function App() {
         activateTextTool();
         return;
       }
+      if (e.key.toLowerCase() === 'w' && !mod && doc) {
+        e.preventDefault();
+        toggleEditWalls();
+        return;
+      }
       if (e.key === 'Escape') {
         if (printOpen) {
           setPrintOpen(false);
@@ -2656,6 +3022,7 @@ export function App() {
         return;
       }
 
+      const wallStep = e.shiftKey ? 1 : UNITS_PER_INCH;
       const step = e.shiftKey ? fineNudgeStep : nudgeStep;
       const delta: Record<string, [number, number]> = {
         ArrowLeft: [-step, 0],
@@ -2664,6 +3031,88 @@ export function App() {
         ArrowDown: [0, step],
       };
       const d = delta[e.key];
+      if (
+        d &&
+        doc?.editable &&
+        (refineRoomOpen) &&
+        wallEdit?.editable &&
+        wallEdit.walls.length &&
+        !selectedIds.length
+      ) {
+        e.preventDefault();
+        const wall =
+          wallEdit.walls.find((entry) => entry.index === wallEdit.selected) ?? wallEdit.walls[0]!;
+        const dx = wall.endX - wall.startX;
+        const dy = wall.endY - wall.startY;
+        const chord = Math.hypot(dx, dy) || 1;
+        const nx = dy / chord;
+        const ny = -dx / chord;
+        const tx = dx / chord;
+        const ty = dy / chord;
+        const wallDelta: Record<string, [number, number]> = {
+          ArrowLeft: [-wallStep, 0],
+          ArrowRight: [wallStep, 0],
+          ArrowUp: [0, -wallStep],
+          ArrowDown: [0, wallStep],
+        };
+        const wd = wallDelta[e.key]!;
+        void (async () => {
+          let reply;
+          if (wallEditGesture === 'length' && !wall.curved) {
+            const along = wd[0] * tx + wd[1] * ty;
+            if (Math.abs(along) < wallStep * 0.2) {
+              showStatus('Point along the wall to change length', 2000);
+              return;
+            }
+            reply = await api.roomWallLength(
+              wall.index,
+              Math.max(UNITS_PER_INCH, wall.length + Math.sign(along) * wallStep),
+            );
+          } else if (wallEditGesture === 'push' && !wall.curved) {
+            const along = wd[0] * nx + wd[1] * ny;
+            if (Math.abs(along) < wallStep * 0.2) {
+              showStatus('Point outward or inward to push the wall', 2000);
+              return;
+            }
+            reply = await api.roomWallOffset(wall.index, Math.sign(along) * wallStep);
+          } else if (wallEditGesture === 'curve') {
+            const along = wd[0] * nx + wd[1] * ny;
+            if (Math.abs(along) < wallStep * 0.2) {
+              showStatus('Point outward or inward to curve the wall', 2000);
+              return;
+            }
+            const bulge = wall.bulge ?? 0;
+            const existing = bulge ? (bulge * chord) / 2 : 0;
+            const next = existing + Math.sign(along) * wallStep;
+            if (Math.abs(next) < 1) {
+              reply = await api.roomCurve(wall.index, 0);
+            } else {
+              reply = await api.roomCurveThrough(wall.index, {
+                x: (wall.startX + wall.endX) / 2 + nx * next,
+                y: (wall.startY + wall.endY) / 2 + ny * next,
+              });
+            }
+          } else {
+            showStatus(
+              wall.curved
+                ? 'Straighten the wall before pushing or stretching'
+                : 'Select Push, Curve, or Length',
+              2500,
+            );
+            return;
+          }
+          if (!reply.ok) {
+            notify(reply.reason ?? 'That wall could not be changed');
+            return;
+          }
+          if (reply.doc) setDoc(reply.doc as Doc);
+          showStatus(
+            `Wall ${wall.index + 1} · ${formatLength(wallStep, unitSystem)} ${wallEditGesture}`,
+            2000,
+          );
+        })();
+        return;
+      }
       if (d && doc?.editable && selectedIds.length) {
         e.preventDefault();
         void moveSelection(d[0], d[1]);
@@ -2682,6 +3131,9 @@ export function App() {
     rotateSelection,
     printOpen,
     newPlanOpen,
+    createDialogOpen,
+    newItemEditor,
+    closeNewItemEditor,
     settingsOpen,
     shortcutsOpen,
     insertOpen,
@@ -2689,10 +3141,12 @@ export function App() {
     buildStageOpen,
     seatingOpen,
     calculatorOpen,
+    refineRoomOpen,
     cancelPlacement,
     toggleMeasure,
     toggleDimension,
     activateTextTool,
+    toggleEditWalls,
     toggleGrid,
     toggleSnap,
     finishRoomOutline,
@@ -2705,6 +3159,11 @@ export function App() {
     toolRef,
     nudgeStep,
     fineNudgeStep,
+    refineRoomOpen,
+    wallEdit,
+    wallEditGesture,
+    showStatus,
+    unitSystem,
   ]);
 
   useEffect(() => {
@@ -3093,6 +3552,52 @@ export function App() {
     () => countFurniture(doc?.scene.inventory ?? []),
     [doc?.scene.inventory],
   );
+
+  const applyShowKit = useCallback(
+    async (kitId: string) => {
+      if (!doc?.editable) {
+        notify('Open an editable plan to apply a kit');
+        return;
+      }
+      const chairs = furnitureCounts.chairs;
+      let replaceExistingSeating = false;
+      if (chairs > 0) {
+        const ok = await api.confirm({
+          title: 'Apply show kit?',
+          message: `This plan already has ${chairs.toLocaleString()} chairs.`,
+          detail:
+            'Applying a kit adds the recipe layout. Prefer a blank or lightly filled plan. Continue only if you intend to stack or rebuild on top.',
+          confirmLabel: 'Apply kit',
+          danger: true,
+        });
+        if (ok !== true) return;
+        replaceExistingSeating = true;
+      }
+      setKitsBusy(true);
+      try {
+        const reply = await api.applyLayoutRecipe(kitId, { replaceExistingSeating });
+        if (reply.ok && reply.doc) {
+          setDoc(reply.doc as Doc);
+          setSetupCompleted((current) => ({
+            ...current,
+            stage: true,
+            seating: true,
+            insert: true,
+          }));
+          showStatus(reply.text ?? 'Show kit applied', 5000);
+          setFitToken((t) => t + 1);
+        } else {
+          notify(reply.reason ?? 'Could not apply show kit');
+        }
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err));
+      } finally {
+        setKitsBusy(false);
+      }
+    },
+    [doc, furnitureCounts.chairs, notify, showStatus],
+  );
+
   const [seatingClearances, setSeatingClearances] = useState<{
     front: number;
     side: number;
@@ -3176,17 +3681,19 @@ export function App() {
             // The same path an opened plan takes, so nothing is left over from
             // whatever was on screen before.
             adopt(created as Doc);
-            setInspectorOpen(true);
             setCustomRoomPrefs(options.customRoom ?? null);
             setStartNewRoomOutline(options.startRoomOutline);
-            // Room outline for custom plans still arms; Show Setup lives on Create
-            // so identity and production steps stay one click away after the room.
+            setAwaitingRoomOutline(options.startRoomOutline);
+            // One New plan flow: plan on screen + Show setup docked beside it.
+            openCreateDialog();
             if (options.startRoomOutline) {
-              setInspectorTab('room');
-              showStatus('Draw the room outline, then open Create for show setup', 5200);
+              setInspectorOpen(false);
+              showStatus(
+                'Click corners to finish the room · Esc cancels · Finish as rectangle is available in Show setup',
+                6400,
+              );
             } else {
-              setInspectorTab('create');
-              showStatus('Room ready — set show details, then stage and objects', 5200);
+              showStatus('Room ready — next: build stage, then seating and objects', 5200);
             }
             setFitToken((t) => t + 1);
             refreshRecent();
@@ -3242,6 +3749,22 @@ export function App() {
         onError={notify}
         onStatus={showStatus}
       />
+
+      {newItemEditor && (
+        <InventoryItemEditor
+          item={newItemEditor}
+          units={unitSystem}
+          onClose={() => void closeNewItemEditor(false)}
+          onSaved={() => {
+            setNewItemProvisional(false);
+            inventoryChanged();
+            setNewItemEditor(null);
+            showStatus('Item saved to inventory', 3500);
+          }}
+          onError={notify}
+          onStatus={showStatus}
+        />
+      )}
 
       <BuildStageDialog
         open={buildStageOpen}
@@ -3547,6 +4070,12 @@ export function App() {
                   </div>
                   <div>
                     <dt>
+                      <kbd>W</kbd>
+                    </dt>
+                    <dd>Edit walls</dd>
+                  </div>
+                  <div>
+                    <dt>
                       <kbd>0</kbd>
                     </dt>
                     <dd>Zoom to fit</dd>
@@ -3592,7 +4121,7 @@ export function App() {
         </div>
       )}
       <header
-        className={`toolbar${view === 'plan' ? ' is-plan-toolbar' : ''}${welcomeMode ? ' is-welcome-toolbar' : ''}`}
+        className={`toolbar${view === 'plan' ? ' is-plan-toolbar' : ''}${welcomeMode ? ' is-welcome-toolbar' : ''}${view === 'plan' && toolDockOpen ? ' is-tool-dock-open' : ''}`}
         onPointerOver={handleToolbarPointerOver}
         onPointerOut={handleToolbarPointerOut}
         onFocusCapture={handleToolbarFocus}
@@ -3674,16 +4203,85 @@ export function App() {
 
         <div className="ribbon-panel">
         <div className="seg ribbon-group file-controls" aria-label="File">
-          <button
-            className="icon-btn ribbon-action"
-            onClick={() => void openNewPlanDialog()}
-            disabled={busy}
-            data-tooltip={`New plan (${shortcut('N')})`}
-            aria-label="New plan"
-          >
-            <IconPlus />
-            <span>New</span>
-          </button>
+          <div className="ribbon-create">
+            <button
+              ref={createMenuButtonRef}
+              className={`icon-btn ribbon-action${
+                createMenuOpen || createDialogOpen ? ' is-on' : ''
+              }`}
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                const nextOpen = !createMenuOpen;
+                if (nextOpen) {
+                  setCreateMenuPos({
+                    top: Math.round(rect.bottom + 6),
+                    left: Math.max(8, Math.round(rect.left)),
+                  });
+                }
+                setCreateMenuOpen(nextOpen);
+              }}
+              disabled={busy}
+              data-tooltip="Create a plan, shape, item, or open show setup"
+              aria-label="Create"
+              aria-haspopup="menu"
+              aria-expanded={createMenuOpen}
+            >
+              <IconPlus />
+              <span>Create</span>
+            </button>
+            {createMenuOpen &&
+              createMenuPos &&
+              createPortal(
+                <div
+                  ref={createMenuRef}
+                  className="ribbon-create-menu"
+                  role="menu"
+                  aria-label="Create"
+                  style={{ top: createMenuPos.top, left: createMenuPos.left }}
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      void openNewPlanDialog();
+                    }}
+                  >
+                    <span>New plan…</span>
+                    <kbd>{shortcut('N')}</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={!doc}
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      toggleCreatePanel();
+                    }}
+                  >
+                    <span>Show setup</span>
+                    <small>Text, seating, stage</small>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => openNewShapeDialog()}
+                  >
+                    <span>New shape…</span>
+                    <small>Draw or trace an outline</small>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void openNewItemDialog()}
+                  >
+                    <span>New item…</span>
+                    <small>Add to inventory</small>
+                  </button>
+                </div>,
+                document.body,
+              )}
+          </div>
           <button
             className="icon-btn ribbon-action"
             onClick={openFile}
@@ -3817,7 +4415,7 @@ export function App() {
                 disabled={!doc}
                 data-tooltip={
                   snapStep
-                    ? 'Snapping on — grid and object alignment (S)'
+                    ? 'Snapping on — edits use 1″ (Shift = fine, Alt = free) (S)'
                     : 'Snapping off (S)'
                 }
                 aria-label={snapStep ? 'Disable snapping' : 'Enable snapping'}
@@ -3845,12 +4443,24 @@ export function App() {
               </select>
             </div>
 
+            {!(view === 'plan' && toolDockOpen) && (
             <div className="seg ribbon-group event-layout-controls" aria-label="Event layout">
               <button
                 className={`icon-btn ribbon-action${seatingOpen ? ' is-on' : ''}`}
-                onClick={() => setSeatingOpen((open) => !open)}
+                onClick={() => {
+                  setSeatingOpen((open) => {
+                    const next = !open;
+                    if (next) {
+                      setRefineRoomOpen(false);
+                      setWallPickIndex(null);
+                      setCalculatorOpen(false);
+                    }
+                    return next;
+                  });
+                }}
                 disabled={!doc}
                 data-tooltip="Open the seating planner"
+                data-tool-id="seating"
                 aria-label="Open seating planner"
                 aria-pressed={seatingOpen}
               >
@@ -3862,6 +4472,7 @@ export function App() {
                 onClick={() => setBuildStageOpen(true)}
                 disabled={!doc?.editable}
                 data-tooltip="Build a stage from stock decks"
+                data-tool-id="stage"
                 aria-label="Build stage"
               >
                 <IconPlus />
@@ -3869,8 +4480,18 @@ export function App() {
               </button>
               <button
                 className={`icon-btn ribbon-action${calculatorOpen ? ' is-on' : ''}`}
-                onClick={() => setCalculatorOpen((open) => !open)}
+                onClick={() =>
+                  setCalculatorOpen((open) => {
+                    const next = !open;
+                    if (next) {
+                      setRefineRoomOpen(false);
+                      setWallPickIndex(null);
+                    }
+                    return next;
+                  })
+                }
                 data-tooltip="Calculate room area, seating capacity, spacing, stages, and unit conversions"
+                data-tool-id="calculator"
                 aria-label="Open space calculator"
                 aria-pressed={calculatorOpen}
               >
@@ -3878,7 +4499,9 @@ export function App() {
                 <span>Calculate</span>
               </button>
             </div>
+            )}
 
+            {!(view === 'plan' && toolDockOpen) && (
             <div className="seg ribbon-group plan-tool-controls" aria-label="Plan drawing tools">
               <button
                 className={`tool-button add-text-tool${isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')) ? ' is-on' : ''}`}
@@ -3889,6 +4512,7 @@ export function App() {
                     ? 'Add text (T) — type the label, then click the plan to place it'
                     : 'Open an editable plan to add text'
                 }
+                data-tool-id="add-text"
                 aria-label="Add text label"
                 aria-pressed={isPressed(tool, labelChoice(annotationDraft.trim() || 'Text'))}
               >
@@ -3900,6 +4524,8 @@ export function App() {
                 onClick={toggleMeasure}
                 disabled={!doc}
                 data-tooltip="Measure a temporary distance (M)"
+                data-tool-id="measure"
+                aria-label="Measure"
                 aria-pressed={isPressed(tool, MEASURE)}
               >
                 <IconRuler />
@@ -3916,19 +4542,24 @@ export function App() {
                       ? 'This plan is read-only. Use Measure for a temporary distance.'
                       : 'Open an editable plan to draw a saved dimension.'
                 }
+                data-tool-id="dimension"
+                aria-label="Dimension"
                 aria-pressed={isPressed(tool, DIMENSION)}
               >
                 <IconRuler />
                 <span>Dimension</span>
               </button>
             </div>
+            )}
 
+            {!(view === 'plan' && toolDockOpen) && (
             <div className="seg ribbon-group draw-tools" aria-label="Draw">
               <button
                 className={`icon-btn ribbon-action${isPressed(tool, SELECT) ? ' is-on' : ''}`}
                 onClick={() => dispatchTool({ type: 'pick', choice: SELECT })}
                 disabled={!doc}
                 data-tooltip="Select and move shapes (Esc)"
+                data-tool-id="select"
                 aria-label="Select tool"
                 aria-pressed={isPressed(tool, SELECT)}
               >
@@ -3945,6 +4576,7 @@ export function App() {
                 }}
                 disabled={!doc}
                 data-tooltip="Direct Selection / Edit Points — move anchors and Bézier handles"
+                data-tool-id="direct-select"
                 aria-label="Direct Selection and Edit Points tool"
                 aria-pressed={isPressed(tool, DIRECT_SELECT)}
               >
@@ -3971,7 +4603,8 @@ export function App() {
                       ? `Draw a ${label.toLowerCase()} — click two corners, Esc to cancel`
                       : 'Open an editable plan to draw'
                   }
-                  aria-label={`Draw ${label.toLowerCase()}`}
+                  data-tool-id={shape}
+                  aria-label={label}
                   aria-pressed={isPressed(tool, drawChoice(shape))}
                 >
                   <Icon />
@@ -3993,74 +4626,78 @@ export function App() {
                     ? 'Draw a custom room — click each corner, then press Enter'
                     : 'Open an editable plan to draw a room'
                 }
+                data-tool-id="room"
                 aria-label="Draw custom room outline"
                 aria-pressed={isPressed(tool, roomOutlineChoice)}
               >
                 <IconDrawPolygon />
                 <span>Room</span>
               </button>
+            </div>
+            )}
+
+            {!(view === 'plan' && toolDockOpen) && (
+            <div className="seg ribbon-group create-wall-controls" aria-label="Wall editing">
               <button
-                className={`icon-btn ribbon-action${editWallsMode ? ' is-on' : ''}`}
-                onClick={() => {
-                  const next = !editWallsMode;
-                  setEditWallsMode(next);
-                  if (next) {
-                    setInspectorOpen(true);
-                    setInspectorTab('room');
-                    setSelectedIds([]);
-                    const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
-                    if (refusal) notify(refusal);
-                    showStatus('Edit walls · click a wall, then drag — Push, Curve, or Length', 4000);
-                  } else {
-                    showStatus('Edit walls off');
-                  }
-                }}
+                className={`icon-btn ribbon-action${refineRoomOpen && roomWorkspaceFocus === 'walls' ? ' is-on' : ''}`}
+                onClick={() => toggleEditWalls()}
                 disabled={!doc?.editable || !doc?.hasRoom}
                 data-tooltip={
                   doc?.editable && doc?.hasRoom
-                    ? editWallsMode
-                      ? 'Leave Edit walls mode'
-                      : 'Edit walls — push, curve, or stretch length on the plan'
+                    ? refineRoomOpen && roomWorkspaceFocus === 'walls'
+                      ? `Close wall editing workspace (W)`
+                      : `Edit walls — push, curve, or stretch length on the plan (W)`
                     : 'Open a plan with a room to edit walls'
                 }
+                data-tool-id="edit-walls"
                 aria-label="Edit walls mode"
-                aria-pressed={editWallsMode}
+                aria-pressed={refineRoomOpen && roomWorkspaceFocus === 'walls'}
               >
                 <IconEdit />
                 <span>Edit walls</span>
               </button>
+              <button
+                className={`icon-btn ribbon-action${refineRoomOpen && roomWorkspaceFocus === 'room' ? ' is-on' : ''}`}
+                onClick={() => {
+                  if (refineRoomOpen && roomWorkspaceFocus === 'room') {
+                    closeRoomWorkspace();
+                    showStatus('Room layout workspace closed');
+                    return;
+                  }
+                  beginRoomWorkspaceLayout();
+                  setRoomWorkspaceFocus('room');
+                  setRefineRoomOpen(true);
+                  setSeatingOpen(false);
+                  setCalculatorOpen(false);
+                  setInspectorOpen(false);
+                  setSelectedIds([]);
+                  const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
+                  if (refusal) notify(refusal);
+                  showStatus(
+                    'Room layout workspace · resize, add/cut, then drag walls on the plan',
+                    4500,
+                  );
+                  setFitToken((t) => t + 1);
+                }}
+                disabled={!doc?.editable || !doc?.hasRoom}
+                data-tooltip={
+                  doc?.editable && doc?.hasRoom
+                    ? refineRoomOpen && roomWorkspaceFocus === 'room'
+                      ? 'Close room layout workspace'
+                      : 'Open room layout workspace — refine the whole room on the plan'
+                    : 'Open a plan with a room to refine its layout'
+                }
+                data-tool-id="refine-room"
+                aria-label="Refine room layout workspace"
+                aria-pressed={refineRoomOpen && roomWorkspaceFocus === 'room'}
+              >
+                <IconDrawRect />
+                <span>Refine room</span>
+              </button>
             </div>
-
-            {editWallsMode && (
-              <div className="seg ribbon-group wall-edit-gestures" aria-label="Wall edit tools">
-                {(
-                  [
-                    ['push', 'Push'],
-                    ['curve', 'Curve'],
-                    ['length', 'Length'],
-                  ] as const
-                ).map(([id, label]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className={`icon-btn ribbon-action${wallEditGesture === id ? ' is-on' : ''}`}
-                    onClick={() => setWallEditGesture(id)}
-                    aria-pressed={wallEditGesture === id}
-                    data-tooltip={
-                      id === 'push'
-                        ? 'Drag the wall handle to push or pull'
-                        : id === 'curve'
-                          ? 'Drag the handle to bow the wall'
-                          : 'Drag along the wall to stretch its length'
-                    }
-                  >
-                    <span>{label}</span>
-                  </button>
-                ))}
-              </div>
             )}
 
-            <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}`}>
+            <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}${refineRoomOpen && textEditingId == null ? ' is-room-layout' : ''}`}>
             {textEditingId != null ? (
               <div className="text-context-toolbar" aria-label="Quick text formatting">
                 <span className="text-context-mode"><IconText size={14} /><b>Editing text</b></span>
@@ -4127,6 +4764,151 @@ export function App() {
                 <button onClick={cancelTextEditing}>Cancel</button>
                 <button className="primary" onClick={() => void commitTextEditing(true)}>Done</button>
               </div>
+            ) : refineRoomOpen ? (
+              <WallEditToolbar
+                focus={roomWorkspaceFocus}
+                onFocus={setRoomWorkspaceFocus}
+                gesture={wallEditGesture}
+                onGesture={setWallEditGesture}
+                wallLabel={
+                  wallPickIndex != null
+                    ? `Wall ${wallPickIndex + 1}`
+                    : wallEdit?.selected != null
+                      ? `Wall ${wallEdit.selected + 1}`
+                      : null
+                }
+                wallLengthText={(() => {
+                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  return wall ? formatLength(wall.length, unitSystem) : null;
+                })()}
+                curved={(() => {
+                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  return Boolean(wall?.curved);
+                })()}
+                editable={Boolean(doc?.editable)}
+                onNudgeIn={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  if (index == null || !wall) return;
+                  void (async () => {
+                    let reply;
+                    if (wallEditGesture === 'length') {
+                      reply = await api.roomWallLength(
+                        index,
+                        Math.max(UNITS_PER_INCH, wall.length - UNITS_PER_INCH),
+                      );
+                    } else if (wallEditGesture === 'push') {
+                      reply = await api.roomWallOffset(index, -UNITS_PER_INCH);
+                    } else {
+                      const dx = wall.endX - wall.startX;
+                      const dy = wall.endY - wall.startY;
+                      const chord = Math.hypot(dx, dy) || 1;
+                      const nx = dy / chord;
+                      const ny = -dx / chord;
+                      const bulge = wall.bulge ?? 0;
+                      const existing = bulge ? (bulge * chord) / 2 : 0;
+                      const next = existing - UNITS_PER_INCH;
+                      if (Math.abs(next) < 1) reply = await api.roomCurve(index, 0);
+                      else {
+                        reply = await api.roomCurveThrough(index, {
+                          x: (wall.startX + wall.endX) / 2 + nx * next,
+                          y: (wall.startY + wall.endY) / 2 + ny * next,
+                        });
+                      }
+                    }
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'That wall could not be changed');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Wall ${index + 1} · −1″`);
+                  })();
+                }}
+                onNudgeOut={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  if (index == null || !wall) return;
+                  void (async () => {
+                    let reply;
+                    if (wallEditGesture === 'length') {
+                      reply = await api.roomWallLength(index, wall.length + UNITS_PER_INCH);
+                    } else if (wallEditGesture === 'push') {
+                      reply = await api.roomWallOffset(index, UNITS_PER_INCH);
+                    } else {
+                      const dx = wall.endX - wall.startX;
+                      const dy = wall.endY - wall.startY;
+                      const chord = Math.hypot(dx, dy) || 1;
+                      const nx = dy / chord;
+                      const ny = -dx / chord;
+                      const bulge = wall.bulge ?? 0;
+                      const existing = bulge ? (bulge * chord) / 2 : 0;
+                      const next = existing + UNITS_PER_INCH;
+                      if (Math.abs(next) < 1) reply = await api.roomCurve(index, 0);
+                      else {
+                        reply = await api.roomCurveThrough(index, {
+                          x: (wall.startX + wall.endX) / 2 + nx * next,
+                          y: (wall.startY + wall.endY) / 2 + ny * next,
+                        });
+                      }
+                    }
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'That wall could not be changed');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Wall ${index + 1} · +1″`);
+                  })();
+                }}
+                onStraighten={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  if (index == null) return;
+                  void (async () => {
+                    const reply = await api.roomCurve(index, 0);
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'That wall could not be straightened');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Wall ${index + 1} straightened`);
+                  })();
+                }}
+                onAddCorner={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  if (index == null) return;
+                  void (async () => {
+                    const reply = await api.roomCornerAdd(index);
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'Corner could not be added');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Corner added on wall ${index + 1}`);
+                  })();
+                }}
+                onRoundCorner={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  if (index == null) return;
+                  void (async () => {
+                    const reply = await api.roomCornerRound(index, 2 * 120);
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'Corner could not be rounded');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Corner on wall ${index + 1} rounded`);
+                  })();
+                }}
+                onDone={() => {
+                  closeRoomWorkspace();
+                  showStatus('Room layout workspace closed');
+                }}
+              />
             ) : (
               <>
             <div className="seg object-tools" aria-label="Arrange and transform">
@@ -4510,8 +5292,16 @@ export function App() {
         </nav>
       )}
 
-      <div className={`body${railOpen && !welcomeMode ? '' : ' is-rail-hidden'}${inspectorOpen && !welcomeMode ? '' : ' is-inspector-hidden'}${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}`}>
-        <aside className="rail" aria-hidden={!railOpen}>
+      <div
+        className={`body${
+          railOpen && !welcomeMode && !refineRoomOpen ? '' : ' is-rail-hidden'
+        }${
+          inspectorOpen && !welcomeMode && !refineRoomOpen && !createDialogOpen ? '' : ' is-inspector-hidden'
+        }${createDialogOpen && doc && !welcomeMode ? ' is-create-open' : ''}${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}${
+          refineRoomOpen ? ' is-refine-open' : ''
+        }`}
+      >
+        <aside className="rail" aria-hidden={!railOpen || refineRoomOpen}>
           {view === 'inventory' ? (
             <>
               <div className="search">
@@ -4989,8 +5779,9 @@ export function App() {
                       className={equipmentSource === 'inventory' ? 'active' : ''}
                       aria-selected={equipmentSource === 'inventory'}
                       onClick={() => setEquipmentSource('inventory')}
+                      title={`Inventory (${inventory?.total ?? 0})`}
                     >
-                      Inventory
+                      <span className="tab-label">Inventory</span>
                       <span className="num">{inventory?.total ?? 0}</span>
                     </button>
                     <button
@@ -4999,8 +5790,9 @@ export function App() {
                       className={equipmentSource === 'gear' ? 'active' : ''}
                       aria-selected={equipmentSource === 'gear'}
                       onClick={() => setEquipmentSource('gear')}
+                      title={gear ? `Gear list (${gear.totals[gearIndex]?.pieces ?? 0})` : 'Gear list'}
                     >
-                      Gear list
+                      <span className="tab-label">Gear list</span>
                       {gear && <span className="num">{gear.totals[gearIndex]?.pieces ?? 0}</span>}
                     </button>
                     <button
@@ -5009,16 +5801,37 @@ export function App() {
                       className={equipmentSource === 'plan' ? 'active' : ''}
                       aria-selected={equipmentSource === 'plan'}
                       onClick={() => setEquipmentSource('plan')}
+                      title={`On plan (${inventoryTotal.toLocaleString()})`}
                     >
-                      On plan
+                      <span className="tab-label">On plan</span>
                       <span className="num">{inventoryTotal.toLocaleString()}</span>
                     </button>
                   </div>
                   <div className="equipment-gesture-hint" role="note">
-                    <span><strong>Drag</strong> to place once</span>
-                    <span><strong>Click</strong> for repeat placement</span>
-                    <span><kbd>Esc</kbd> cancels</span>
+                    <span><strong>Click</strong> or <strong>drag</strong> — stays armed</span>
+                    <span><kbd>Esc</kbd> / Done placing ends</span>
                   </div>
+                  {recentInventory.length > 0 && equipmentSource === 'inventory' ? (
+                    <div className="equipment-recent" aria-label="Recently placed inventory">
+                      <div className="section-title">
+                        <span>Recent</span>
+                      </div>
+                      <div className="equipment-recent-chips">
+                        {recentInventory.map((row) => (
+                          <button
+                            key={row.id}
+                            type="button"
+                            className={`equipment-recent-chip${armedInventoryId === row.id ? ' is-armed' : ''}`}
+                            disabled={!doc?.editable}
+                            title={`Place ${row.name}`}
+                            onClick={() => armInventory(row.id, row.name)}
+                          >
+                            {row.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   {equipmentSource === 'inventory' ? (
                     <InventoryPalette
                       inventory={inventory}
@@ -5378,6 +6191,51 @@ export function App() {
                           else setSelectedIds([]);
                         },
                       },
+                      {
+                        id: 'edit-walls',
+                        label: 'Edit walls',
+                        shortcut: 'W',
+                        icon: <IconEdit />,
+                        active: refineRoomOpen && roomWorkspaceFocus === 'walls',
+                        disabled: !doc.editable || !doc.hasRoom,
+                        onClick: () => toggleEditWalls(),
+                      },
+                      {
+                        id: 'refine-room',
+                        label: 'Refine room',
+                        icon: <IconDrawRect />,
+                        active: refineRoomOpen && roomWorkspaceFocus === 'room',
+                        disabled: !doc.editable || !doc.hasRoom,
+                        onClick: () => {
+                          if (refineRoomOpen && roomWorkspaceFocus === 'room') {
+                            closeRoomWorkspace();
+                            showStatus('Room layout workspace closed');
+                            return;
+                          }
+                          beginRoomWorkspaceLayout();
+                          setRoomWorkspaceFocus('room');
+                          setRefineRoomOpen(true);
+                          setSeatingOpen(false);
+                          setCalculatorOpen(false);
+                          setInspectorOpen(false);
+                          setSelectedIds([]);
+                          const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
+                          if (refusal) notify(refusal);
+                          showStatus(
+                            'Room layout workspace · resize, add/cut, then drag walls on the plan',
+                            4500,
+                          );
+                          setFitToken((t) => t + 1);
+                        },
+                      },
+                      {
+                        id: 'create',
+                        label: 'Show setup',
+                        icon: <IconPlus />,
+                        active: createDialogOpen,
+                        disabled: !doc,
+                        onClick: () => toggleCreatePanel(),
+                      },
                       ...(
                         [
                           ['line', 'Line', IconDrawLine],
@@ -5703,11 +6561,18 @@ export function App() {
               onTextEditorCommit={() => void commitTextEditing(true)}
               onTextEditorBlur={() => void commitTextEditing(false)}
               onTextEditorCancel={cancelTextEditing}
-              wallEdit={editWallsMode || inspectorTab === 'room' ? wallEdit : null}
+              wallEdit={refineRoomOpen ? wallEdit : null}
               onPickWall={(index) => {
                 setWallPickIndex(index);
-                setInspectorTab('room');
-                setInspectorOpen(true);
+                if (!refineRoomOpen) {
+                  beginRoomWorkspaceLayout();
+                  setRoomWorkspaceFocus('walls');
+                  setRefineRoomOpen(true);
+                  setSeatingOpen(false);
+                  setCalculatorOpen(false);
+                } else if (roomWorkspaceFocus !== 'walls') {
+                  setRoomWorkspaceFocus('walls');
+                }
                 showStatus(
                   `Wall ${index + 1} selected · drag to ${wallEditGesture}`,
                   3200,
@@ -5782,6 +6647,93 @@ export function App() {
                 if (refusal) notify(refusal);
               }}
             />
+              {(awaitingRoomOutline && !doc.hasRoom) || isPressed(tool, roomOutlineChoice) ? (
+                <div className="room-outline-banner" role="status">
+                  <IconDrawPolygon size={16} />
+                  <span>
+                    <strong>
+                      {isPressed(tool, roomOutlineChoice)
+                        ? 'Click corners to finish the room'
+                        : 'Room outline still needed'}
+                    </strong>
+                    <small>
+                      {isPressed(tool, roomOutlineChoice)
+                        ? 'Click near the start or press Enter · Esc cancels'
+                        : 'Draw corners, finish as a rectangle, or discard this empty plan'}
+                    </small>
+                  </span>
+                  <div className="room-outline-banner-actions">
+                    {!isPressed(tool, roomOutlineChoice) && (
+                      <button
+                        type="button"
+                        className="btn-solid"
+                        onClick={() => {
+                          const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+                          if (refusal) notify(refusal);
+                          else setSelectedIds([]);
+                        }}
+                      >
+                        Draw outline
+                      </button>
+                    )}
+                    {isPressed(tool, roomOutlineChoice) && (
+                      <button type="button" className="btn-solid" onClick={finishRoomOutline}>
+                        Finish
+                      </button>
+                    )}
+                    {(awaitingRoomOutline || !doc.hasRoom) && (
+                      <button type="button" className="btn-outline" onClick={() => void finishPendingRoomAsRectangle()}>
+                        Finish as rectangle
+                      </button>
+                    )}
+                    {awaitingRoomOutline && !doc.hasRoom && (
+                      <button type="button" className="link-btn is-danger" onClick={() => void discardEmptyPlan()}>
+                        Discard plan
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              <WallEditHud
+                open={refineRoomOpen}
+                wallLabel={
+                  wallPickIndex != null
+                    ? `Wall ${wallPickIndex + 1}`
+                    : wallEdit?.selected != null
+                      ? `Wall ${wallEdit.selected + 1}`
+                      : null
+                }
+                wallLengthText={(() => {
+                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  return wall ? formatLength(wall.length, unitSystem) : null;
+                })()}
+                curved={(() => {
+                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  return Boolean(wall?.curved);
+                })()}
+                wallIndex={wallPickIndex ?? wallEdit?.selected ?? null}
+                wallCount={wallEdit?.walls.length ?? 0}
+                onPrevWall={() => {
+                  const walls = wallEdit?.walls ?? [];
+                  if (!walls.length) return;
+                  const current = wallPickIndex ?? wallEdit?.selected ?? walls[0]!.index;
+                  const at = walls.findIndex((wall) => wall.index === current);
+                  const prev = walls[(at - 1 + walls.length) % walls.length]!;
+                  setWallPickIndex(prev.index);
+                }}
+                onNextWall={() => {
+                  const walls = wallEdit?.walls ?? [];
+                  if (!walls.length) return;
+                  const current = wallPickIndex ?? wallEdit?.selected ?? walls[0]!.index;
+                  const at = walls.findIndex((wall) => wall.index === current);
+                  const next = walls[(at + 1) % walls.length]!;
+                  setWallPickIndex(next.index);
+                }}
+              />
             </div>
           ) : (
             <WelcomeHome
@@ -6121,12 +7073,233 @@ export function App() {
           )}
         </main>
 
+      {doc && (
+        <CreateDialog
+          open={createDialogOpen}
+          docked
+          editable={!!doc.editable}
+          hasRoom={Boolean(doc.hasRoom)}
+          drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
+          identity={planIdentityFields}
+          selectedCount={selectedIds.length}
+          identityBusy={identityBusy}
+          completed={setupCompleted}
+          canCreateLabel={canCreateLabel}
+          canCreateDimension={canCreateDimension}
+          textActive={isPressed(tool, labelChoice(annotationDraft.trim() || 'Text'))}
+          annotationDraft={annotationDraft}
+          annotationColor={annotationColor}
+          platform={api.platform}
+          styleHint={annotationStyleHint}
+          annotationInputRef={annotationInputRef}
+          dimensionActive={isPressed(tool, DIMENSION)}
+          inventory={catalogInventory?.items ?? inventory?.items ?? doc.scene.inventory}
+          seatKind={seatKind}
+          seatTable={seatTable}
+          seatChair={seatChair}
+          seatCount={seatCount}
+          seatRows={seatRows}
+          seatPerRow={seatPerRow}
+          seatAngle={seatAngle}
+          seatSpacingFt={seatSpacingFt}
+          seatRowSpacingFt={seatRowSpacingFt}
+          seatRowLengths={seatRowLengths}
+          seatingArmed={
+            tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
+          }
+          onClose={() => setCreateDialogOpen(false)}
+          onSaveIdentity={savePlanIdentity}
+          onOpenRoom={openRoomPanel}
+          onDrawRoomOutline={() => {
+            setAwaitingRoomOutline(true);
+            const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+            if (refusal) notify(refusal);
+            else {
+              setSelectedIds([]);
+              showStatus('Click each room corner on the plan, then press Enter', 4500);
+            }
+          }}
+          onFinishRoomAsRectangle={
+            awaitingRoomOutline && !doc.hasRoom ? () => void finishPendingRoomAsRectangle() : undefined
+          }
+          onDiscardEmptyPlan={
+            awaitingRoomOutline && !doc.hasRoom ? () => void discardEmptyPlan() : undefined
+          }
+          onBuildStage={() => {
+            setBuildStageOpen(true);
+          }}
+          onInsert={() => {
+            setInsertGroup(null);
+            setInsertOpen(true);
+          }}
+          onRepeat={() => {
+            showStatus(
+              selectedIds.length === 1
+                ? 'Select the item, set direction and count in Properties, then Repeat'
+                : 'Select one item first, then Repeat',
+            );
+          }}
+          onSeating={() => {
+            setSeatingOpen(true);
+          }}
+          onPrint={() => {
+            setPrintOpen(true);
+          }}
+          onText={editAnnotationDraft}
+          onColor={editAnnotationColor}
+          onStartText={armLabel}
+          onDoneText={finishTextTool}
+          onToggleDimension={() => {
+            toggleDimension();
+          }}
+          onSeatKind={setSeatKind}
+          onSeatTable={setSeatTable}
+          onSeatChair={setSeatChair}
+          onSeatCount={setSeatCount}
+          onSeatRows={setSeatRows}
+          onSeatPerRow={setSeatPerRow}
+          onSeatAngle={setSeatAngle}
+          onSeatSpacingFt={setSeatSpacingFt}
+          onSeatRowSpacingFt={setSeatRowSpacingFt}
+          onSeatRowLengths={setSeatRowLengths}
+          onDonePlacing={cancelPlacement}
+          onPlaceSeating={() => {
+            const lengths = seatRowLengths
+              .split(/[,;\s]+/)
+              .map((part) => Number(part.trim()))
+              .filter((n) => Number.isFinite(n) && n >= 1);
+            const anglePart = seatAngle ? ` @ ${seatAngle > 0 ? '+' : ''}${seatAngle}°` : '';
+            const description =
+              seatKind === 'round'
+                ? `${seatTable} with ${seatCount} seats`
+                : lengths.length
+                  ? `${lengths.length} irregular rows (${lengths.reduce((a, b) => a + b, 0)} seats)${anglePart}`
+                  : `${seatRows} × ${seatPerRow} ${seatKind}${anglePart}`;
+            const { refusal } = dispatchTool({
+              type: 'pick',
+              choice: {
+                kind: 'stamp',
+                stamp: {
+                  what: 'seating',
+                  description,
+                  request: {
+                    kind: seatKind,
+                    chair: seatChair,
+                    table: seatTable || undefined,
+                    seats: seatCount,
+                    rows: seatRows,
+                    perRow: seatPerRow,
+                    rowLengths: lengths.length ? lengths : undefined,
+                    angle: seatAngle || undefined,
+                    seatSpacing:
+                      seatKind !== 'round' && seatSpacingFt > 0
+                        ? seatSpacingFt * FOOT
+                        : undefined,
+                    rowSpacing:
+                      seatKind !== 'round' && seatRowSpacingFt > 0
+                        ? seatRowSpacingFt * FOOT
+                        : undefined,
+                  },
+                },
+              },
+            });
+            if (refusal) notify(refusal);
+            else {
+              showStatus(
+                'Click the plan to stamp · change settings here and click again · Done placing when finished',
+                4200,
+              );
+            }
+          }}
+          onNewShape={openNewShapeDialog}
+          onNewItem={() => void openNewItemDialog()}
+          kits={layoutKits}
+          kitsBusy={kitsBusy}
+          onRefreshKits={refreshLayoutKits}
+          onApplyKit={(kitId) => void applyShowKit(kitId)}
+          onImportKit={() => {
+            void (async () => {
+              const reply = await api.importLayoutKit();
+              if (reply.cancelled) return;
+              if (!reply.ok) {
+                notify(reply.reason ?? 'Could not import recipe');
+                return;
+              }
+              refreshLayoutKits();
+              showStatus('Layout recipe imported', 3500);
+            })();
+          }}
+          onExportRecipe={() => {
+            void (async () => {
+              const reply = await api.exportLayoutRecipe();
+              if (reply.cancelled) return;
+              if (!reply.ok) {
+                notify(reply.reason ?? 'Could not export recipe');
+                return;
+              }
+              refreshLayoutKits();
+              showStatus(`Exported recipe${reply.path ? ` · ${reply.path.split(/[\\/]/).pop()}` : ''}`, 4500);
+            })();
+          }}
+          bankPresets={bankPresets as never}
+          onSaveBankPreset={() => {
+            void (async () => {
+              const lengths = seatRowLengths
+                .split(/[,;\s]+/)
+                .map((part) => Number(part.trim()))
+                .filter((n) => Number.isFinite(n) && n >= 1);
+              const name = lengths.length
+                ? `${lengths.length} rows @ ${seatAngle || 0}°`
+                : `${seatRows}×${seatPerRow} @ ${seatAngle || 0}°`;
+              const reply = await api.saveBankPreset({
+                name,
+                block: {
+                  chair: seatChair,
+                  angleDeg: seatAngle || undefined,
+                  seatSpacingFt: seatSpacingFt || undefined,
+                  rowSpacingFt: seatRowSpacingFt || undefined,
+                  rowLengths: lengths.length ? lengths : undefined,
+                  rows: lengths.length ? undefined : seatRows,
+                  perRow: lengths.length ? undefined : seatPerRow,
+                },
+              });
+              if (!reply.ok) {
+                notify(reply.reason ?? 'Could not save bank preset');
+                return;
+              }
+              const next = await api.listBankPresets();
+              setBankPresets(next);
+              showStatus(`Saved bank preset “${name}”`, 3000);
+            })();
+          }}
+          onLoadBankPreset={(preset) => {
+            const block = preset.block;
+            if (typeof block.chair === 'string') setSeatChair(block.chair);
+            if (typeof block.angleDeg === 'number') setSeatAngle(block.angleDeg);
+            if (typeof block.seatSpacingFt === 'number') setSeatSpacingFt(block.seatSpacingFt);
+            if (typeof block.rowSpacingFt === 'number') setSeatRowSpacingFt(block.rowSpacingFt);
+            if (Array.isArray(block.rowLengths) && block.rowLengths.length) {
+              setSeatRowLengths(block.rowLengths.join(','));
+            } else {
+              setSeatRowLengths('');
+              if (typeof block.rows === 'number') setSeatRows(block.rows);
+              if (typeof block.perRow === 'number') setSeatPerRow(block.perRow);
+            }
+            setSeatKind('theatre');
+            showStatus(`Loaded bank preset “${preset.name}” — Place on plan to stamp`, 3500);
+          }}
+          onDeleteBankPreset={(id) => {
+            void api.deleteBankPreset(id).then(() => api.listBankPresets().then(setBankPresets));
+          }}
+        />
+      )}
+
         <aside
           ref={inspectorRef}
           className="inspector"
-          aria-hidden={!inspectorOpen}
+          aria-hidden={!(inspectorOpen && !welcomeMode)}
           aria-label="Properties and layers inspector"
-          tabIndex={inspectorOpen ? 0 : -1}
+          tabIndex={inspectorOpen && !welcomeMode ? 0 : -1}
         >
           {view === 'inventory' ? (
             <>
@@ -6265,18 +7438,19 @@ export function App() {
                     { id: 'layers', label: 'Layers', icon: <IconLayers size={14} /> },
                     { id: 'properties', label: 'Properties', icon: <IconEdit size={14} /> },
                     { id: 'room', label: 'Room', icon: <IconDrawRect size={14} /> },
-                    { id: 'create', label: 'Create', icon: <IconPlus size={14} /> },
                   ] as const).map(({ id, label, icon }) => (
-                  <button
-                    key={id}
-                    className={inspectorTab === id ? 'active' : ''}
-                    onClick={() => setInspectorTab(id)}
-                    aria-current={inspectorTab === id ? 'page' : undefined}
-                  >
-                    <span className="inspector-tab-icon" aria-hidden>{icon}</span>
-                    <span>{label}</span>
-                  </button>
-                ))}
+                    <button
+                      key={id}
+                      className={inspectorTab === id ? 'active' : ''}
+                      onClick={() => setInspectorTab(id)}
+                      aria-current={inspectorTab === id ? 'page' : undefined}
+                    >
+                      <span className="inspector-tab-icon" aria-hidden>
+                        {icon}
+                      </span>
+                      <span>{label}</span>
+                    </button>
+                  ))}
                 </nav>
 
                 <div
@@ -6562,6 +7736,21 @@ export function App() {
                             Flip vertical
                           </button>
                         </div>
+                        <SnappySlider
+                          label="Rotate by"
+                          values={[-180, -90, -45, -30, -15, 15, 30, 45, 90, 180]}
+                          defaultValue={15}
+                          min={-180}
+                          max={180}
+                          step={1}
+                          suffix="°"
+                          compact
+                          disabled={!doc.editable}
+                          value={Number(rotationDraft) || 15}
+                          onChange={(next) => setRotationDraft(String(next))}
+                          onChangeEnd={() => rotateByDraft()}
+                        />
+                        <p className="hint">Turns the whole selection about its centre — use ±30° for angled seating banks.</p>
                       </div>
                     )}
                     <div className="tool-group repeat-group">
@@ -7043,7 +8232,7 @@ export function App() {
                         </div>
                         <SnappySlider
                           label="Rotate by"
-                          values={[-180, -90, -45, -15, 15, 45, 90, 180]}
+                          values={[-180, -90, -45, -30, -15, 15, 30, 45, 90, 180]}
                           defaultValue={15}
                           min={-180}
                           max={180}
@@ -7250,228 +8439,9 @@ export function App() {
                   }}
                   onWallEditChange={setWallEdit}
                   wallPickIndex={wallPickIndex}
-                  editWallsMode={editWallsMode}
-                  preferredWallAction={editWallsMode ? wallEditGesture : undefined}
+                  preferredWallAction={undefined}
                   onPreferredWallActionChange={setWallEditGesture}
                 />
-              )}
-
-              {inspectorTab === 'create' && (
-                <>
-              <ShowSetupPanel
-                editable={!!doc.editable}
-                hasRoom={Boolean(doc.hasRoom)}
-                drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
-                identity={planIdentityFields}
-                selectedCount={selectedIds.length}
-                identityBusy={identityBusy}
-                completed={setupCompleted}
-                onSaveIdentity={savePlanIdentity}
-                onOpenRoom={() => {
-                  setInspectorOpen(true);
-                  setInspectorTab('room');
-                }}
-                onDrawRoomOutline={() => {
-                  setInspectorOpen(true);
-                  setInspectorTab('room');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
-                  if (refusal) notify(refusal);
-                  else setSelectedIds([]);
-                }}
-                onBuildStage={() => {
-                  setBuildStageOpen(true);
-                }}
-                onInsert={() => {
-                  setInsertGroup(null);
-                  setInsertOpen(true);
-                }}
-                onRepeat={() => {
-                  setInspectorTab('properties');
-                  showStatus(
-                    selectedIds.length === 1
-                      ? 'Set direction and count, then Repeat'
-                      : 'Select one item first, then Repeat',
-                  );
-                }}
-                onSeating={() => {
-                  setSeatingOpen(true);
-                }}
-                onPrint={() => {
-                  setPrintOpen(true);
-                }}
-              />
-              <div className="section text-tool-section">
-                <TextToolPanel
-                  active={isPressed(tool, labelChoice(annotationDraft.trim() || 'Text'))}
-                  editable={canCreateLabel}
-                  text={annotationDraft}
-                  color={annotationColor}
-                  platform={api.platform}
-                  styleHint={annotationStyleHint}
-                  inputRef={annotationInputRef}
-                  onText={editAnnotationDraft}
-                  onColor={editAnnotationColor}
-                  onStart={armLabel}
-                  onDone={finishTextTool}
-                />
-                <div className="text-tool-related">
-                  <span>
-                    <strong>Need a measurement?</strong>
-                    <small>{canCreateDimension ? 'Draw a linked dimension that follows objects.' : 'Open an editable plan to save dimensions.'}</small>
-                  </span>
-                  <button
-                    className={isPressed(tool, DIMENSION) ? 'is-on' : ''}
-                    onClick={toggleDimension}
-                    disabled={!canCreateDimension}
-                    title={canCreateDimension ? 'Draw an object-linked dimension (D)' : 'This plan is read-only'}
-                  >
-                    <IconRuler size={14} />
-                    Dimension
-                  </button>
-                </div>
-              </div>
-
-              <div className="section">
-                <div className="section-title">
-                  <span>Add seating</span>
-                </div>
-                <p className="hint" style={{ marginBottom: 10 }}>
-                  Quick blocks placed where you click. For a full room layout with aisles, splay, and a live seat
-                  count, use the <strong>Room</strong> tab.
-                </p>
-                <button
-                  type="button"
-                  className="btn-outline"
-                  style={{ width: '100%', justifyContent: 'center', marginBottom: 12 }}
-                  onClick={() => setInspectorTab('room')}
-                >
-                  Open Room seating
-                </button>
-                <div className="seg tabs seat-kinds">
-                  {(['round', 'theatre', 'schoolroom'] as const).map((k) => (
-                    <button key={k} className={seatKind === k ? 'active' : ''} onClick={() => setSeatKind(k)}>
-                      {k === 'round' ? 'Round' : k === 'theatre' ? 'Theatre' : 'Classroom'}
-                    </button>
-                  ))}
-                </div>
-
-                {seatKind !== 'theatre' && (
-                  <div className="field">
-                    <label htmlFor="seat-table">Table</label>
-                    <select
-                      id="seat-table"
-                      value={seatTable}
-                      onChange={(e) => setSeatTable(e.target.value)}
-                      disabled={!doc.editable}
-                    >
-                      <option value="">Choose…</option>
-                      {doc.scene.inventory.map((i) => (
-                        <option key={i.name} value={i.name}>
-                          {i.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                <div className="field">
-                  <label htmlFor="seat-chair">Chair</label>
-                  <select
-                    id="seat-chair"
-                    value={seatChair}
-                    onChange={(e) => setSeatChair(e.target.value)}
-                    disabled={!doc.editable}
-                  >
-                    <option value="">Choose…</option>
-                    {doc.scene.inventory.map((i) => (
-                      <option key={i.name} value={i.name}>
-                        {i.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {seatKind === 'round' ? (
-                  <div className="field">
-                    <label htmlFor="seat-count">Seats per table</label>
-                    <input
-                      id="seat-count"
-                      className="num"
-                      type="number"
-                      min={1}
-                      max={24}
-                      value={seatCount}
-                      onChange={(e) => setSeatCount(Number(e.target.value))}
-                      disabled={!doc.editable}
-                    />
-                  </div>
-                ) : (
-                  <div className="field">
-                    <label>Rows × per row</label>
-                    <div className="size-row">
-                      <input
-                        className="num"
-                        type="number"
-                        min={1}
-                        max={60}
-                        value={seatRows}
-                        onChange={(e) => setSeatRows(Number(e.target.value))}
-                        disabled={!doc.editable}
-                      />
-                      <span className="inv-x">×</span>
-                      <input
-                        className="num"
-                        type="number"
-                        min={1}
-                        max={80}
-                        value={seatPerRow}
-                        onChange={(e) => setSeatPerRow(Number(e.target.value))}
-                        disabled={!doc.editable}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <button
-                  className="btn-outline"
-                  style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}
-                  disabled={!doc.editable || !seatChair || (seatKind !== 'theatre' && !seatTable)}
-                  onClick={() => {
-                    const description =
-                      seatKind === 'round'
-                        ? `${seatTable} with ${seatCount} seats`
-                        : `${seatRows} × ${seatPerRow} ${seatKind}`;
-                    const { refusal } = dispatchTool({
-                      type: 'pick',
-                      choice: {
-                        kind: 'stamp',
-                        stamp: {
-                          what: 'seating',
-                          description,
-                          request: {
-                            kind: seatKind,
-                            chair: seatChair,
-                            table: seatTable || undefined,
-                            seats: seatCount,
-                            rows: seatRows,
-                            perRow: seatPerRow,
-                          },
-                        },
-                      },
-                    });
-                    if (refusal) notify(refusal);
-                  }}
-                >
-                  <IconPlus size={14} />
-                  Place on plan
-                </button>
-                <p className="hint">
-                  {seatKind === 'round'
-                    ? 'Chairs are turned to face the table.'
-                    : 'Rows are centred on where you click.'}
-                </p>
-              </div>
-                </>
               )}
 
               {inspectorTab === 'layers' && (
@@ -7754,6 +8724,45 @@ export function App() {
           roomHeight={doc?.scene.roomExtent ? doc.scene.roomExtent.maxY - doc.scene.roomExtent.minY : undefined}
           onClose={() => setCalculatorOpen(false)}
         />
+        {doc && (
+          <RoomRefineWorkspace
+            open={refineRoomOpen}
+            focus={roomWorkspaceFocus}
+            doc={doc}
+            onDoc={setDoc}
+            onStatus={showStatus}
+            onError={notify}
+            onSelect={(ids) => {
+              setSelectedIds(ids);
+              setSelection(null);
+            }}
+            drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
+            onDrawRoomOutline={() => {
+              closeRoomWorkspace();
+              setInspectorOpen(true);
+              setInspectorTab('room');
+              const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+              if (refusal) notify(refusal);
+              else setSelectedIds([]);
+            }}
+            onRoomAuthored={async () => {
+              const persisted = await persistNewRoomOutlineIfNeeded();
+              if (persisted.doc) {
+                setDoc(persisted.doc);
+                showStatus('Room saved');
+              } else if (persisted.failed) {
+                notify(persisted.failed);
+              }
+            }}
+            onWallEditChange={setWallEdit}
+            wallPickIndex={wallPickIndex}
+            wallEditGesture={wallEditGesture}
+            onWallEditGestureChange={setWallEditGesture}
+            onClose={() => {
+              closeRoomWorkspace();
+            }}
+          />
+        )}
       </div>
 
       <footer className={`statusbar${welcomeMode ? ' is-welcome-hidden' : ''}`}>

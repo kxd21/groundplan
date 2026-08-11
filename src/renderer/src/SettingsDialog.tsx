@@ -67,14 +67,14 @@ const PLAN_DEFAULTS: Pick<Settings, 'print' | 'dxf' | 'drawing'> = {
   dxf: { includeSchedule: true, visibleLayersOnly: true },
   drawing: {
     units: 'imperial',
-    snapStep: FOOT,
+    snapStep: 10,
     objectSnap: true,
     showGrid: true,
     paperSheet: true,
     autoFitOnOpen: true,
     openPropertiesOnSelect: true,
-    nudgeStep: FOOT,
-    fineNudgeStep: 10,
+    nudgeStep: 10,
+    fineNudgeStep: 1,
     bulkDeleteWarning: 25,
   },
 };

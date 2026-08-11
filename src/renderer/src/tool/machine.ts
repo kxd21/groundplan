@@ -210,15 +210,14 @@ export function stampDescription(stamp: Stamp): string {
  *
  * A run of the same thing is the normal case, not the exception: fifty drape
  * sections, a row of risers, the same "X4S" call-out ten times down a real
- * sheet, a wall of dimensions. Those all stay in hand so a run is one trip to
- * the palette rather than fifty.
+ * sheet, a wall of dimensions — and sixteen theatre banks across a ballroom.
+ * Those all stay in hand so a run is one trip to the palette rather than fifty.
  *
- * Seating is the one genuinely one-shot tool: it carries a whole block layout
- * that the drop consumes, and stamping a second identical block on top of the
- * first is never what anyone meant.
+ * Room outline (`path`) is the deliberate one-shot: finishing the polygon puts
+ * the tool down so the next click selects rather than adding another corner.
  */
 export function staysAfterUse(tool: Tool): boolean {
-  return tool.kind !== 'path' && !(tool.kind === 'stamp' && tool.stamp.what === 'seating');
+  return tool.kind !== 'path';
 }
 
 // ---------------------------------------------------------------------------

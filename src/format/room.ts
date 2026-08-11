@@ -90,14 +90,19 @@ export function arcOf(segment: WallSegment): {
   const sinHalf = Math.sin(half);
   if (Math.abs(sinHalf) < 1e-12) return null;
 
-  const radius = Math.abs(chord / (2 * sinHalf));
-  // Left normal of the chord, with the centre r*cos(theta/2) along it. That
-  // sign is what makes the sweep counter-clockwise for a positive bulge: it
-  // puts the centre opposite the bow on a minor arc and flips it past the
-  // half circle, where cos goes negative on its own.
+  // Signed radius keeps the centre on the correct side of the chord for both
+  // bulge signs. Taking abs(radius) here used to pin every centre to the left
+  // normal, so a negative (clockwise) bulge flattened the *wrong* way round the
+  // circle — walking backward past the start corner and jumping to the end,
+  // which drew the triangular spur users see when they drag a bay outward.
+  const radiusSigned = chord / (2 * sinHalf);
+  const radius = Math.abs(radiusSigned);
+  // Left normal of the chord. h carries the sign of the radius so a positive
+  // bulge centres to the left (CCW bow) and a negative bulge centres to the
+  // right (CW bow). Past a half circle cos(half) flips on its own for majors.
   const nx = -vy / chord;
   const ny = vx / chord;
-  const h = radius * Math.cos(half);
+  const h = radiusSigned * Math.cos(half);
   const centre = {
     x: (segment.start.x + segment.end.x) / 2 + nx * h,
     y: (segment.start.y + segment.end.y) / 2 + ny * h,
@@ -394,10 +399,23 @@ export function simplifyCollinear(points: Point[], tolerance = 1e-6): Point[] {
 
 /** A room from an ordered list of corners; the loop is closed automatically. */
 export function roomFromPolygon(corners: Point[], name = 'Room'): RoomModel {
+  // Push / curve / offset assume a counter-clockwise outline. Callers often
+  // trace clockwise on screen; flip those so "outward" stays outward.
+  let ordered = corners;
+  if (corners.length >= 3) {
+    let area2 = 0;
+    for (let i = 0; i < corners.length; i++) {
+      const a = corners[i]!;
+      const b = corners[(i + 1) % corners.length]!;
+      area2 += a.x * b.y - b.x * a.y;
+    }
+    if (area2 < 0) ordered = corners.slice().reverse();
+  }
+
   const walls: WallSegment[] = [];
-  for (let i = 0; i < corners.length; i++) {
-    const start = corners[i];
-    const end = corners[(i + 1) % corners.length];
+  for (let i = 0; i < ordered.length; i++) {
+    const start = ordered[i]!;
+    const end = ordered[(i + 1) % ordered.length]!;
     if (Math.hypot(end.x - start.x, end.y - start.y) < 1e-9) continue;
     walls.push(wall(start, end));
   }

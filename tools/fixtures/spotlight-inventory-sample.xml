@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sanitized fixture modelled on Vectorworks Spotlight inventory XML
+  (Libraries/Defaults/Inventories/*.xml from Inventory and Equipment List →
+  New Inventory from File).
+
+  Element map (primary shape Groundplan accepts):
+    Inventory                     root
+      InventoryInfo
+        Name / Vendor / Notes     inventory metadata
+      Categories / Category       optional catalogue folders (@Name or text)
+      SymbolObjects / SymbolObject
+        Name                      equipment line name
+        Category                  department/category label
+        PartType                  Symbol | Subpart | VirtualPart | IVP
+        Stock                     on-hand quantity
+        VirtualParts / VirtualPart
+          Name, DefaultQuantity   associated virtual parts (inflate stock notes)
+      IndependentVirtualParts / IndependentVirtualPart
+        Name, Stock, PartType=IVP
+
+  Alternate roots/tags also accepted by the parser: VWInventory, Items/Item,
+  Symbols/Symbol, Quantity, StockQuantity, Part.
+-->
+<Inventory version="1">
+  <InventoryInfo>
+    <Name>Acme Warehouse</Name>
+    <Vendor>Acme Audio Visual</Vendor>
+    <Notes>Primary shop stock for touring shows</Notes>
+  </InventoryInfo>
+  <Categories>
+    <Category Name="Lighting"/>
+    <Category Name="Audio"/>
+    <Category Name="Rigging"/>
+    <Category Name="Video"/>
+  </Categories>
+  <SymbolObjects>
+    <SymbolObject>
+      <Name>Source Four 26deg</Name>
+      <Category>Lighting</Category>
+      <PartType>Symbol</PartType>
+      <Stock>48</Stock>
+      <VirtualParts>
+        <VirtualPart>
+          <Name>Safety Cable</Name>
+          <DefaultQuantity>1</DefaultQuantity>
+        </VirtualPart>
+        <VirtualPart>
+          <Name>Color Frame</Name>
+          <DefaultQuantity>1</DefaultQuantity>
+        </VirtualPart>
+      </VirtualParts>
+    </SymbolObject>
+    <SymbolObject>
+      <Name>Mac 600</Name>
+      <Category>Lighting</Category>
+      <PartType>Symbol</PartType>
+      <Stock>12</Stock>
+    </SymbolObject>
+    <SymbolObject>
+      <Name>FT34 Truss 2.5m</Name>
+      <Category>Rigging</Category>
+      <PartType>Symbol</PartType>
+      <Stock>40</Stock>
+      <VirtualParts>
+        <VirtualPart>
+          <Name>Truss Bolt Set</Name>
+          <DefaultQuantity>4</DefaultQuantity>
+        </VirtualPart>
+      </VirtualParts>
+    </SymbolObject>
+    <SymbolObject>
+      <Name>QSC K12.2</Name>
+      <Category>Audio</Category>
+      <PartType>Symbol</PartType>
+      <Stock>8</Stock>
+    </SymbolObject>
+    <SymbolObject>
+      <Name>Barco HDX-W20</Name>
+      <Category>Video</Category>
+      <PartType>Symbol</PartType>
+      <Stock>2</Stock>
+    </SymbolObject>
+  </SymbolObjects>
+  <IndependentVirtualParts>
+    <IndependentVirtualPart>
+      <Name>Gaffer Tape</Name>
+      <PartType>IVP</PartType>
+      <Stock>24</Stock>
+    </IndependentVirtualPart>
+    <IndependentVirtualPart>
+      <Name>Spare Safety Cable</Name>
+      <PartType>IVP</PartType>
+      <Stock>50</Stock>
+    </IndependentVirtualPart>
+  </IndependentVirtualParts>
+</Inventory>
