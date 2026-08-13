@@ -10,7 +10,7 @@ import { readFile, unlink } from 'node:fs/promises';
 
 import { atomicWriteJson } from './storage.js';
 
-export type ObjectLinkKind = 'stage-stairs' | 'group';
+export type ObjectLinkKind = 'stage-stairs' | 'group' | 'stack-on';
 
 export interface ObjectLinkPair {
   a: number;
@@ -31,7 +31,7 @@ export function objectLinkPairKey(a: number, b: number): string {
 }
 
 function parseKind(value: unknown): ObjectLinkKind | undefined {
-  if (value === 'group' || value === 'stage-stairs') return value;
+  if (value === 'group' || value === 'stage-stairs' || value === 'stack-on') return value;
   return undefined;
 }
 

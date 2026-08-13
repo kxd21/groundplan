@@ -19,6 +19,8 @@
  */
 
 import { allocate, summariseAllocation, type Allocation } from '../format/allocation.js';
+import { createDimension } from '../format/annotate.js';
+import { placeGear } from '../format/place.js';
 import {
   checkSightlines,
   recommendImageWidth,
@@ -26,10 +28,11 @@ import {
   summariseSightlines,
   type Screen,
   type SightlineSummary,
+  type SightlineVerdict,
 } from '../format/av.js';
 import type { CompanionDocument, PlanBackground } from '../format/companion.js';
 import { createCompanion, parsePlanBackground } from '../format/companion.js';
-import { resolveInstances, SpecLibrary, type PlacedItem } from '../format/definition.js';
+import { instanceKey, resolveInstances, SpecLibrary, type PlacedItem } from '../format/definition.js';
 import { dimensionRoom as dimensionRoomDrawings } from '../format/dimension.js';
 import { renderDimensions } from '../format/dimension-render.js';
 import { buildLegend, defaultLayers, titleBlockFor } from '../format/layers.js';
@@ -154,8 +157,26 @@ const EMPTY: PlanModelState = {
 
 let state: PlanModelState = { ...EMPTY };
 
+/** Ceiling entered at New Plan before walls exist (custom / site-plan path). */
+let pendingCeilingHeight: number | undefined;
+
 export function resetPlanModel(): void {
   state = { ...EMPTY };
+  pendingCeilingHeight = undefined;
+}
+
+/** Remember a ceiling height until the first authored room lands. */
+export function setPendingCeilingHeight(height: number | undefined): void {
+  pendingCeilingHeight =
+    typeof height === 'number' && Number.isFinite(height) && height > 0 ? height : undefined;
+}
+
+function takePendingCeiling(room: RoomModel): RoomModel {
+  if (room.ceilingHeight && room.ceilingHeight > 0) return room;
+  if (!pendingCeilingHeight) return room;
+  const height = pendingCeilingHeight;
+  pendingCeilingHeight = undefined;
+  return { ...room, ceilingHeight: height };
 }
 
 /** Reads the companion beside a plan, or derives one from the drawing. */
@@ -175,7 +196,7 @@ export async function openPlanModel(planPath: string, doc: RVDocument, units: Un
     placedSeatCounts: null,
     lastClearances: null,
     lastSeatCounts: null,
-    stage: null,
+    stage: loaded.companion.stage ?? null,
   };
 }
 
@@ -191,7 +212,13 @@ export async function savePlanModel(planPath: string, body: Buffer): Promise<voi
   // Nothing has been authored: the room in there was read off the drawing and
   // can be read off it again, so writing a sidecar would only litter the folder
   // beside a plan the user never touched.
-  if (state.derived && !companion.background) return;
+  const worthKeeping =
+    !state.derived ||
+    !!companion.background ||
+    !!companion.stage ||
+    companion.overrides.length > 0 ||
+    companion.library.length > 0;
+  if (!worthKeeping) return;
   await saveCompanion(planPath, body, companion);
   state.freshness = 'fresh';
 }
@@ -209,6 +236,7 @@ export function adoptCompanionSnapshot(companion: CompanionDocument): void {
   state.reason = undefined;
   state.rendered = companion.rooms[0] ?? null;
   state.derivedSource = state.derived ? state.derivedSource : 'none';
+  state.stage = companion.stage ?? null;
 }
 
 /** The current room, from the companion or derived from the drawing. */
@@ -231,10 +259,27 @@ function setRoom(doc: RVDocument, room: RoomModel, units: UnitSystem): void {
  * the companion instead of re-deriving only the flattened RV polylines.
  */
 export function adoptAuthoredRoom(session: Session, room: RoomModel, units: UnitSystem): void {
-  setRoom(session.loaded.document, room, units);
-  state.rendered = room;
+  const next = takePendingCeiling(room);
+  setRoom(session.loaded.document, next, units);
+  state.rendered = next;
   state.derivedSource = 'none';
   state.reason = undefined;
+}
+
+/** Uniformly scales the companion underlay about the plan origin (same as RV geometry). */
+export function scaleCompanionBackground(factor: number): PlanBackground | null {
+  const background = state.companion?.background;
+  if (!background) return null;
+  if (!Number.isFinite(factor) || factor <= 0) return background;
+  const next: PlanBackground = {
+    ...background,
+    x: background.x * factor,
+    y: background.y * factor,
+    width: background.width * factor,
+    height: background.height * factor,
+  };
+  state.companion!.background = next;
+  return next;
 }
 
 /** Sets or removes the raster underlay and persists it without dirtying the RV file. */
@@ -500,7 +545,10 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
     y: bounds ? bounds.minY : 0,
     areaText: formatArea(roomArea(room), units),
     perimeterText: formatLength(roomPerimeter(room), units),
-    sizeText: `${formatLength(width, units)} × ${formatLength(height, units)}`,
+    sizeText:
+      room.ceilingHeight && room.ceilingHeight > 0
+        ? `${formatLength(width, units)} × ${formatLength(height, units)} × ${formatLength(room.ceilingHeight, units)} ceiling`
+        : `${formatLength(width, units)} × ${formatLength(height, units)}`,
     ceilingText:
       room.ceilingHeight && room.ceilingHeight > 0 ? formatLength(room.ceilingHeight, units) : '',
     summary: describeRoom(room),
@@ -511,17 +559,9 @@ function summarise(room: RoomModel | null, source: RoomSummary['source'], units:
 
 export function planModelView(session: Session, units: UnitSystem): PlanModelView {
   const doc = session.loaded.document;
-  const saved = state.companion?.rooms[0];
-  const usingSaved = !!saved && saved.walls.length >= 3 && state.freshness !== 'stale';
-  const derived = usingSaved ? null : deriveRoom(doc);
-  const room = usingSaved ? saved! : derived!.room;
-  // A room the user has authored is the companion's; one that was only derived
-  // reports where it actually came from, however it is being stored.
-  const source: RoomSummary['source'] = usingSaved
-    ? state.derived
-      ? state.derivedSource
-      : 'companion'
-    : derived!.source;
+  const roomResolved = resolvePlanRoom(doc);
+  const room = roomResolved.room;
+  const source: RoomSummary['source'] = roomResolved.source;
 
   const stageSolution = state.stage ? solveStage(state.stage) : null;
 
@@ -530,7 +570,9 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
     room: summarise(room, source, units),
     companion: {
       freshness: state.freshness,
-      reason: state.reason ?? (derived && !usingSaved ? describeSource(derived.source) : undefined),
+      reason:
+        state.reason ??
+        (roomResolved.derivedDetail ? describeSource(roomResolved.derivedDetail) : undefined),
       derived: state.derived,
       path: companionPathFor(session.path),
     },
@@ -557,6 +599,31 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
             warnings: [...stageSolution.notes, ...stageWarnings(state.stage)],
           }
         : null,
+  };
+}
+
+/**
+ * Authored companion room when fresh, otherwise the room derived from walls.
+ * Shared by seating, wall setback, and the model view.
+ */
+export function resolvePlanRoom(doc: RVDocument): {
+  room: RoomModel;
+  source: RoomSummary['source'];
+  derivedDetail?: ReturnType<typeof deriveRoom>['source'];
+} {
+  const saved = state.companion?.rooms[0];
+  const usingSaved = !!saved && saved.walls.length >= 3 && state.freshness !== 'stale';
+  if (usingSaved) {
+    return {
+      room: saved!,
+      source: state.derived ? state.derivedSource : 'companion',
+    };
+  }
+  const derived = deriveRoom(doc);
+  return {
+    room: derived.room,
+    source: derived.source,
+    derivedDetail: derived.source,
   };
 }
 
@@ -591,11 +658,17 @@ function replaceAuthoredRoom(session: Session, room: RoomModel, units: UnitSyste
   // Prefer the companion's last render; if missing (opened plan, no sidecar),
   // fall back to the derived current room so Redraw replaces walls instead of stacking.
   const previous = state.rendered ?? currentRoom(doc) ?? undefined;
-  const drawn = applyRoom(doc, room, previous);
+  // Keep ceiling / name across redraws unless the new room already sets them.
+  const next: RoomModel = takePendingCeiling({
+    ...room,
+    name: room.name || previous?.name || 'Room',
+    ceilingHeight: room.ceilingHeight ?? previous?.ceilingHeight,
+  });
+  const drawn = applyRoom(doc, next, previous);
   if (!drawn.ok) return { ok: false, reason: drawn.reason };
 
-  state.rendered = room;
-  setRoom(doc, room, units);
+  state.rendered = next;
+  setRoom(doc, next, units);
   return {
     ok: true,
     created: drawn.createdIds,
@@ -1295,6 +1368,8 @@ export function addStage(
   }
 
   state.stage = build;
+  if (!state.companion) state.companion = createCompanion(doc, 'imperial');
+  state.companion.stage = structuredClone(build);
   return {
     ok: true,
     created,
@@ -1306,6 +1381,191 @@ export function addStage(
 
 export function clearStage(): void {
   state.stage = null;
+  if (state.companion) delete state.companion.stage;
+}
+
+/**
+ * Elevations for DXF INSERT Z — companion overrides / inferred specs, with
+ * stage deck height applied to stage / stair shapes.
+ */
+export function placementElevations(session: Session): Map<string, number> {
+  const items = placedItems(session.loaded.document);
+  const map = new Map<string, number>();
+  const stageTop = state.stage
+    ? Math.max(0, ...state.stage.levels.map((level) => level.height))
+    : 0;
+  for (const item of items) {
+    let elev = item.elevation;
+    if (stageTop > 0 && /\b(stage|riser|deck|platform|stair)/i.test(item.name)) {
+      elev = Math.max(elev, stageTop);
+    }
+    if (elev > 0) map.set(item.key, elev);
+  }
+  return map;
+}
+
+/** Writes a per-placement elevation (AFF) into the companion overrides. */
+export function setInstanceElevation(
+  session: Session,
+  key: string,
+  elevation: number | null,
+  units: UnitSystem,
+): ModelEdit {
+  const doc = session.loaded.document;
+  if (!state.companion) state.companion = createCompanion(doc, units);
+  const trimmed = key.trim();
+  if (!trimmed) return { ok: false, reason: 'no placement selected' };
+  const next = state.companion.overrides.filter((o) => o.key !== trimmed);
+  if (elevation != null && elevation >= 0) {
+    next.push({ key: trimmed, elevation });
+  }
+  state.companion.overrides = next;
+  return {
+    ok: true,
+    note:
+      elevation != null && elevation >= 0
+        ? `Height set to ${(elevation / UNITS_PER_FOOT).toFixed(2)} ft above floor`
+        : 'Height cleared',
+  };
+}
+
+/** Selection helper — elevation for the inspector. */
+export function selectionElevation(
+  session: Session,
+  nodeId: number,
+): { key: string; elevation: number; inferred: boolean } | null {
+  const item = placedItems(session.loaded.document).find((p) => p.nodeId === nodeId);
+  if (!item) return null;
+  const override = state.companion?.overrides.find((o) => o.key === item.key);
+  return {
+    key: item.key,
+    elevation: item.elevation,
+    inferred: item.estimated && override?.elevation == null,
+  };
+}
+
+/**
+ * Places a named open polyline (power / data run) that counts on the schedule.
+ */
+export function addCablePath(
+  session: Session,
+  name: string,
+  points: Array<{ x: number; y: number }>,
+): ModelEdit {
+  if (points.length < 2) return { ok: false, reason: 'click at least two points for a cable run' };
+  const label = name.trim() || 'Power run';
+  const doc = session.loaded.document;
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const local = points.map((p) => ({ x: p.x - cx, y: p.y - cy }));
+  // Open polyline: do not close back to start.
+  const shape = createShape(doc, {
+    name: label,
+    x: cx,
+    y: cy,
+    outline: [local],
+  });
+  if (!shape.ok || !shape.node) return { ok: false, reason: shape.reason };
+  const host = planBody(doc);
+  const added = host ? appendChild(doc, host, shape.node) : addRoot(doc, shape.node);
+  if (!added.ok) return { ok: false, reason: added.reason };
+
+  // Length note on companion library for the schedule.
+  const length = points.slice(1).reduce((sum, p, i) => {
+    const prev = points[i]!;
+    return sum + Math.hypot(p.x - prev.x, p.y - prev.y);
+  }, 0);
+  if (!state.companion) state.companion = createCompanion(doc, 'imperial');
+  const existing = state.companion.library.find((s) => s.name.toLowerCase() === label.toLowerCase());
+  if (!existing) {
+    state.companion.library.push({
+      id: `path:${label.toLowerCase().replace(/\s+/g, '-')}`,
+      name: label,
+      category: 'power',
+      height: 0,
+      elevation: 0,
+      notes: `Run length ~${(length / UNITS_PER_FOOT).toFixed(1)} ft`,
+    });
+  }
+  state.companion.overrides = [
+    ...state.companion.overrides.filter((o) => o.key !== instanceKey(label, cx, cy)),
+    { key: instanceKey(label, cx, cy), layer: 'power', label: `${(length / UNITS_PER_FOOT).toFixed(1)} ft` },
+  ];
+
+  return {
+    ok: true,
+    created: [shape.node.id],
+    note: `Placed ${label} · ${(length / UNITS_PER_FOOT).toFixed(1)} ft`,
+  };
+}
+
+/**
+ * Places a Fastfold-style screen and a projector at a typical throw distance,
+ * then a throw dimension between them.
+ */
+export function placeScreenProjectorPair(
+  session: Session,
+  at: { x: number; y: number },
+  screenName = 'Fastfold Screen',
+  projectorName = 'Projector',
+): ModelEdit {
+  const doc = session.loaded.document;
+  const index = indexDocument(doc);
+  const imageWidth = 16 * UNITS_PER_FOOT;
+  const throwDist = 1.5 * imageWidth;
+  const screen = placeGear(doc, index, screenName, at.x, at.y);
+  if (!screen.ok) return { ok: false, reason: screen.reason ?? 'could not place the screen' };
+  const nextIndex = indexDocument(doc);
+  const projector = placeGear(doc, nextIndex, projectorName, at.x, at.y + throwDist);
+  if (!projector.ok) {
+    return {
+      ok: true,
+      created: screen.created,
+      note: 'Screen placed — no projector match in inventory; place one and set throw manually',
+    };
+  }
+  const created = [...(screen.created ?? []), ...(projector.created ?? [])];
+  const dimIndex = indexDocument(doc);
+  const dim = createDimension(doc, dimIndex, at.x, at.y, at.x, at.y + throwDist);
+  if (dim.ok && dim.created?.length) created.push(...dim.created);
+  return {
+    ok: true,
+    created,
+    note: `Placed ${screenName} + ${projectorName} with throw dimension`,
+  };
+}
+
+export interface SightlineMarker {
+  x: number;
+  y: number;
+  verdict: SightlineVerdict;
+}
+
+/** Seat markers for canvas tint from the current sightline check. */
+export function sightlineMarkers(session: Session): SightlineMarker[] {
+  const items = placedItems(session.loaded.document);
+  const screens = screensFromItems(items);
+  if (!screens.length) return [];
+  const screen = screens[0]!;
+  const seats = items
+    .filter((item) => /chair|seat/i.test(item.name) || /chair/i.test(item.spec?.category ?? ''))
+    .map((item, index) => ({
+      x: item.x,
+      y: item.y,
+      rotation: item.rotation,
+      row: 0,
+      seat: index,
+      section: 0,
+    }));
+  if (!seats.length) return [];
+  const views = checkSightlines(seats, screen, items);
+  return views.map((view) => ({
+    x: view.seat.x,
+    y: view.seat.y,
+    verdict: view.verdict,
+  }));
 }
 
 // ---------------------------------------------------------------------------

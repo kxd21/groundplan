@@ -11,10 +11,18 @@ export interface FurnitureCounts {
   tables: number;
 }
 
-const CHAIR_RE =
+export const CHAIR_RE =
   /\bchair\b|\bseat\b|stool|chiavari|stacker|folding.?chair|armchair|banquet.?chair|padded.?chair|ballroom.?chair|conference.?chair/i;
-const TABLE_RE =
+export const TABLE_RE =
   /\btable\b|banquet|cabaret|cocktail|schoolroom|serpentine|high.?top|round\s*\d|rect(angular)?\s*\d|\d+\s*["″]?\s*round/i;
+
+export type FurnitureKind = 'seating' | 'chairs' | 'tables' | 'gear';
+
+export function classifyFurnitureName(name: string): 'chair' | 'table' | 'gear' {
+  if (CHAIR_RE.test(name)) return 'chair';
+  if (TABLE_RE.test(name)) return 'table';
+  return 'gear';
+}
 
 export function countFurniture(
   items: Array<{ name: string; count?: number }>,
@@ -28,4 +36,26 @@ export function countFurniture(
     else if (TABLE_RE.test(name)) tables += n;
   }
   return { chairs, tables };
+}
+
+/** Selectable shape ids on the furniture layer matching chairs, tables, or other gear. */
+export function furnitureSelectIds(
+  primitives: Array<{ layer: string; selectId: number; owner?: string }>,
+  kind: FurnitureKind,
+): number[] {
+  const ids = new Set<number>();
+  for (const primitive of primitives) {
+    if (primitive.layer !== 'furniture' || !primitive.owner) continue;
+    const classed = classifyFurnitureName(primitive.owner);
+    const match =
+      kind === 'chairs'
+        ? classed === 'chair'
+        : kind === 'tables'
+          ? classed === 'table'
+          : kind === 'seating'
+            ? classed === 'chair' || classed === 'table'
+            : classed === 'gear';
+    if (match) ids.add(primitive.selectId);
+  }
+  return [...ids];
 }

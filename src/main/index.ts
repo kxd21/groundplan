@@ -11,9 +11,10 @@ import { isBrokenPipe } from './ignore-epipe.js';
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, type MenuItemConstructorOptions } from 'electron';
 import { join, dirname, basename, extname } from 'node:path';
 import { readdir, readFile, stat, mkdir, unlink } from 'node:fs/promises';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { COMMAND_LIST, isCommandId } from '../shell/command-ids.js';
 
 // Electron shows a modal for every main-process uncaughtException. EPIPE from a
 // closed stdout/stderr is harmless — hide that dialog if one still slips through.
@@ -104,7 +105,8 @@ import { walk, type RVDocument, type RVNode } from '../format/rv.js';
 import { importDetachedObject, listSymbols, importSymbol } from '../format/symbol.js';
 import { snapshotPlanSelection } from '../format/plan-clipboard.js';
 import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions, findMatchingShape } from '../format/place.js';
-import { nearestWallSnap, wantsWallSnap } from '../format/wall-snap.js';
+import { nearestWallSnap, wallSetback, wantsWallSnap } from '../format/wall-snap.js';
+import { arrayGrid } from '../format/array-grid.js';
 import { deriveRoom } from '../format/room.js';
 import { isLibrary } from '../format/library.js';
 import { verifyWritable } from '../format/write.js';
@@ -159,7 +161,7 @@ import {
 import { loadInventoryWithStatus, saveInventory, inventoryPath } from '../inventory/store.js';
 import { exportInventoryPack, importInventoryPack } from '../inventory/share.js';
 import { seedStarterInventory } from '../inventory/seed.js';
-import { applyFullLayoutRecipe } from '../inventory/apply-layout.js';
+import { applyFullLayoutRecipe, clearGearShapes, clearSeatingShapes } from '../inventory/apply-layout.js';
 import { exportLayoutRecipe } from '../inventory/export-layout-recipe.js';
 import {
   deleteBankPreset,
@@ -196,6 +198,7 @@ import { planIdentity, setPlanIdentity } from '../format/plan-skeleton.js';
 import { companionPathFor } from './companion-store.js';
 import {
   addRoomCorner,
+  addCablePath,
   addStage,
   adoptAuthoredRoom,
   adoptCompanionSnapshot,
@@ -215,8 +218,11 @@ import {
   moveRoomCorner,
   offsetRoomWall,
   openPlanModel,
+  placeScreenProjectorPair,
+  placementElevations,
   planAllocation,
   planModelView,
+  resolvePlanRoom,
   planReport,
   previewSeating,
   removeRoomCorner,
@@ -225,6 +231,11 @@ import {
   roundRoomCorner,
   resetPlanModel,
   savePlanModel,
+  scaleCompanionBackground,
+  selectionElevation,
+  setInstanceElevation,
+  setPendingCeilingHeight,
+  sightlineMarkers,
   updatePlanBackground,
   updateRoomMeta,
   type DrawTool,
@@ -377,6 +388,11 @@ export interface SelectionInfo {
   /** Centre of the object's bounds, in logical units. */
   x: number;
   y: number;
+  /**
+   * Absolute placement angle in degrees when the file stores one (RVShape).
+   * Null for free geometry that only supports relative rotate-by.
+   */
+  angleDegrees: number | null;
   /** Saved typography for an RVLabel. */
   textStyle?: {
     family: string;
@@ -718,7 +734,9 @@ function linkObjects(a: number, b: number, kind: ObjectLinkKind = 'stage-stairs'
   const key = objectLinkPairKey(a, b);
   const existing = objectLinkKinds.get(key);
   // Stage↔stairs is the stronger bond; do not overwrite it with a furniture group.
-  if (existing !== 'stage-stairs') objectLinkKinds.set(key, kind);
+  if (existing === 'stage-stairs') return;
+  if (existing === 'stack-on' && kind === 'group') return;
+  objectLinkKinds.set(key, kind);
   scheduleObjectLinkPersist();
 }
 
@@ -1185,9 +1203,11 @@ function describe(s: Session): OpenResult {
       };
     })(),
     hasRoom: (() => {
-      const model = planModelView(s, unitSystem());
-      const walls = model?.room?.walls ?? 0;
-      return walls >= 3 && model?.room?.source !== 'extent' && model?.room?.source !== 'none';
+      // Avoid planModelView on every edit reply — that walks the whole seating
+      // model. A quick wall-ish primitive count is enough for chrome gating.
+      if (!s.scene.roomExtent) return false;
+      const wallish = s.scene.primitives.filter((p) => p.layer === 'walls' || p.layer === 'region').length;
+      return wallish >= 3;
     })(),
   };
 }
@@ -1278,12 +1298,16 @@ const RESULT_CHANNELS = new Set([
   'edit:text-style',
   'edit:batch',
   'edit:repeat-across',
+  'edit:array-grid',
+  'edit:setback-from-wall',
   'edit:arrange',
   'edit:clipboard-copy',
   'edit:clipboard-paste',
   'edit:clipboard-status',
   'edit:group',
   'edit:ungroup',
+  'edit:attach-stack',
+  'edit:detach-stack',
   'edit:point-kind',
   'inventory:map-symbols',
   'inventory:absorb-gear',
@@ -1312,6 +1336,8 @@ const RESULT_CHANNELS = new Set([
   'plan:add-seating',
   'plan:apply-layout-recipe',
   'plan:save-layout-kit',
+  'plan:save-open-as-kit',
+  'plan:clear-furniture',
   'plan:import-layout-kit',
   'plan:export-layout-recipe',
   'plan:save-bank-preset',
@@ -1319,6 +1345,7 @@ const RESULT_CHANNELS = new Set([
   'plan:add-label',
   'plan:add-dimension',
   'file:save',
+  'file:duplicate-path',
   'schedule:set-field',
   'export:dxf',
   'print:pdf',
@@ -1341,10 +1368,19 @@ const RESULT_CHANNELS = new Set([
   'plan:seating-apply',
   'plan:stage-add',
   'plan:report-export',
+  'plan:pull-sheet-export',
   'plan:draw',
+  'plan:add-cable-path',
+  'plan:place-av-pair',
+  'plan:set-elevation',
+  'plan:selection-elevation',
+  'plan:selection-elevations',
+  'plan:linked-set',
+  'plan:sightline-markers',
   'plan:background-set',
   'file:new',
   'file:discard-empty-plan',
+  'command:run',
 ]);
 
 function handle(
@@ -1373,14 +1409,24 @@ function handle(
   });
 }
 
-function applyEdit(run: (s: Session) => {
-  ok: boolean;
-  reason?: string;
-  text?: string;
-  created?: number[];
-  placed?: number;
-  method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
-}): {
+function applyEdit(
+  run: (s: Session) => {
+    ok: boolean;
+    reason?: string;
+    text?: string;
+    created?: number[];
+    placed?: number;
+    method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
+  },
+  options?: {
+    /**
+     * Skip the full serialize/parse round-trip check for known-safe transforms
+     * of existing shapes (move / rotate / orient / flip). Still refreshes the
+     * scene and schedules recovery. Create/delete/relabel keep full verify.
+     */
+    skipRoundTripVerify?: boolean;
+  },
+): {
   ok: boolean;
   reason?: string;
   text?: string;
@@ -1423,11 +1469,13 @@ function applyEdit(run: (s: Session) => {
     // Refuse edits that would write a document the parser cannot reproduce —
     // the synthesis contract. Blank plans already gate on this; live edits must
     // too, or a bad seating/label/room write reaches disk on Save.
-    const verdict = verifyWritable(s.loaded.document);
-    if (!verdict.ok) {
-      s.rollback();
-      dimensionAssociations = associationsBefore;
-      return { ok: false, reason: verdict.reason };
+    if (!options?.skipRoundTripVerify) {
+      const verdict = verifyWritable(s.loaded.document);
+      if (!verdict.ok) {
+        s.rollback();
+        dimensionAssociations = associationsBefore;
+        return { ok: false, reason: verdict.reason };
+      }
     }
 
     s.refresh();
@@ -2637,6 +2685,17 @@ function buildMenu(): void {
       label: '&View',
       submenu: [
         { label: 'Zoom to Fit', accelerator: 'CmdOrCtrl+0', click: () => mainWindow?.webContents.send('menu:fit') },
+        { type: 'separator' },
+        {
+          label: 'Workspace Mode',
+          submenu: [
+            { label: 'Browse', click: () => mainWindow?.webContents.send('menu:mode-browse') },
+            { label: 'Place', click: () => mainWindow?.webContents.send('menu:mode-place') },
+            { label: 'Inspect', click: () => mainWindow?.webContents.send('menu:mode-inspect') },
+            { label: 'Setup', click: () => mainWindow?.webContents.send('menu:mode-setup') },
+            { label: 'Draw', click: () => mainWindow?.webContents.send('menu:mode-draw') },
+          ],
+        },
         ...(!app.isPackaged
           ? [
               { type: 'separator' as const },
@@ -2652,6 +2711,16 @@ function buildMenu(): void {
     {
       label: '&Help',
       submenu: [
+        {
+          label: 'Command Palette…',
+          accelerator: 'CmdOrCtrl+K',
+          click: () => mainWindow?.webContents.send('menu:palette'),
+        },
+        {
+          label: 'Keyboard Shortcuts…',
+          click: () => mainWindow?.webContents.send('menu:shortcuts'),
+        },
+        { type: 'separator' },
         { label: 'Check for Updates…', click: () => void runAppUpdate(true) },
         { label: 'Install Update from USB…', click: () => void runUsbUpdate() },
       ],
@@ -2806,6 +2875,15 @@ app.whenReady().then(async () => {
   });
 
   handle('dialog:open-folder', async () => {
+    // Usability / CDP: hang then cancel so the renderer busy-release timer can fire
+    // without leaving a real macOS folder picker open.
+    const e2eDelayMs = Number(process.env.GROUNDPLAN_E2E_FOLDER_DELAY_MS || 0);
+    if (Number.isFinite(e2eDelayMs) && e2eDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, e2eDelayMs));
+      return null;
+    }
+    if (process.env.GROUNDPLAN_E2E_FOLDER_CANCEL === '1') return null;
+
     const result = await dialog.showOpenDialog({
       title: 'Choose a folder of Room Viewer files',
       properties: ['openDirectory'],
@@ -3124,11 +3202,71 @@ app.whenReady().then(async () => {
     return { ok: true, text: `Ungrouped ${removed} link${removed === 1 ? '' : 's'}` };
   });
 
+  /**
+   * Stacks a child on a parent surface: link for move/rotate together, and
+   * copy the parent's height above floor onto the child.
+   */
+  handle('edit:attach-stack', (_event, parentId: number, childId: number) => {
+    const s = session;
+    if (!s) return { ok: false, reason: 'open a plan first' };
+    if (!s.editable) return { ok: false, reason: 'this plan is read-only' };
+    const parent = Number(parentId);
+    const child = Number(childId);
+    if (!(Number.isFinite(parent) && Number.isFinite(child)) || parent === child) {
+      return { ok: false, reason: 'pick a parent and a different child' };
+    }
+    if (!s.index.byId.has(parent) || !s.index.byId.has(child)) {
+      return { ok: false, reason: 'object no longer exists' };
+    }
+    linkObjects(parent, child, 'stack-on');
+    const parentElev = selectionElevation(s, parent);
+    const childElev = selectionElevation(s, child);
+    let note = 'Stacked — moves with parent';
+    if (parentElev && childElev && parentElev.elevation >= 0) {
+      const elevResult = setInstanceElevation(s, childElev.key, parentElev.elevation, unitSystem());
+      if (elevResult.ok && elevResult.note) note = `${elevResult.note} · stacked on parent`;
+      void savePlanModel(s.path, s.savedArchiveBody()).catch((error) => {
+        planSidecarPending = true;
+        console.error('[groundplan] could not save stack elevation:', error);
+      });
+    }
+    scheduleObjectLinkPersist();
+    return { ok: true, text: note, doc: describe(s) };
+  });
+
+  handle('edit:detach-stack', (_event, ids: number[]) => {
+    const s = session;
+    if (!s) return { ok: false, reason: 'open a plan first' };
+    if (!s.editable) return { ok: false, reason: 'this plan is read-only' };
+    const requested = (Array.isArray(ids) ? ids : []).filter((id) => Number.isFinite(id) && s.index.byId.has(id));
+    if (!requested.length) return { ok: false, reason: 'select stacked items to detach' };
+    const members = expandLinkedIds(requested);
+    let removed = 0;
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        if (unlinkObjects(members[i]!, members[j]!, 'stack-on')) removed++;
+      }
+    }
+    if (!removed) return { ok: false, reason: 'those items are not stacked together' };
+    scheduleObjectLinkPersist();
+    return { ok: true, text: `Detached ${removed} stack link${removed === 1 ? '' : 's'}` };
+  });
+
   handle('edit:move', (_event, nodeId: number, dx: number, dy: number) =>
     applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
       if (!node) return { ok: false, reason: 'object no longer exists' };
-      return moveNode(s.loaded.document, node, dx, dy);
+      // Keep stack / stage partners with a solo nudge from older callers.
+      const partners = expandLinkedIds([nodeId]).filter((id) => id !== nodeId);
+      const moved = moveNode(s.loaded.document, node, dx, dy);
+      if (!moved.ok) return moved;
+      for (const id of partners) {
+        const partner = s.index.byId.get(id);
+        if (!partner) continue;
+        const next = moveNode(s.loaded.document, partner, dx, dy);
+        if (!next.ok) return next;
+      }
+      return { ok: true };
     }),
   );
 
@@ -4637,7 +4775,16 @@ app.whenReady().then(async () => {
     (
       _event,
       recipeOrKitId: unknown,
-      options?: { replaceExistingSeating?: boolean; kitId?: string },
+      options?: {
+        replaceExistingSeating?: boolean;
+        replaceExistingGear?: boolean;
+        kitId?: string;
+        fitToExistingRoom?: boolean;
+        includeStage?: boolean;
+        includeSeating?: boolean;
+        includeGear?: boolean;
+        includeAnnotations?: boolean;
+      },
     ) => {
       let recipe = recipeOrKitId;
       if (typeof options?.kitId === 'string') {
@@ -4656,7 +4803,13 @@ app.whenReady().then(async () => {
         const result = applyFullLayoutRecipe(s, layout, {
           inventory,
           replaceExistingSeating: Boolean(options?.replaceExistingSeating),
+          replaceExistingGear: Boolean(options?.replaceExistingGear),
           createRoomIfMissing: true,
+          fitToExistingRoom: options?.fitToExistingRoom !== false,
+          includeStage: options?.includeStage,
+          includeSeating: options?.includeSeating,
+          includeGear: options?.includeGear,
+          includeAnnotations: options?.includeAnnotations,
           units: unitSystem(),
         });
         if (!result.ok) return { ok: false, reason: result.reason };
@@ -4669,6 +4822,58 @@ app.whenReady().then(async () => {
       });
     },
   );
+
+  handle('plan:save-open-as-kit', (_event, fileName?: string) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const recipe = exportLayoutRecipe(session.loaded.document);
+    if (fileName?.trim()) {
+      recipe.identity = { ...recipe.identity, event: fileName.trim() };
+    }
+    return saveLayoutKit(app.getPath('userData'), recipe, fileName?.trim());
+  });
+
+  handle('plan:clear-furniture', (_event, kind: 'seating' | 'gear' | 'all' = 'seating') =>
+    applyEdit((s) => {
+      let removed = 0;
+      if (kind === 'seating' || kind === 'all') removed += clearSeatingShapes(s);
+      if (kind === 'gear' || kind === 'all') removed += clearGearShapes(s);
+      return {
+        ok: true,
+        text: removed
+          ? `Cleared ${removed.toLocaleString()} object${removed === 1 ? '' : 's'}`
+          : 'Nothing to clear',
+        placed: removed,
+      };
+    }),
+  );
+
+  handle('file:duplicate-path', async (_event, sourcePath: string) => {
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return { ok: false, reason: 'that plan could not be found' };
+    }
+    try {
+      const dir = dirname(sourcePath);
+      const base = basename(sourcePath, '.rv4');
+      let target = join(dir, `${base} copy.rv4`);
+      let n = 2;
+      while (existsSync(target)) {
+        target = join(dir, `${base} copy ${n}.rv4`);
+        n += 1;
+      }
+      copyFileSync(sourcePath, target);
+      const companionSrc = `${sourcePath}.groundplan.json`;
+      if (existsSync(companionSrc)) {
+        try {
+          copyFileSync(companionSrc, `${target}.groundplan.json`);
+        } catch {
+          /* companion is optional */
+        }
+      }
+      return openPath(target);
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   handle('plan:save-layout-kit', (_event, recipe: unknown, fileName?: string) => {
     if (!isLayoutRecipe(recipe)) return { ok: false, reason: 'not a valid layout recipe' };
@@ -4749,6 +4954,105 @@ app.whenReady().then(async () => {
     applyEdit((s) => drawShape(s, tool, x1, y1, x2, y2)),
   );
 
+  handle('plan:add-cable-path', (_event, name: string, points: Array<{ x: number; y: number }>) =>
+    applyEdit((s) => addCablePath(s, typeof name === 'string' ? name : 'Power run', Array.isArray(points) ? points : [])),
+  );
+
+  handle('plan:place-av-pair', (_event, x: number, y: number) =>
+    applyEdit((s) => placeScreenProjectorPair(s, { x: Number(x) || 0, y: Number(y) || 0 })),
+  );
+
+  handle('plan:set-elevation', async (_event, key: string, elevation: number | null) => {
+    const s = session;
+    if (!s) return { ok: false, reason: 'no plan is open' };
+    if (!s.editable) return { ok: false, reason: 'this plan is read-only' };
+    const result = setInstanceElevation(
+      s,
+      typeof key === 'string' ? key : '',
+      elevation == null ? null : Number(elevation),
+      unitSystem(),
+    );
+    if (!result.ok) return result;
+    try {
+      await savePlanModel(s.path, s.savedArchiveBody());
+      planSidecarPending = false;
+    } catch (error) {
+      planSidecarPending = true;
+      schedulePlanRecovery(s);
+      console.error('[groundplan] could not save elevation:', error);
+    }
+    return { ok: true, note: result.note, doc: describe(s) };
+  });
+
+  handle('plan:selection-elevation', (_event, nodeId: number) =>
+    session ? selectionElevation(session, Number(nodeId)) : null,
+  );
+
+  handle('plan:selection-elevations', (_event, ids: number[]) => {
+    if (!session || !Array.isArray(ids)) return [];
+    return ids.map((id) => {
+      const info = selectionElevation(session!, Number(id));
+      return {
+        id: Number(id),
+        key: info?.key ?? '',
+        elevation: info?.elevation ?? 0,
+        inferred: info?.inferred ?? true,
+      };
+    });
+  });
+
+  /**
+   * Linked stack / group members for canvas overlays and the Properties coach.
+   * Only returns a set when real stack-on / stage-stairs links exist — a plain
+   * multi-select of chairs is not a digital stack.
+   */
+  handle('plan:linked-set', (_event, ids: number[]) => {
+    if (!session || !Array.isArray(ids) || !ids.length) return [];
+    const seed = ids.map(Number).filter((id) => Number.isFinite(id) && session!.index.byId.has(id));
+    if (!seed.length) return [];
+
+    const stackPartners = new Set<number>(seed);
+    const queue = [...seed];
+    let foundLink = false;
+    while (queue.length) {
+      const id = queue.pop()!;
+      for (const partner of objectLinks.get(id) ?? []) {
+        const kind = objectLinkKinds.get(objectLinkPairKey(id, partner));
+        if (kind !== 'stack-on' && kind !== 'stage-stairs') continue;
+        foundLink = true;
+        if (stackPartners.has(partner)) continue;
+        stackPartners.add(partner);
+        queue.push(partner);
+      }
+    }
+    if (!foundLink) return [];
+
+    const members = [...stackPartners];
+    const primary = seed[0]!;
+    return members.map((id) => {
+      const node = session!.index.byId.get(id);
+      const elev = selectionElevation(session!, id);
+      const name =
+        node?.labels.find((s) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(s)) ??
+        node?.cls.replace(/^RV/, '') ??
+        `Object ${id}`;
+      const kind =
+        id === primary
+          ? 'focus'
+          : objectLinkKinds.get(objectLinkPairKey(primary, id)) === 'stack-on'
+            ? 'stacked'
+            : 'linked';
+      return {
+        id,
+        name,
+        elevation: elev?.elevation ?? 0,
+        kind,
+      };
+    });
+  });
+
+  handle('plan:sightline-markers', () => (session ? sightlineMarkers(session) : []), []);
+
   handle('plan:stage-clear', () => {
     clearStage();
     return { ok: true };
@@ -4802,6 +5106,7 @@ app.whenReady().then(async () => {
         name?: string;
         width?: number;
         depth?: number;
+        ceilingHeight?: number;
         room?: NewRoomSpec;
         sheetSize?: { width: number; depth: number };
         autoDimensions?: boolean;
@@ -4811,6 +5116,10 @@ app.whenReady().then(async () => {
     ) => {
     const width = Number(options?.width) || 0;
     const depth = Number(options?.depth) || 0;
+    const ceilingHeight =
+      typeof options?.ceilingHeight === 'number' && options.ceilingHeight > 0
+        ? options.ceilingHeight
+        : undefined;
     const roomName =
       typeof options?.name === 'string' && options.name.trim() ? options.name.trim() : undefined;
 
@@ -4836,7 +5145,23 @@ app.whenReady().then(async () => {
     // GROUNDPLAN_E2E_SAVE_DIR + GROUNDPLAN_E2E_SAVE_NAME, or a path file.
     const e2eSavePath = resolveE2eSavePath();
     if (!e2eSavePath) {
-      if (!(await confirmDiscard('plan'))) return { ok: false, cancelled: true };
+      const dirtyPlan = !!(session && (session.dirty || planSidecarPending));
+      const dirtyGear = !!gear?.dirty;
+      // Autosave "New plan" should not trap behind a native Save/Discard sheet.
+      // Persist the open plan quietly when that is the only dirty document.
+      if (options?.autosave && dirtyPlan && !dirtyGear) {
+        const saved = await savePlanDocument(false);
+        if (!saved.ok) {
+          if (!saved.cancelled) await showSaveFailure(saved);
+          return {
+            ok: false,
+            cancelled: saved.cancelled,
+            reason: saved.reason ?? 'could not save the open plan before creating a new one',
+          };
+        }
+      } else if (!(await confirmDiscard('plan'))) {
+        return { ok: false, cancelled: true };
+      }
     }
 
     const safeBase = (roomName || 'Untitled plan').replace(/[\\/:*?"<>|]/g, '-').trim() || 'Untitled plan';
@@ -4880,6 +5205,7 @@ app.whenReady().then(async () => {
     if (options?.room && session) {
       const exact = buildNewRoom(options.room, roomName ?? 'Room');
       if (exact.ok && exact.room) {
+        if (ceilingHeight) exact.room.ceilingHeight = ceilingHeight;
         adoptAuthoredRoom(session, exact.room, unitSystem());
         try {
           await savePlanModel(session.path, session.savedArchiveBody());
@@ -4889,6 +5215,20 @@ app.whenReady().then(async () => {
           schedulePlanRecovery(session);
           console.error('[groundplan] could not save new-plan companion:', error);
         }
+      }
+    } else if (ceilingHeight && session) {
+      const applied = updateRoomMeta(session, { ceilingHeight }, unitSystem());
+      if (!applied.ok) {
+        // Custom / site-plan path: walls come later — hold ceiling until then.
+        setPendingCeilingHeight(ceilingHeight);
+      }
+      try {
+        await savePlanModel(session.path, session.savedArchiveBody());
+        planSidecarPending = false;
+      } catch (error) {
+        planSidecarPending = true;
+        schedulePlanRecovery(session);
+        console.error('[groundplan] could not save new-plan ceiling:', error);
       }
     }
 
@@ -4955,6 +5295,8 @@ app.whenReady().then(async () => {
         | 'delete'
         | 'duplicate'
         | 'rotate'
+        | 'rotate-each'
+        | 'orient'
         | 'recolor'
         | 'flip-horizontal'
         | 'flip-vertical'
@@ -4963,15 +5305,27 @@ app.whenReady().then(async () => {
       ids: number[],
       a = 0,
       b = 0,
-    ) =>
-      applyEdit((s) => {
+    ) => {
+      const skipRoundTripVerify =
+        kind === 'move' ||
+        kind === 'rotate' ||
+        kind === 'rotate-each' ||
+        kind === 'orient' ||
+        kind === 'flip-horizontal' ||
+        kind === 'flip-vertical' ||
+        kind === 'bring-to-front' ||
+        kind === 'send-to-back' ||
+        kind === 'recolor';
+      return applyEdit((s) => {
         let touched = 0;
         const reasons: string[] = [];
         const created: number[] = [];
 
-        // Stage↔stairs pairs travel together on move / delete / duplicate.
+        // Linked sets (stage↔stairs, stack-on, groups) travel together on
+        // move / rotate / delete / duplicate. rotate-each and orient spin only
+        // the ids you picked (straighten a bank of chairs without orbiting).
         const expanded =
-          kind === 'move' || kind === 'delete' || kind === 'duplicate'
+          kind === 'move' || kind === 'delete' || kind === 'duplicate' || kind === 'rotate'
             ? expandLinkedIds(ids)
             : ids;
 
@@ -5037,6 +5391,20 @@ app.whenReady().then(async () => {
                 : rotateNode(s.loaded.document, node, radians);
               break;
             }
+            case 'rotate-each': {
+              result = rotateNode(s.loaded.document, node, (a * Math.PI) / 180);
+              break;
+            }
+            case 'orient': {
+              // Absolute facing in degrees — spin each piece in place to that angle.
+              const target = (a * Math.PI) / 180;
+              const current = node.angle != null && Number.isFinite(node.angle) ? node.angle : 0;
+              let delta = target - current;
+              while (delta > Math.PI) delta -= Math.PI * 2;
+              while (delta < -Math.PI) delta += Math.PI * 2;
+              result = rotateNode(s.loaded.document, node, delta);
+              break;
+            }
             case 'duplicate':
               result = duplicateNode(s.loaded.document, s.index, node, a, b);
               if (result.ok && result.created?.[0] != null) {
@@ -5060,7 +5428,7 @@ app.whenReady().then(async () => {
               result = reorderChild(s.loaded.document, s.index, node, 'back');
               break;
             default:
-              result = deleteNode(s.loaded.document, s.index, node);
+              result = { ok: false, reason: `unknown edit: ${String(kind)}` };
           }
           if (result.ok) {
             touched++;
@@ -5085,7 +5453,8 @@ app.whenReady().then(async () => {
           return { ok: false, reason: reasons[0] ?? 'nothing could be changed' };
         }
         return { ok: true, created: created.length ? created : undefined };
-      }),
+      }, { skipRoundTripVerify });
+    },
   );
 
   handle('edit:repeat-across', (_event, nodeId: number, count: number, direction = 'right') =>
@@ -5117,6 +5486,115 @@ app.whenReady().then(async () => {
       }
       return { ok: true, created };
     }),
+  );
+
+  handle(
+    'edit:array-grid',
+    (
+      _event,
+      nodeId: number,
+      columns: number,
+      rows: number,
+      gapX?: number | null,
+      gapY?: number | null,
+    ) =>
+      applyEdit((s) => {
+        const node = s.index.byId.get(nodeId);
+        if (!node) return { ok: false, reason: 'object no longer exists' };
+        const result = arrayGrid(s.loaded.document, s.index, node, {
+          columns,
+          rows,
+          gapX: gapX != null && Number(gapX) > 0 ? Number(gapX) : undefined,
+          gapY: gapY != null && Number(gapY) > 0 ? Number(gapY) : undefined,
+        });
+        if (result.ok) s.index = indexDocument(s.loaded.document);
+        return result;
+      }),
+  );
+
+  handle(
+    'edit:setback-from-wall',
+    (
+      _event,
+      ids: number[],
+      distance: number,
+      options?: { mode?: 'each' | 'group'; faceWall?: boolean },
+    ) =>
+      applyEdit((s) => {
+        const dist = Number(distance);
+        if (!(dist >= 0) || !Number.isFinite(dist)) {
+          return { ok: false, reason: 'enter a distance from the wall' };
+        }
+        if (!ids.length) return { ok: false, reason: 'select at least one item' };
+        const { room } = resolvePlanRoom(s.loaded.document);
+        if (room.walls.length < 3) {
+          return { ok: false, reason: 'draw a room outline before setting wall distance' };
+        }
+
+        const mode = options?.mode === 'group' ? 'group' : 'each';
+        const faceWall = options?.faceWall !== false && ids.length === 1;
+
+        type Target = { id: number; fromX: number; fromY: number };
+        const targets: Target[] = [];
+        for (const id of ids) {
+          const node = s.index.byId.get(id);
+          if (!node) continue;
+          const centre = nodeCentre(node);
+          if (!centre) continue;
+          targets.push({ id, fromX: centre.x, fromY: centre.y });
+        }
+        if (!targets.length) return { ok: false, reason: 'could not locate the selection' };
+
+        if (mode === 'group') {
+          const cx = targets.reduce((sum, t) => sum + t.fromX, 0) / targets.length;
+          const cy = targets.reduce((sum, t) => sum + t.fromY, 0) / targets.length;
+          const setback = wallSetback(room.walls, cx, cy, dist, room);
+          if (!setback) return { ok: false, reason: 'no wall found near the selection' };
+          const dx = setback.x - cx;
+          const dy = setback.y - cy;
+          for (const t of targets) {
+            const node = s.index.byId.get(t.id);
+            if (!node) continue;
+            const moved = moveNode(s.loaded.document, node, dx, dy);
+            if (!moved.ok) return moved;
+          }
+          if (faceWall && targets.length === 1) {
+            const node = s.index.byId.get(targets[0]!.id);
+            if (node && node.angle != null) {
+              let delta = setback.angle - node.angle;
+              while (delta > Math.PI) delta -= Math.PI * 2;
+              while (delta < -Math.PI) delta += Math.PI * 2;
+              if (Math.abs(delta) > 1e-6) {
+                const turned = rotateNode(s.loaded.document, node, delta);
+                if (!turned.ok) return turned;
+              }
+            }
+          }
+          return { ok: true };
+        }
+
+        let movedCount = 0;
+        for (const t of targets) {
+          const setback = wallSetback(room.walls, t.fromX, t.fromY, dist, room);
+          if (!setback) continue;
+          const node = s.index.byId.get(t.id);
+          if (!node) continue;
+          const moved = moveNode(s.loaded.document, node, setback.x - t.fromX, setback.y - t.fromY);
+          if (!moved.ok) return moved;
+          if (faceWall && targets.length === 1 && node.angle != null) {
+            let delta = setback.angle - node.angle;
+            while (delta > Math.PI) delta -= Math.PI * 2;
+            while (delta < -Math.PI) delta += Math.PI * 2;
+            if (Math.abs(delta) > 1e-6) {
+              const turned = rotateNode(s.loaded.document, node, delta);
+              if (!turned.ok) return turned;
+            }
+          }
+          movedCount += 1;
+        }
+        if (!movedCount) return { ok: false, reason: 'no wall found near the selection' };
+        return { ok: true };
+      }),
   );
 
   handle('edit:arrange', (_event, mode: ArrangeMode, ids: number[]) =>
@@ -5236,6 +5714,10 @@ app.whenReady().then(async () => {
       heightUnits: measured.height,
       x: (node.bounds.left + node.bounds.right) / 2,
       y: (node.bounds.top + node.bounds.bottom) / 2,
+      angleDegrees:
+        node.angle != null && Number.isFinite(node.angle)
+          ? Math.round(((node.angle * 180) / Math.PI) * 10) / 10
+          : null,
       textStyle:
         node.cls === 'RVLabel'
           ? {
@@ -5409,8 +5891,9 @@ app.whenReady().then(async () => {
       }),
   );
 
-  handle('edit:scale-to-dimension', (_event, nodeId: number, knownLength: number) =>
-    applyEdit((s) => {
+  handle('edit:scale-to-dimension', async (_event, nodeId: number, knownLength: number) => {
+    let scaleFactor = 1;
+    const result = applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
       if (!node || node.cls !== 'RVDimensionLine' || node.points.length < 2) {
         return { ok: false, reason: 'select a dimension line first' };
@@ -5420,9 +5903,26 @@ app.whenReady().then(async () => {
       const measured = Math.hypot(b.x - a.x, b.y - a.y);
       if (!(measured > 0)) return { ok: false, reason: 'that dimension has no length' };
       if (!(knownLength > 0)) return { ok: false, reason: 'enter the known real length' };
-      return scalePlanUniform(s.loaded.document, knownLength / measured);
-    }),
-  );
+      scaleFactor = knownLength / measured;
+      return scalePlanUniform(s.loaded.document, scaleFactor);
+    });
+    if (result.ok && Math.abs(scaleFactor - 1) > 1e-9 && session) {
+      const background = scaleCompanionBackground(scaleFactor);
+      if (background) {
+        try {
+          const { saveCompanion } = await import('./companion-store.js');
+          const snap = companionSnapshot();
+          if (snap) {
+            await saveCompanion(session.path, session.savedArchiveBody(), snap);
+            grantPath(companionPathFor(session.path));
+          }
+        } catch {
+          /* companion write is best-effort; geometry already scaled */
+        }
+      }
+    }
+    return result;
+  });
 
   // --- saving -------------------------------------------------------------
 
@@ -5561,6 +6061,24 @@ app.whenReady().then(async () => {
     return grantPath(result.filePath);
   });
 
+  handle('plan:pull-sheet-export', async (_event, owned: Array<{ name: string; quantity: number }>) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const { buildPullSheet } = await import('../format/report.js');
+    const { lines } = planAllocation(session, Array.isArray(owned) ? owned : []);
+    const csv = buildPullSheet(lines);
+    const base = session.loaded.name.replace(/\.[^.]+$/, '');
+    const result = await dialog.showSaveDialog({
+      title: 'Export pull sheet',
+      defaultPath: `${base} pull sheet.csv`,
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+    await atomicWriteFile(result.filePath, csv, {
+      backupPath: existsSync(result.filePath) ? `${result.filePath}.bak` : undefined,
+    });
+    return { ok: true, path: grantPath(result.filePath) };
+  });
+
   handle('print:scales', () => SCALES.map((s2) => ({ id: s2.id, label: s2.label })), []);
 
   /**
@@ -5582,7 +6100,8 @@ app.whenReady().then(async () => {
     if (chosen.canceled || !chosen.filePath) return { ok: false, cancelled: true };
 
     const visible = layers && layers.length > 0 ? new Set(layers as Scene['primitives'][number]['layer'][]) : undefined;
-    const result = toDxf(session.loaded.document, session.scene, { visible });
+    const elevations = placementElevations(session);
+    const result = toDxf(session.loaded.document, session.scene, { visible, elevations });
     await atomicWriteFile(chosen.filePath, result.text, {
       backupPath: existsSync(chosen.filePath) ? `${chosen.filePath}.bak` : undefined,
     });
@@ -5635,6 +6154,44 @@ app.whenReady().then(async () => {
       return { ok: true, path: grantPath(result.filePath), fits: fit.fits, overBy: fit.overBy };
     },
   );
+
+  /**
+   * Agent / automation command bus.
+   * `command:list` returns stable IDs; `command:run` forwards to the renderer
+   * shell (same path as ⌘K) and waits for an ack.
+   */
+  handle('command:list', async () => COMMAND_LIST);
+
+  handle('command:run', async (_event, id: string) => {
+    if (!isCommandId(id)) return { ok: false, reason: `Unknown command: ${id}` };
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) {
+      return { ok: false, reason: 'No plan window' };
+    }
+    const requestId = randomUUID();
+    return await new Promise<{ ok: boolean; id?: string; reason?: string }>((resolve) => {
+      const timeout = setTimeout(() => {
+        ipcMain.removeListener('command:run-result', onResult);
+        resolve({ ok: false, reason: 'Command timed out waiting for the UI' });
+      }, 10_000);
+      const onResult = (
+        event: Electron.IpcMainEvent,
+        payload: { requestId?: string; ok?: boolean; id?: string; reason?: string },
+      ) => {
+        if (event.sender !== win.webContents) return;
+        if (!payload || payload.requestId !== requestId) return;
+        clearTimeout(timeout);
+        ipcMain.removeListener('command:run-result', onResult);
+        resolve({
+          ok: Boolean(payload.ok),
+          id: payload.id,
+          reason: payload.reason,
+        });
+      };
+      ipcMain.on('command:run-result', onResult);
+      win.webContents.send('command:run', { id, requestId });
+    });
+  });
 
   handle('settings:get', async () => {
     settings ??= await loadSettings(app.getPath('userData'));

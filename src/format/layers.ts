@@ -47,6 +47,7 @@ export const DEFAULT_LAYERS: Array<Omit<LayerDefinition, 'id'> & { id: string; m
   { id: 'video', name: 'Video', visible: true, locked: false, order: 30, printed: true, match: /\b(screen|projector|led|monitor|tv|display|camera)\b/i },
   { id: 'lighting', name: 'Lighting', visible: true, locked: false, order: 40, printed: true, match: /\b(light|leko|par|fixture|wash|moving|truss)\b/i },
   { id: 'audio', name: 'Audio', visible: true, locked: false, order: 50, printed: true, match: /\b(speaker|sub|mic|console|line array|monitor wedge)\b/i },
+  { id: 'power', name: 'Power & data', visible: true, locked: false, order: 55, printed: true, match: /\b(cable|feeder|distro|power run|signal|dmx|soca|data run)\b/i },
   { id: 'drape', name: 'Drape and scenic', visible: true, locked: false, order: 60, printed: true, match: /\b(drape|pipe|masking|scenic|backdrop)\b/i },
   { id: 'catering', name: 'Catering', visible: true, locked: false, order: 70, printed: true, match: /\b(buffet|bar|catering|service|beverage)\b/i },
   { id: 'annotation', name: 'Annotation', visible: true, locked: false, order: 100, printed: true },

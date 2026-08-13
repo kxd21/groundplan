@@ -4,7 +4,8 @@
   "identity": {
     "event": "Banquet for 120",
     "venue": "Ballroom",
-    "roomLabel": "60' × 40'"
+    "roomLabel": "60' × 40'",
+    "capacityGuests": 120
   },
   "room": {
     "widthFt": 60,

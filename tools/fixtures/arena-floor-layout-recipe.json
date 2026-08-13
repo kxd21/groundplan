@@ -4,7 +4,8 @@
   "identity": {
     "event": "Arena / concert floor sketch",
     "venue": "Arena floor",
-    "roomLabel": "200' × 120'"
+    "roomLabel": "200' × 120'",
+    "capacityGuests": 664
   },
   "room": {
     "widthFt": 200,

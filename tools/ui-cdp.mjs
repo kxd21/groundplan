@@ -20,7 +20,7 @@ export async function waitForCdpPage(base = DEFAULT_CDP, timeoutMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const pages = await fetch(`${base}/json/list`).then((r) => r.json());
+      const pages = await fetch(`${base}/json/list`, { signal: AbortSignal.timeout(1500) }).then((r) => r.json());
       const page = pages.find((p) => p.type === 'page' && p.webSocketDebuggerUrl);
       if (page) return page;
     } catch {
@@ -42,9 +42,24 @@ export async function connectCdp(options = {}) {
 
   let nextId = 1;
   const pending = new Map();
+  const pageErrors = [];
   ws.addEventListener('message', (ev) => {
     const m = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString());
     if (m.id && pending.has(m.id)) pending.get(m.id)(m);
+    if (m.method === 'Runtime.exceptionThrown') {
+      const text =
+        m.params?.exceptionDetails?.exception?.description ||
+        m.params?.exceptionDetails?.text ||
+        'uncaught exception';
+      pageErrors.push({ type: 'exception', text: String(text).slice(0, 400) });
+    }
+    if (m.method === 'Runtime.consoleAPICalled' && (m.params?.type === 'error' || m.params?.type === 'assert')) {
+      const text = (m.params.args || [])
+        .map((a) => a.value ?? a.description ?? '')
+        .join(' ')
+        .slice(0, 400);
+      if (text) pageErrors.push({ type: 'console', text });
+    }
   });
 
   const send = (method, params = {}) =>
@@ -56,6 +71,9 @@ export async function connectCdp(options = {}) {
       });
       ws.send(JSON.stringify({ id, method, params }));
     });
+
+  await send('Runtime.enable');
+  await send('Log.enable');
 
   const ev = async (expression) => {
     const r = await send('Runtime.evaluate', {
@@ -79,6 +97,7 @@ export async function connectCdp(options = {}) {
   };
 
   const key = async (windowsVirtualKeyCode, code, keyName, modifiers = 0) => {
+    // Chromium Input.dispatchKeyEvent modifiers: Alt=1, Ctrl=2, Meta=4, Shift=8
     for (const type of ['keyDown', 'keyUp']) {
       await send('Input.dispatchKeyEvent', {
         type,
@@ -86,8 +105,9 @@ export async function connectCdp(options = {}) {
         code,
         key: keyName,
         modifiers,
-        metaKey: !!(modifiers & 8),
-        shiftKey: !!(modifiers & 4),
+        metaKey: !!(modifiers & 4),
+        ctrlKey: !!(modifiers & 2),
+        shiftKey: !!(modifiers & 8),
         altKey: !!(modifiers & 1),
       });
     }
@@ -154,13 +174,17 @@ export async function connectCdp(options = {}) {
   const clickButton = async (spec, label, record, { allowDomClick = true } = {}) => {
     const box = await findButton(spec);
     if (!box) {
-      record?.(label, false, 'not found');
+      if (label) record?.(label, false, 'not found');
+      return false;
+    }
+    if (box.dis) {
+      if (label) record?.(label, false, `disabled: ${box.t}`);
       return false;
     }
     if (box.zero) {
-      record?.(`${label}:hit-target`, false, '0×0 control');
+      if (label) record?.(`${label}:hit-target`, false, '0×0 control');
       if (!allowDomClick) {
-        record?.(label, false, 'zero hit target');
+        if (label) record?.(label, false, 'zero hit target');
         return false;
       }
       const ok = await ev(`(() => {
@@ -181,11 +205,11 @@ export async function connectCdp(options = {}) {
         b.click();
         return true;
       })()`);
-      record?.(label, !!ok, 'DOM .click() fallback');
+      if (label) record?.(label, !!ok, 'DOM .click() fallback');
       return !!ok;
     }
     await clickAt(box.x, box.y);
-    record?.(label, true, `@${Math.round(box.x)},${Math.round(box.y)} ${box.t}`);
+    if (label) record?.(label, true, `@${Math.round(box.x)},${Math.round(box.y)} ${box.t}`);
     return true;
   };
 
@@ -274,6 +298,7 @@ export async function connectCdp(options = {}) {
     chairs,
     title,
     canvasClickFt,
+    pageErrors,
     close,
   };
 }

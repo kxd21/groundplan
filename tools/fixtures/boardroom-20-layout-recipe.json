@@ -4,7 +4,8 @@
   "identity": {
     "event": "Boardroom for 20",
     "venue": "Small meeting suite",
-    "roomLabel": "20' × 16'"
+    "roomLabel": "20' × 16'",
+    "capacityGuests": 20
   },
   "room": {
     "widthFt": 20,

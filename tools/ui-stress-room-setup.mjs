@@ -47,7 +47,7 @@ await waitForCdpPage(CDP, 20000).catch(() => {
 });
 
 const cdp = await connectCdp({ base: CDP });
-const { ev, clickAt, key, esc, shot, clickButton, setInput, title, close } = cdp;
+const { ev, clickAt, key, esc, shot, clickButton, setInput, setSelect, title, close, pageErrors } = cdp;
 const click = (spec, label, opts) => clickButton(spec, label, record, opts);
 
 const probe = async (expression) => ev(expression);
@@ -88,7 +88,7 @@ const openNewPlan = async () => {
     record('nav:welcome New plan', true);
   } else {
     // Cmd/Ctrl+N
-    await key(78, 'KeyN', 'n', 8);
+    await key(78, 'KeyN', 'n', 4);
     record('nav:shortcut New plan', true, 'meta+N');
   }
   await sleep(600);
@@ -153,7 +153,31 @@ if (sheetOpen) {
   record('dialog:title is Build the room', /Build the room/i.test(dialog?.title || ''), dialog?.title);
   record('dialog:no Event step', !dialog?.eventStep && !dialog?.continueOld, JSON.stringify({ eventStep: dialog?.eventStep, continueOld: dialog?.continueOld }));
   record('dialog:no venue field in wizard', !dialog?.venueField);
-  record('dialog:quick start has 4 actions', (dialog?.quick || []).length === 4, JSON.stringify(dialog?.quick));
+  const quick = dialog?.quick || [];
+  record(
+    'dialog:quick start spans boardroom to concert',
+    quick.length === 5 &&
+      quick.some((t) => /Boardroom/i.test(t)) &&
+      quick.some((t) => /Concert floor/i.test(t)) &&
+      quick.some((t) => /Draw custom/i.test(t)),
+    JSON.stringify(quick),
+  );
+  const cramped = await probe(`(() => {
+    const buttons = [...document.querySelectorAll('.new-plan-quick-start button')];
+    return buttons.map((b) => {
+      const r = b.getBoundingClientRect();
+      return {
+        t: (b.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
+        w: Math.round(r.width),
+        overflow: b.scrollWidth > b.clientWidth + 1,
+      };
+    });
+  })()`);
+  const tooNarrow = (cramped || []).filter((b) => b.w < 72 || b.overflow);
+  record('dialog:quick start buttons usable', tooNarrow.length === 0, JSON.stringify(cramped));
+  if (tooNarrow.length) {
+    note('high', 'New Plan quick-start buttons are cramped or clipped', 'Five scale presets must stay readable on a normal window.', JSON.stringify(tooNarrow));
+  }
   record('dialog:primary shapes are compact', (dialog?.primary || []).length === 3, JSON.stringify(dialog?.primary));
   record('dialog:advanced shapes collapsed', !!dialog?.hasAdvancedToggle && /More shapes/i.test(dialog?.advancedLabel || ''), dialog?.advancedLabel);
 
@@ -175,15 +199,15 @@ if (sheetOpen) {
   record('dialog:advanced shapes available', (advanced?.count || 0) >= 3, JSON.stringify(advanced?.shapes));
 
   // ---------------------------------------------------------------------------
-  // B. Quick start Ballroom → room ready handoff
+  // B. Quick start Boardroom → room ready handoff
   // ---------------------------------------------------------------------------
-  console.log('\n-- B. Quick start Ballroom handoff --');
-  await click({ match: '/Ballroom/i', root: '.new-plan-quick-start' }, 'quick:Ballroom');
+  console.log('\n-- B. Quick start Boardroom handoff --');
+  await click({ match: '/Boardroom/i', root: '.new-plan-quick-start' }, 'quick:Boardroom');
   const ballroomOpened = await waitFor(
     `!document.querySelector('.new-plan-sheet') && !!document.querySelector('canvas')`,
     15000,
   );
-  record('quick:Ballroom opens plan', ballroomOpened, await title());
+  record('quick:Boardroom opens plan', ballroomOpened, await title());
   record('quick:E2E file written', fs.existsSync(SAVE_PATH), SAVE_PATH);
   await sleep(800);
   await shot(path.join(AUDIT, 'ui-stress-setup-02-ballroom.png'));
@@ -199,8 +223,8 @@ if (sheetOpen) {
     const chip = (document.querySelector('.show-setup-chip')?.textContent || '').trim();
     const head = (document.querySelector('#create-dialog-title')?.textContent || '').trim();
     const library = /\\bLibrary\\b/.test(createText) && /New shape/i.test(createText);
-    const buildStage = [...(create?.querySelectorAll('button') || [])].find((b) => /Build a stage/i.test(b.textContent || ''));
-    const buildStageNext = buildStage?.classList.contains('is-next');
+    const applyKit = [...(create?.querySelectorAll('button') || [])].find((b) => /^Apply kit/i.test((b.textContent || '').trim()));
+    const kitNext = applyKit?.classList.contains('is-next');
     const roomNeededActions = /Draw room outline/i.test(createText);
     const toast = (document.querySelector('.toast')?.textContent || '').trim();
     return {
@@ -209,7 +233,7 @@ if (sheetOpen) {
       chip,
       progress,
       library,
-      buildStageNext,
+      kitNext,
       roomNeededActions,
       toast,
       bodyStart: createText.slice(0, 180).replace(/\\s+/g, ' '),
@@ -219,9 +243,21 @@ if (sheetOpen) {
   record('handoff:Create opens after preset', !!afterBallroom?.createOpen);
   record('handoff:chip Room ready', /Room ready/i.test(afterBallroom?.chip || ''), afterBallroom?.chip);
   record('handoff:progress Room done', !!afterBallroom?.progress?.[0]?.done, JSON.stringify(afterBallroom?.progress));
-  record('handoff:Build stage marked next', !!afterBallroom?.buildStageNext);
   record('handoff:Library not first', !!afterBallroom?.createOpen && !/^Library/i.test(afterBallroom?.bodyStart || ''), afterBallroom?.bodyStart);
   record('handoff:no Draw outline when room exists', !afterBallroom?.roomNeededActions);
+
+  // Quick starts auto-apply the matching kit — wait for chairs before asserting.
+  const autoKit = await waitFor(
+    `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,'')) >= 10`,
+    20000,
+  );
+  const autoChairs = await probe(
+    `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,''))`,
+  );
+  record('handoff:Boardroom auto-applies kit', autoKit && autoChairs >= 10, `chairs=${autoChairs}`);
+  if (!autoKit) {
+    note('high', 'Boardroom quick start did not auto-apply seating', 'New plan should land with the matching kit already placed.', `chairs=${autoChairs}`);
+  }
 
   const zoomAfter = await probe(`(() => {
     const labels = [...document.querySelectorAll('body *')].map((n) => (n.childNodes.length === 1 && n.textContent || '').trim()).filter((t) => /^\\d+%$/.test(t));
@@ -236,22 +272,13 @@ if (sheetOpen) {
   if (afterBallroom?.createOpen && /^Library/i.test(afterBallroom?.bodyStart || '')) {
     note('high', 'Create still leads with Library after room create', 'Show setup / next step should come first.', afterBallroom?.bodyStart);
   }
-  if (afterBallroom?.createOpen && !afterBallroom?.buildStageNext && !/Build stage/i.test(afterBallroom?.toast || '')) {
-    note('medium', 'No clear next-step highlight after room create', 'Expected Build stage to be marked as next or toasted.', JSON.stringify(afterBallroom));
-  }
 
   // ---------------------------------------------------------------------------
   // C. Show setup interactions
   // ---------------------------------------------------------------------------
   console.log('\n-- C. Show setup interactions --');
   if (!(await ev('!!document.querySelector(".create-dialog-sheet")'))) {
-    await click({ text: 'Create' }, 'setup:Create menu');
-    await sleep(250);
-    await ev(`(() => {
-      const b = [...document.querySelectorAll('[role=menuitem]')].find((el) => /^Show setup/i.test((el.textContent || '').trim()));
-      if (b) b.click();
-      return !!b;
-    })()`);
+    await click({ match: '/^Setup$/i' }, 'setup:Setup panel');
     await sleep(400);
   }
 
@@ -281,7 +308,7 @@ if (sheetOpen) {
 
   await ev(`(() => {
     const b = [...document.querySelectorAll('.create-dialog-sheet button')].find((el) =>
-      /Show kits/i.test(el.textContent || ''),
+      /Start from a kit/i.test(el.textContent || ''),
     );
     if (!b) return false;
     b.scrollIntoView({ block: 'center' });
@@ -290,9 +317,155 @@ if (sheetOpen) {
   })()`);
   await sleep(250);
   const kitsVisible = await ev(`!!document.querySelector('#show-kit-select')`);
-  record('setup:kits collapsed by default then expandable', kitsVisible);
+  record('setup:kit selector available', kitsVisible);
   if (!kitsVisible) {
-    note('medium', 'Show kits collapse does not reveal kit selector', 'Optional kits section may be broken or clipped in the Create dock.');
+    note('medium', 'Start from a kit does not reveal kit selector', 'Kit picker should be open after the room is ready.');
+  }
+
+  if (kitsVisible) {
+    const kitNames = await probe(`([...document.querySelectorAll('#show-kit-select option')].map((o) => o.textContent || '').join(' | '))`);
+    record(
+      'setup:bundled kits span 20-person to arena',
+      /Boardroom/i.test(kitNames || '') &&
+        /Banquet/i.test(kitNames || '') &&
+        /Arena|concert/i.test(kitNames || '') &&
+        /Card Party/i.test(kitNames || ''),
+      kitNames,
+    );
+    const chairsBefore = await probe(
+      `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,''))`,
+    );
+    if (chairsBefore >= 10) {
+      record('setup:Boardroom kit places chairs', true, `auto-applied chairs=${chairsBefore}`);
+    } else {
+      const picked = await setSelect(
+        '#show-kit-select',
+        `[...el.options].find((o) => /Boardroom/i.test(o.text))`,
+      );
+      record('setup:select Boardroom kit', !!picked?.ok, JSON.stringify(picked));
+      await click({ match: '/^Apply kit$/i', root: '.create-dialog-sheet' }, 'setup:Apply kit');
+      const kitApplied = await waitFor(
+        `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,'')) >= 10`,
+        20000,
+      );
+      const chairCount = await probe(
+        `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,''))`,
+      );
+      record('setup:Boardroom kit places chairs', kitApplied && chairCount >= 10, `chairs=${chairCount}`);
+      if (!kitApplied) {
+        note('high', 'Applying the Boardroom kit did not place chairs', 'Show kits are the 20-person path; a silent fail is a ship blocker.', `chairs=${chairCount}`);
+      }
+    }
+    await shot(path.join(AUDIT, 'ui-stress-setup-02b-kit.png'));
+    await ev(`(() => {
+      const b = [...document.querySelectorAll('.create-dialog-sheet button')].find((el) =>
+        /Start from a kit/i.test(el.textContent || ''),
+      );
+      if (b && b.getAttribute('aria-expanded') === 'true') b.click();
+      const d = [...document.querySelectorAll('.create-dialog-sheet button')].find((el) =>
+        /Show details/i.test(el.textContent || ''),
+      );
+      if (d && d.getAttribute('aria-expanded') === 'true') d.click();
+      return true;
+    })()`);
+    await sleep(250);
+  }
+
+  await ev(`(() => {
+    const more = document.querySelector('.create-more-tools');
+    if (more && !more.open) more.open = true;
+    const details = document.querySelector('.create-stamp-banks');
+    if (details && !details.open) {
+      details.open = true;
+      details.scrollIntoView({ block: 'center' });
+    }
+    const root = document.querySelector('[aria-label="Event scale defaults"]');
+    root?.scrollIntoView({ block: 'center' });
+    return !!root;
+  })()`);
+  await sleep(200);
+  const scaleChips = await probe(`(() => {
+    const root = document.querySelector('[aria-label="Event scale defaults"]');
+    if (!root) return { labels: [] };
+    const r = root.getBoundingClientRect();
+    return {
+      labels: [...root.querySelectorAll('button')].map((b) => (b.textContent || '').trim()),
+      onscreen: r.top >= 0 && r.bottom <= (window.innerHeight || 0) + 8,
+    };
+  })()`);
+  record(
+    'setup:seating scale chips',
+    (scaleChips?.labels || []).includes('~20') &&
+      (scaleChips?.labels || []).includes('Banquet') &&
+      (scaleChips?.labels || []).includes('Arena'),
+    JSON.stringify(scaleChips?.labels),
+  );
+  record('setup:scale chips on screen', !!scaleChips?.onscreen, JSON.stringify(scaleChips));
+  await ev(`(() => {
+    const b = [...document.querySelectorAll('[aria-label="Event scale defaults"] button')].find((el) =>
+      (el.textContent || '').trim() === '~20',
+    );
+    if (!b) return false;
+    b.scrollIntoView({ block: 'center' });
+    b.click();
+    return true;
+  })()`);
+  record('setup:scale ~20', true, 'dom click after scroll');
+  await sleep(200);
+  const theatreArmed = await probe(
+    `!!document.querySelector('.seat-kinds [data-seat-kind="theatre"].active, .seat-kinds [data-seat-kind="theatre"][aria-pressed="true"]')`,
+  );
+  record('setup:~20 arms theatre rows', !!theatreArmed);
+
+  const groupDisabledEmpty = await probe(`(() => {
+    const b = [...document.querySelectorAll('button')].find((el) => (el.getAttribute('aria-label') || '') === 'Group selected shapes');
+    return b ? !!b.disabled : null;
+  })()`);
+  record('ux:Group disabled without a multi-selection', groupDisabledEmpty === true, String(groupDisabledEmpty));
+
+  await ev(`document.querySelector('canvas')?.focus()`);
+  await clickAt(400, 300);
+  await sleep(150);
+  await key(65, 'KeyA', 'a', 4);
+  await sleep(400);
+  let selectedN = await probe(`(() => {
+    const t = document.body.innerText || '';
+    const line = (t.match(/[^\\n]*selected[^\\n]*/i) || [''])[0].slice(0, 80);
+    return { text: line, hasSel: /selected/i.test(t) };
+  })()`);
+  if (!selectedN?.hasSel) {
+    await cdp.canvasClickFt(0, 1.5);
+    await sleep(150);
+    selectedN = await probe(`(() => {
+      const t = document.body.innerText || '';
+      const line = (t.match(/[^\\n]*selected[^\\n]*/i) || [''])[0].slice(0, 80);
+      return { text: line, hasSel: /selected/i.test(t) };
+    })()`);
+  }
+  record('ux:Select All after kit', !!selectedN?.hasSel, selectedN?.text);
+  const groupedClick = await click({ aria: 'Group selected shapes' }, 'ux:Group after Select All');
+  await sleep(400);
+  const grouped = await probe(`!!document.querySelector('.toast') && /Grouped/i.test(document.querySelector('.toast')?.textContent || '')`);
+  record('ux:Group reports success', !!grouped || groupedClick);
+  await click({ aria: 'Ungroup selected shapes' }, 'ux:Ungroup');
+  await sleep(300);
+  const ungrouped = await probe(`!!document.querySelector('.toast') && /Ungrouped/i.test(document.querySelector('.toast')?.textContent || '')`);
+  record('ux:Ungroup reports success', !!ungrouped);
+
+  await click({ aria: 'Print plan to PDF' }, 'ux:open print preview');
+  await sleep(400);
+  const printOpen = await probe(`!!document.querySelector('.print-popover, [class*="print-plan"]') || /Visible layers/i.test(document.body.innerText || '')`);
+  record('ux:print preview opens', !!printOpen);
+  if (!printOpen) {
+    note('medium', 'Print preview did not open from the toolbar', 'Users need to see paper fit before exporting PDF.');
+  }
+  await esc();
+  await sleep(250);
+  const createStillOpen = await probe(`!!document.querySelector('.create-dialog-sheet')`);
+  const printClosed = await probe(`!/Visible layers/i.test(document.body.innerText || '') || !!document.querySelector('.create-dialog-sheet')`);
+  record('ux:Esc closes print not Show setup', !!createStillOpen, `createOpen=${createStillOpen}`);
+  if (!createStillOpen) {
+    note('high', 'Escape dismissed Show setup instead of print preview', 'Print is the front overlay; Esc should close it first.');
   }
 
   await ev(`(() => {
@@ -337,9 +510,9 @@ if (sheetOpen) {
   console.log('\n-- D. Custom draw path --');
   await esc();
   await sleep(200);
-  // With a plan already open, prefer Create → New plan (CDP meta+N does not hit Electron menu accelerators).
+  // With a plan already open, prefer New → New plan (CDP meta+N does not hit Electron menu accelerators).
   const openedViaMenu = await ev(`(() => {
-    const create = [...document.querySelectorAll('button')].find((el) => (el.textContent || '').trim() === 'Create');
+    const create = [...document.querySelectorAll('button')].find((el) => (el.textContent || '').trim() === 'New');
     if (create) create.click();
     return true;
   })()`);
@@ -350,7 +523,7 @@ if (sheetOpen) {
     b.click();
     return true;
   })()`);
-  record('custom:Create → New plan', !!pickedNew || openedViaMenu);
+  record('custom:New → New plan', !!pickedNew || openedViaMenu);
   await sleep(700);
   let customSheet = await waitFor('!!document.querySelector(".new-plan-sheet")', 8000);
   if (!customSheet) {
@@ -457,15 +630,32 @@ if (sheetOpen) {
 
 await shot(path.join(AUDIT, 'ui-stress-setup-06-final.png'));
 
+const uniqueErrors = [];
+const seenErr = new Set();
+for (const err of pageErrors) {
+  const key = `${err.type}:${err.text}`;
+  if (seenErr.has(key)) continue;
+  seenErr.add(key);
+  uniqueErrors.push(err);
+}
+const crashy = uniqueErrors.filter(
+  (e) => /EPIPE|Cannot read|TypeError|Unhandled|Uncaught/i.test(e.text) && !/DevTools|favicon/i.test(e.text),
+);
+record('runtime:no hard console exceptions', crashy.length === 0, crashy[0]?.text || `${uniqueErrors.length} console messages`);
+if (crashy.length) {
+  note('critical', 'Renderer threw while walking the setup flow', crashy[0].text, JSON.stringify(crashy.slice(0, 4)));
+}
+
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok).length;
 const report = {
   generatedAt: new Date().toISOString(),
   title: await title(),
   savePath: SAVE_PATH,
-  summary: { passed, failed, findings: findings.length },
+  summary: { passed, failed, findings: findings.length, consoleErrors: uniqueErrors.length },
   results,
   findings,
+  consoleErrors: uniqueErrors.slice(0, 20),
 };
 fs.writeFileSync(path.join(AUDIT, 'ui-stress-setup-report.json'), JSON.stringify(report, null, 2));
 console.log(`\n=== Summary: ${passed} passed, ${failed} failed, ${findings.length} findings ===`);

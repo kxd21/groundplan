@@ -13,7 +13,7 @@
  * mid-edit and does not parse yet.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
@@ -70,6 +70,9 @@ interface Props {
   /** When Edit walls is on, ribbon Push/Curve/Length drives the panel action. */
   preferredWallAction?: 'push' | 'curve' | 'length';
   onPreferredWallActionChange?: (action: 'push' | 'curve' | 'length') => void;
+  /** Colour seats by A/V sightline grade on the plan canvas. */
+  showSightlineMarkers?: boolean;
+  onShowSightlineMarkersChange?: (next: boolean) => void;
 }
 
 /**
@@ -109,12 +112,14 @@ function LengthField({
   field,
   units,
   disabled,
+  onBlur,
 }: {
   id: string;
   label: string;
   field: ReturnType<typeof useLength>;
   units: UnitSystem;
   disabled?: boolean;
+  onBlur?: () => void;
 }) {
   return (
     <div className="field">
@@ -133,6 +138,7 @@ function LengthField({
         }
         aria-invalid={field.text.trim() !== '' && !field.valid}
         onChange={(e) => field.setText(e.target.value)}
+        onBlur={onBlur}
       />
     </div>
   );
@@ -156,6 +162,8 @@ export default function RoomPanel({
   workspaceFocus,
   preferredWallAction,
   onPreferredWallActionChange,
+  showSightlineMarkers = false,
+  onShowSightlineMarkersChange,
 }: Props) {
   const [model, setModel] = useState<PlanModelView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -361,8 +369,8 @@ export default function RoomPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, units, reshapeSeeded]);
 
-  // A corner is the start of its numbered wall. Keep position, length and
-  // curve radius in sync while switching lines or after an edit.
+  // Seed wall fields when the selected corner changes — not on every geometry
+  // mutation, so typed radius/length aren't wiped mid-edit.
   useEffect(() => {
     const detail = room?.wallDetails?.[editCorner];
     if (!detail) return;
@@ -379,7 +387,35 @@ export default function RoomPanel({
       curveArcLength.setText(formatLength(detail.length * 1.15, units));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editCorner, room?.wallDetails]);
+  }, [editCorner]);
+
+  // After a successful wall edit, refresh fields from the new geometry once.
+  const wallGeometryEpoch = room?.wallDetails?.[editCorner]
+    ? `${editCorner}:${room.wallDetails[editCorner].length}:${room.wallDetails[editCorner].radius}:${room.wallDetails[editCorner].startX}:${room.wallDetails[editCorner].startY}`
+    : '';
+  const lastWallSeedEpoch = useRef('');
+  useEffect(() => {
+    if (!wallGeometryEpoch || wallGeometryEpoch === lastWallSeedEpoch.current) return;
+    // First paint for a corner is handled by editCorner effect; skip until an edit lands.
+    if (!lastWallSeedEpoch.current) {
+      lastWallSeedEpoch.current = wallGeometryEpoch;
+      return;
+    }
+    lastWallSeedEpoch.current = wallGeometryEpoch;
+    const detail = room?.wallDetails?.[editCorner];
+    if (!detail) return;
+    cornerX.setText(detail.startXText);
+    cornerY.setText(detail.startYText);
+    wallLengthField.setText(detail.lengthText);
+    if (detail.curved && detail.radius > 0) {
+      curveRadius.setText(detail.radiusText);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallGeometryEpoch]);
+
+  useEffect(() => {
+    lastWallSeedEpoch.current = '';
+  }, [editCorner]);
 
   // After reshape, wall count can shrink — keep the picker on a real wall.
   useEffect(() => {
@@ -455,12 +491,20 @@ export default function RoomPanel({
   const [style, setStyle] = useState('theatre');
   const [chair, setChair] = useState('');
   const [table, setTable] = useState('');
-  const [seatsPerTable, setSeatsPerTable] = useState(8);
+  const [seatsPerTableDraft, setSeatsPerTableDraft] = useState('8');
+  const seatsPerTable = (() => {
+    const n = Number(seatsPerTableDraft);
+    return Number.isFinite(n) ? Math.max(0, Math.min(24, n)) : 0;
+  })();
+  const [rowsPerBlockDraft, setRowsPerBlockDraft] = useState('');
+  const rowsPerBlock = (() => {
+    const n = Number(rowsPerBlockDraft);
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  })();
   const [optimum, setOptimum] = useState(false);
   const [crescent, setCrescent] = useState(false);
   const [stagger, setStagger] = useState(true);
   const [splay, setSplay] = useState(0);
-  const [rowsPerBlock, setRowsPerBlock] = useState(0);
   const [sectionCentre, setSectionCentre] = useState(0);
   const [sectionWing, setSectionWing] = useState(0);
   const [seatingPlacementMode, setSeatingPlacementMode] = useState<'replace' | 'add'>('replace');
@@ -745,11 +789,39 @@ export default function RoomPanel({
         {room ? (
           <p className="room-summary-line">
             {room.areaText} floor · {room.walls} wall{room.walls === 1 ? '' : 's'}
+            {room.ceilingText ? ` · ${room.ceilingText} ceiling` : ''}
             {room.holes > 0 ? ` · ${room.holes} cut-out${room.holes === 1 ? '' : 's'}` : ''}
           </p>
         ) : (
           <p className="hint">No outline yet — draw one below.</p>
         )}
+
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="room-outline-name">Room name</label>
+            <input
+              id="room-outline-name"
+              type="text"
+              value={roomName}
+              disabled={!editable}
+              onChange={(e) => setRoomName(e.target.value)}
+              onBlur={() => void saveRoomMeta()}
+            />
+          </div>
+          <LengthField
+            id="room-outline-ceiling"
+            label="Ceiling height"
+            field={ceiling}
+            units={units}
+            disabled={!editable}
+            onBlur={() => void saveRoomMeta()}
+          />
+        </div>
+        <div className="actions-row" style={{ marginBottom: 10 }}>
+          <button type="button" className="btn-outline" disabled={!editable} onClick={() => void saveRoomMeta()}>
+            Save room
+          </button>
+        </div>
 
         {room?.source === 'extent' && (
           <div className="notice" role="status">
@@ -860,7 +932,10 @@ export default function RoomPanel({
                     room && room.source === 'companion' ? `Redraw ${roomShape}` : `Drew ${roomShape} room`,
                     () => api.roomCreateFromSpec(spec),
                   );
-                  if (ok) await onRoomAuthored?.();
+                  if (ok) {
+                    await saveRoomMeta();
+                    await onRoomAuthored?.();
+                  }
                 })()
               }
               disabled={!editable || !roomSpecReady}
@@ -1066,6 +1141,9 @@ export default function RoomPanel({
                     }}
                     onChange={(next) => wallPush.setText(formatLength(next, units))}
                   />
+                  <p className="hint">
+                    Drag the slider to set the distance, then Apply. The room updates when you apply — not while dragging.
+                  </p>
                   {selectedWallCurved && (
                     <p className="hint">Straighten the wall (Curve → Straighten) before pushing it.</p>
                   )}
@@ -1477,10 +1555,10 @@ export default function RoomPanel({
           </div>
         </div>
         <div className="field-row">
-          <LengthField id="room-ceiling" label="H (ceiling)" field={ceiling} units={units} disabled={!editable} />
+          <LengthField id="room-ceiling" label="Ceiling height" field={ceiling} units={units} disabled={!editable} />
           <div className="field" style={{ justifyContent: 'flex-end' }}>
             <button type="button" className="btn-outline" disabled={!editable} onClick={() => void saveRoomMeta()}>
-              Save name &amp; ceiling
+              Save room
             </button>
           </div>
         </div>
@@ -1584,9 +1662,14 @@ export default function RoomPanel({
                   type="number"
                   min={0}
                   max={24}
-                  value={seatsPerTable}
+                  value={seatsPerTableDraft}
                   disabled={!editable || !needsTable}
-                  onChange={(e) => setSeatsPerTable(Math.max(0, Math.min(24, Number(e.target.value) || 0)))}
+                  onChange={(e) => setSeatsPerTableDraft(e.target.value)}
+                  onBlur={() => {
+                    const n = Number(seatsPerTableDraft);
+                    if (!Number.isFinite(n)) setSeatsPerTableDraft('0');
+                    else setSeatsPerTableDraft(String(Math.max(0, Math.min(24, Math.round(n)))));
+                  }}
                 />
               </div>
               <div className="field" style={{ justifyContent: 'center', gap: 8 }}>
@@ -1655,9 +1738,14 @@ export default function RoomPanel({
                   type="number"
                   min={0}
                   max={60}
-                  value={rowsPerBlock}
+                  value={rowsPerBlockDraft}
                   disabled={!editable}
-                  onChange={(e) => setRowsPerBlock(Math.max(0, Number(e.target.value) || 0))}
+                  onChange={(e) => setRowsPerBlockDraft(e.target.value)}
+                  onBlur={() => {
+                    const n = Number(rowsPerBlockDraft);
+                    if (!Number.isFinite(n) || rowsPerBlockDraft.trim() === '') setRowsPerBlockDraft('');
+                    else setRowsPerBlockDraft(String(Math.max(0, Math.min(60, Math.round(n)))));
+                  }}
                 />
               </div>
             </div>
@@ -1695,6 +1783,16 @@ export default function RoomPanel({
                     {note}
                   </p>
                 ))}
+                {onShowSightlineMarkersChange && (
+                  <label className="check" style={{ marginTop: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={showSightlineMarkers}
+                      onChange={(event) => onShowSightlineMarkersChange(event.target.checked)}
+                    />
+                    Show seat grades on the plan
+                  </label>
+                )}
               </>
             ) : (
               <p className="hint">Loading A/V summary…</p>

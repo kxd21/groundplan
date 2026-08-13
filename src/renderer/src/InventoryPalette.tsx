@@ -287,8 +287,8 @@ export function InventoryPalette({
     if (reply.id) {
       setEditing(reply.id);
       setNameDraft(`${item.name} (copy)`);
-      setWDraft(item.width ? formatLength(item.width, units) : '');
-      setHDraft(item.height ? formatLength(item.height, units) : '');
+      setWDraft(item.width != null && Number.isFinite(item.width) ? formatLength(item.width, units) : '');
+      setHDraft(item.height != null && Number.isFinite(item.height) ? formatLength(item.height, units) : '');
     }
     onStatus('Made a variation — give it a name');
   };

@@ -22,6 +22,10 @@ export interface LayoutKitInfo {
   gear: number;
   event?: string;
   venue?: string;
+  /** Optional capacity for variant kits. */
+  capacityGuests?: number;
+  /** Parent kit id when this is a seating/capacity variant. */
+  variantOf?: string;
 }
 
 export interface BankPreset {
@@ -73,6 +77,8 @@ function describeKit(id: string, path: string, source: 'bundled' | 'user'): Layo
       gear: recipe.gear?.length ?? 0,
       event: recipe.identity?.event,
       venue: recipe.identity?.venue,
+      capacityGuests: recipe.identity?.capacityGuests,
+      variantOf: recipe.identity?.variantOf,
     };
   } catch {
     return null;

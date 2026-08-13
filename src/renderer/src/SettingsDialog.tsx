@@ -16,6 +16,8 @@ interface Settings {
     paperSheet: boolean;
     autoFitOnOpen: boolean;
     openPropertiesOnSelect: boolean;
+    showStackPeek: boolean;
+    showSightlineMarkers: boolean;
     nudgeStep: number;
     fineNudgeStep: number;
     bulkDeleteWarning: number;
@@ -73,6 +75,8 @@ const PLAN_DEFAULTS: Pick<Settings, 'print' | 'dxf' | 'drawing'> = {
     paperSheet: true,
     autoFitOnOpen: true,
     openPropertiesOnSelect: true,
+    showStackPeek: true,
+    showSightlineMarkers: false,
     nudgeStep: 10,
     fineNudgeStep: 1,
     bulkDeleteWarning: 25,
@@ -134,13 +138,21 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
     saveTimer.current = window.setTimeout(() => setSaveState('idle'), state === 'saved' ? 1400 : 3200);
   };
 
+  /** Update UI immediately without waiting on IPC (slider drag). */
+  const applyLocal = (change: Partial<Settings>) => {
+    setSettings((current) => {
+      if (!current) return current;
+      const next = { ...current } as Settings;
+      for (const key of Object.keys(change) as Array<keyof Settings>) {
+        next[key] = { ...(current[key] as object), ...(change[key] as object) } as never;
+      }
+      return next;
+    });
+  };
+
   const patch = async (change: Partial<Settings>) => {
     if (!settings) return;
-    const next = { ...settings } as Settings;
-    for (const key of Object.keys(change) as Array<keyof Settings>) {
-      next[key] = { ...(settings[key] as object), ...(change[key] as object) } as never;
-    }
-    setSettings(next);
+    applyLocal(change);
     const sequence = ++saveSequence.current;
     setSaveState('saving');
     try {
@@ -205,12 +217,12 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
         <div className="settings-body settings-body-expanded">
           <nav className="settings-nav settings-primary-nav" aria-label="Settings level">
             <button className={section === 'plan' ? 'active' : ''} onClick={() => setSection('plan')}>
-              <strong>Plan settings</strong>
-              <small>Drawing, editing, print and CAD defaults</small>
+              <strong>Plan</strong>
+              <small>Drawing, print, CAD</small>
             </button>
             <button className={section === 'app' ? 'active' : ''} onClick={() => setSection('app')}>
-              <strong>App settings</strong>
-              <small>Appearance, panels, toolbar and automation</small>
+              <strong>App</strong>
+              <small>Theme, panels, updates</small>
             </button>
           </nav>
 
@@ -289,7 +301,8 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                         labelFormatter: (value) =>
                           SNAP_STEPS.find(([step]) => step === value)?.[1] ?? `${value}`,
                       }}
-                      onChange={(next) => void patch({ drawing: { ...drawing, snapStep: next } })}
+                      onChange={(next) => applyLocal({ drawing: { ...drawing, snapStep: next } })}
+                      onChangeEnd={(next) => void patch({ drawing: { ...drawing, snapStep: next } })}
                     />
                     <SnappySlider
                       label="Arrow-key nudge"
@@ -305,23 +318,26 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                         labelFormatter: (value) =>
                           SNAP_STEPS.find(([step]) => step === value)?.[1] ?? `${value}`,
                       }}
-                      onChange={(next) => void patch({ drawing: { ...drawing, nudgeStep: next } })}
+                      onChange={(next) => applyLocal({ drawing: { ...drawing, nudgeStep: next } })}
+                      onChangeEnd={(next) => void patch({ drawing: { ...drawing, nudgeStep: next } })}
                     />
                     <SnappySlider
                       label="Shift + arrow nudge"
-                      values={SNAP_STEPS.slice(1, 5).map(([value]) => value)}
-                      defaultValue={10}
-                      min={10}
+                      values={[1, 10, 30, 60, 120]}
+                      defaultValue={1}
+                      min={1}
                       max={FOOT}
-                      step={10}
+                      step={1}
                       compact
                       value={drawing.fineNudgeStep}
                       config={{
-                        snappingThreshold: 8,
+                        snappingThreshold: 4,
                         labelFormatter: (value) =>
-                          SNAP_STEPS.find(([step]) => step === value)?.[1] ?? `${value}`,
+                          SNAP_STEPS.find(([step]) => step === value)?.[1] ??
+                          (value === 1 ? '1″' : `${value}`),
                       }}
-                      onChange={(next) => void patch({ drawing: { ...drawing, fineNudgeStep: next } })}
+                      onChange={(next) => applyLocal({ drawing: { ...drawing, fineNudgeStep: next } })}
+                      onChangeEnd={(next) => void patch({ drawing: { ...drawing, fineNudgeStep: next } })}
                     />
                     <SnappySlider
                       label="Warn before bulk delete"
@@ -333,7 +349,8 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                       suffix=" objs"
                       compact
                       value={drawing.bulkDeleteWarning}
-                      onChange={(next) => void patch({ drawing: { ...drawing, bulkDeleteWarning: next } })}
+                      onChange={(next) => applyLocal({ drawing: { ...drawing, bulkDeleteWarning: next } })}
+                      onChangeEnd={(next) => void patch({ drawing: { ...drawing, bulkDeleteWarning: next } })}
                     />
                   </div>
                   <div className="settings-check-grid">
@@ -344,6 +361,28 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                     <label className="setting-check">
                       <input type="checkbox" checked={drawing.openPropertiesOnSelect} onChange={(event) => void patch({ drawing: { ...drawing, openPropertiesOnSelect: event.target.checked } })} />
                       <span><strong>Open Properties on selection</strong><small>Bring the inspector to the selected item.</small></span>
+                    </label>
+                    <label className="setting-check">
+                      <input
+                        type="checkbox"
+                        checked={drawing.showStackPeek !== false}
+                        onChange={(event) => void patch({ drawing: { ...drawing, showStackPeek: event.target.checked } })}
+                      />
+                      <span>
+                        <strong>Stack markers</strong>
+                        <small>Hover card and numbered height tags for stacked pieces.</small>
+                      </span>
+                    </label>
+                    <label className="setting-check">
+                      <input
+                        type="checkbox"
+                        checked={drawing.showSightlineMarkers === true}
+                        onChange={(event) => void patch({ drawing: { ...drawing, showSightlineMarkers: event.target.checked } })}
+                      />
+                      <span>
+                        <strong>Sightline grades on seats</strong>
+                        <small>Colour every chair by A/V view of the screen. Off by default — very busy on large plans.</small>
+                      </span>
                     </label>
                   </div>
                 </section>
@@ -391,9 +430,9 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                 <section className="settings-card">
                   <div className="settings-card-title"><strong>Workspace panels</strong><span>Choose the surfaces that stay visible while planning.</span></div>
                   <div className="settings-check-grid three">
-                    <label className="setting-check"><input type="checkbox" checked={appPreferences.railOpen} onChange={(event) => patchApp({ railOpen: event.target.checked })} /><span><strong>Left browser</strong><small>Plans, equipment and inventory.</small></span></label>
-                    <label className="setting-check"><input type="checkbox" checked={appPreferences.inspectorOpen} onChange={(event) => patchApp({ inspectorOpen: event.target.checked })} /><span><strong>Right inspector</strong><small>Properties, rooms and layers.</small></span></label>
-                    <label className="setting-check"><input type="checkbox" checked={appPreferences.toolDockOpen} onChange={(event) => patchApp({ toolDockOpen: event.target.checked })} /><span><strong>Side tools</strong><small>Movable drawing-tool palette.</small></span></label>
+                    <label className="setting-check"><input type="checkbox" checked={appPreferences.railOpen} onChange={(event) => patchApp({ railOpen: event.target.checked })} /><span><strong>Browse / Place rail</strong><small>Recent plans and equipment stamping.</small></span></label>
+                    <label className="setting-check"><input type="checkbox" checked={appPreferences.inspectorOpen} onChange={(event) => patchApp({ inspectorOpen: event.target.checked })} /><span><strong>Inspect panel</strong><small>Layers, properties, and room tools.</small></span></label>
+                    <label className="setting-check"><input type="checkbox" checked={appPreferences.toolDockOpen} onChange={(event) => patchApp({ toolDockOpen: event.target.checked })} /><span><strong>Draw tools dock</strong><small>Movable drawing-tool shelf.</small></span></label>
                   </div>
                 </section>
 
@@ -405,8 +444,8 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                   </div>
                   <p className={`settings-note${appPreferences.toolDockOpen ? '' : ' is-dependency-warning'}`}>
                     {appPreferences.toolDockOpen
-                      ? 'Tool order and hidden tools remain available from the gear button on the side toolbar.'
-                      : 'Turn on Side tools under Workspace panels to change its position or size.'}
+                      ? 'Tool order and hidden tools stay on the gear button on the Draw dock.'
+                      : 'Turn on Draw tools dock under Workspace panels to change its position or size.'}
                   </p>
                 </section>
 
@@ -435,7 +474,12 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                       compact
                       disabled={settings.catalog.policy !== 'automatic-small'}
                       value={settings.catalog.smallUpdateLimitMb}
-                      onChange={(next) => void patch({ catalog: { ...settings.catalog, smallUpdateLimitMb: next } })}
+                      onChange={(next) =>
+                        applyLocal({ catalog: { ...settings.catalog, smallUpdateLimitMb: next } })
+                      }
+                      onChangeEnd={(next) =>
+                        void patch({ catalog: { ...settings.catalog, smallUpdateLimitMb: next } })
+                      }
                     />
                     <SnappySlider
                       label="Check interval"
@@ -447,7 +491,12 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                       suffix=" h"
                       compact
                       value={settings.catalog.checkIntervalHours}
-                      onChange={(next) => void patch({ catalog: { ...settings.catalog, checkIntervalHours: next } })}
+                      onChange={(next) =>
+                        applyLocal({ catalog: { ...settings.catalog, checkIntervalHours: next } })
+                      }
+                      onChangeEnd={(next) =>
+                        void patch({ catalog: { ...settings.catalog, checkIntervalHours: next } })
+                      }
                     />
                   </div>
                   <div className="settings-actions-row">

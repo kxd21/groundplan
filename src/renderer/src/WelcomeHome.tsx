@@ -23,12 +23,24 @@ interface Props {
   onOpenPlan: () => void;
   onOpenFolder: () => void;
   onOpenPath: (path: string) => void;
+  onDuplicatePath?: (path: string) => void;
   onOpenFolderWorkspace: (folderId?: string) => void;
   onOpenShortcuts: () => void;
   onOpenSettings: () => void;
+  onOpenCommandPalette?: () => void;
+  commandPaletteShortcut?: string;
 }
 
 const FEATURES = [
+  {
+    eyebrow: 'Flexible rooms',
+    title: 'Start from the room',
+    body: 'New plan is room-first — pick a venue size and the matching kit lands with it. Custom rooms get a fitted kit after you close the outline.',
+    action: 'Choose New plan — Boardroom, Ballroom, or Concert — then tweak or print.',
+    tone: 'orange',
+    icon: <IconDrawPolygon size={25} />,
+    companion: <IconEdit size={23} />,
+  },
   {
     eyebrow: 'New workflow',
     title: 'Work across multiple shows',
@@ -48,19 +60,10 @@ const FEATURES = [
     companion: <IconLayers size={23} />,
   },
   {
-    eyebrow: 'Flexible rooms',
-    title: 'Start from the room',
-    body: 'New plan is room-first — pick a venue size or shape, then stage and seating unlock in Show setup.',
-    action: 'Choose New plan — Boardroom (~20), Concert floor, or Draw custom — then finish the show.',
-    tone: 'orange',
-    icon: <IconDrawPolygon size={25} />,
-    companion: <IconEdit size={23} />,
-  },
-  {
     eyebrow: 'Detailed layouts',
     title: 'Plan seating in a focused workspace',
     body: 'Compare layouts, tune clearances and aisles, place sections, and keep the drawing visible while you work.',
-    action: 'Open Seating from the top toolbar after opening a plan.',
+    action: 'Open Seating planner from Setup — or stamp one bank under Stamp a seating bank.',
     tone: 'green',
     icon: <IconChair size={25} />,
     companion: <IconLayers size={23} />,
@@ -96,9 +99,12 @@ export default function WelcomeHome({
   onOpenPlan,
   onOpenFolder,
   onOpenPath,
+  onDuplicatePath,
   onOpenFolderWorkspace,
   onOpenShortcuts,
   onOpenSettings,
+  onOpenCommandPalette,
+  commandPaletteShortcut = '⌘K',
 }: Props) {
   const [featureIndex, setFeatureIndex] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -143,6 +149,9 @@ export default function WelcomeHome({
         <button className="welcome-new" onClick={onNewPlan}><IconPlus size={16} /> New plan</button>
         <button onClick={onOpenPlan}><IconFile size={15} /> Open plan</button>
         <button onClick={onOpenFolder}><IconFolder size={15} /> Browse a folder</button>
+        {onOpenCommandPalette ? (
+          <button onClick={onOpenCommandPalette}><IconSearch size={15} /> Commands ({commandPaletteShortcut})</button>
+        ) : null}
         <div className="welcome-nav-rule" />
         <button className="is-current"><Mark size={15} /> Home</button>
         <button onClick={() => onOpenFolderWorkspace()}><IconLayers size={15} /> Folder Workspace</button>
@@ -193,10 +202,22 @@ export default function WelcomeHome({
           <header><span><h2>Recent shows</h2><small>Continue where you left off</small></span>{recent.length > 8 && <button onClick={() => setShowAllRecent((all) => !all)}>{showAllRecent ? 'Show less' : `View all ${recent.length}`}</button>}</header>
           <div className="welcome-recent-grid">
             {matchingRecent.map((entry, index) => (
-              <button className="welcome-recent-card" key={entry.path} onClick={() => onOpenPath(entry.path)} title={entry.path}>
-                <span className={`welcome-plan-preview preview-${index % 4}`} aria-hidden="true"><i /><i /><i /><i /><b /></span>
-                <span className="welcome-card-copy"><strong>{entry.name.replace(/\.[^.]+$/, '')}</strong><small>{entry.folder} · {entry.extension}</small><small>{openedLabel(entry.openedAt)}</small></span>
-              </button>
+              <div className="welcome-recent-card-wrap" key={entry.path}>
+                <button className="welcome-recent-card" onClick={() => onOpenPath(entry.path)} title={entry.path}>
+                  <span className={`welcome-plan-preview preview-${index % 4}`} aria-hidden="true"><i /><i /><i /><i /><b /></span>
+                  <span className="welcome-card-copy"><strong>{entry.name.replace(/\.[^.]+$/, '')}</strong><small>{entry.folder} · {entry.extension}</small><small>{openedLabel(entry.openedAt)}</small></span>
+                </button>
+                {onDuplicatePath ? (
+                  <button
+                    type="button"
+                    className="welcome-recent-duplicate"
+                    title="Duplicate this plan and open the copy"
+                    onClick={() => onDuplicatePath(entry.path)}
+                  >
+                    <IconCopy size={13} /> Start from this
+                  </button>
+                ) : null}
+              </div>
             ))}
             {!matchingRecent.length && (
               <button className="welcome-empty-card" onClick={query ? () => setQuery('') : onNewPlan}>

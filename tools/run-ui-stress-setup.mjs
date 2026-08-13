@@ -21,7 +21,7 @@ const SAVE_DIR = path.dirname(SAVE);
 const SAVE_NAME = path.basename(SAVE);
 
 function cdpUp() {
-  return fetch(`${CDP}/json/list`)
+  return fetch(`${CDP}/json/list`, { signal: AbortSignal.timeout(1500) })
     .then((r) => r.json())
     .then((pages) => pages.some((p) => p.type === 'page'))
     .catch(() => false);

@@ -30,13 +30,21 @@ interface Preset {
   /** In feet, as the presets are stated. */
   width: number;
   depth: number;
+  ceilingFt?: number;
 }
 
 interface Props {
   units: UnitSystem;
   onCreated: (
     doc: unknown,
-    options: { startRoomOutline: boolean; customRoom?: CustomRoomPrefs },
+    options: {
+      startRoomOutline: boolean;
+      customRoom?: CustomRoomPrefs;
+      /** Bundled kit to apply immediately after the room is created. */
+      applyKitId?: string;
+      /** Open Background Studio so the user can import a site plan / CAD export. */
+      openBackground?: boolean;
+    },
   ) => void;
   onCancel: () => void;
   onError: (message: string) => void;
@@ -47,20 +55,96 @@ const FT = 120;
 type RoomChoice = NewRoomShape | 'custom';
 type WallTreatment = 'straight' | 'curve';
 
-/** One-click common rooms — boardroom (~20) through concert floor. */
+/** Map a guest target to a quick-start room + kit. */
+export function suggestQuickStartForGuests(guests: number): {
+  width: number;
+  depth: number;
+  ceilingFt: number;
+  kitId: string;
+  label: string;
+} {
+  const n = Math.max(1, Math.floor(guests));
+  if (n <= 24) {
+    return { width: 20, depth: 16, ceilingFt: 10, kitId: 'bundled:boardroom-20', label: 'Boardroom' };
+  }
+  if (n <= 80) {
+    return { width: 30, depth: 20, ceilingFt: 12, kitId: 'bundled:boardroom-20', label: 'Meeting' };
+  }
+  if (n <= 160) {
+    return { width: 60, depth: 40, ceilingFt: 18, kitId: 'bundled:banquet-120', label: 'Ballroom' };
+  }
+  if (n <= 800) {
+    return { width: 200, depth: 120, ceilingFt: 40, kitId: 'bundled:arena-floor', label: 'Concert floor' };
+  }
+  // Rough Card Party density (~7 sq ft/person theatre).
+  const area = n * 7;
+  const depth = Math.max(80, Math.round(Math.sqrt(area / (200 / 120)) / 10) * 10);
+  const width = Math.max(120, Math.round(area / depth / 10) * 10);
+  return { width, depth, ceilingFt: 30, kitId: 'bundled:card-party', label: 'Large house' };
+}
 const QUICK_START: Array<{
   id: string;
   label: string;
   detail: string;
   width?: number;
   depth?: number;
+  ceilingFt?: number;
   custom?: boolean;
+  sitePlan?: boolean;
+  /** Matching show kit applied right after create. */
+  kitId?: string;
 }> = [
-  { id: 'boardroom', label: 'Boardroom', detail: "20' × 16' · ~20", width: 20, depth: 16 },
-  { id: 'meeting', label: 'Meeting', detail: "30' × 20'", width: 30, depth: 20 },
-  { id: 'ballroom', label: 'Ballroom', detail: "60' × 40'", width: 60, depth: 40 },
-  { id: 'concert', label: 'Concert floor', detail: "200' × 120'", width: 200, depth: 120 },
-  { id: 'custom', label: 'Draw custom', detail: 'Trace next', custom: true },
+  {
+    id: 'boardroom',
+    label: 'Boardroom',
+    detail: "20' × 16', 10' ceiling · kit · ~20",
+    width: 20,
+    depth: 16,
+    ceilingFt: 10,
+    kitId: 'bundled:boardroom-20',
+  },
+  {
+    id: 'meeting',
+    label: 'Meeting',
+    detail: "30' × 20', 12' ceiling · kit · ~40",
+    width: 30,
+    depth: 20,
+    ceilingFt: 12,
+    kitId: 'bundled:boardroom-20',
+  },
+  {
+    id: 'ballroom',
+    label: 'Ballroom',
+    detail: "60' × 40', 18' ceiling · kit · ~120",
+    width: 60,
+    depth: 40,
+    ceilingFt: 18,
+    kitId: 'bundled:banquet-120',
+  },
+  {
+    id: 'concert',
+    label: 'Concert floor',
+    detail: "200' × 120', 40' ceiling · kit",
+    width: 200,
+    depth: 120,
+    ceilingFt: 40,
+    kitId: 'bundled:arena-floor',
+  },
+  {
+    id: 'custom',
+    label: 'Draw custom',
+    detail: 'Trace walls on a blank sheet',
+    custom: true,
+    ceilingFt: 14,
+  },
+  {
+    id: 'site',
+    label: 'From site plan',
+    detail: 'CAD / PDF underlay + outline',
+    sitePlan: true,
+    custom: true,
+    ceilingFt: 14,
+  },
 ];
 
 const SHAPES: Array<{
@@ -228,6 +312,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [shape, setShape] = useState<RoomChoice>('rectangle');
   const [width, setWidth] = useState(() => formatLength(60 * FT, units));
   const [depth, setDepth] = useState(() => formatLength(40 * FT, units));
+  const [ceiling, setCeiling] = useState(() => formatLength(18 * FT, units));
   const [diameter, setDiameter] = useState(() => formatLength(50 * FT, units));
   const [cornerRadius, setCornerRadius] = useState(() => formatLength(4 * FT, units));
   const [notchWidth, setNotchWidth] = useState(() => formatLength(20 * FT, units));
@@ -250,6 +335,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customOptionsOpen, setCustomOptionsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [guestTarget, setGuestTarget] = useState('');
 
   useEffect(() => {
     void api.roomPresets().then(setPresets);
@@ -269,6 +355,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const parsed = {
     width: parseLength(width, units),
     depth: parseLength(depth, units),
+    ceiling: parseLength(ceiling, units),
     diameter: parseLength(diameter, units),
     cornerRadius: parseLength(cornerRadius, units),
     notchWidth: parseLength(notchWidth, units),
@@ -344,12 +431,18 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     setWallTreatment('straight');
     setWidth(formatLength(preset.width * FT, units));
     setDepth(formatLength(preset.depth * FT, units));
+    if (preset.ceilingFt && preset.ceilingFt > 0) {
+      setCeiling(formatLength(preset.ceilingFt * FT, units));
+    }
   };
 
   const create = async (override?: {
     room?: NewRoomSpec;
     custom?: CustomRoomPrefs;
     name?: string;
+    applyKitId?: string;
+    openBackground?: boolean;
+    ceilingHeight?: number;
   }) => {
     const usingCustom = override?.custom != null || (override?.room == null && customRoom);
     if (!override && !roomReady) return;
@@ -367,23 +460,42 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
               }
             : undefined
         );
-      const reply = await api.newPlan({
-        name: override?.name ?? planName,
-        room: customPrefs ? undefined : override?.room ?? roomSpec ?? undefined,
-        sheetSize: customPrefs
-          ? { width: customPrefs.guideWidth, depth: customPrefs.guideDepth }
-          : undefined,
-        autoDimensions: !customPrefs && autoDimensions,
-        autosave: true,
-      });
-      if (reply.cancelled) return;
-      if (!reply.ok || !reply.doc) {
+      const ceilingHeight =
+        override?.ceilingHeight ??
+        ((parsed.ceiling ?? 0) > 0 ? parsed.ceiling! : undefined);
+      const reply = await Promise.race([
+        api.newPlan({
+          name: override?.name ?? planName,
+          room: customPrefs ? undefined : override?.room ?? roomSpec ?? undefined,
+          sheetSize: customPrefs
+            ? { width: customPrefs.guideWidth, depth: customPrefs.guideDepth }
+            : undefined,
+          ceilingHeight,
+          autoDimensions: !customPrefs && autoDimensions,
+          autosave: true,
+        }),
+        new Promise<{ ok: false; reason: string }>((resolve) => {
+          window.setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                reason:
+                  'Creating the plan took too long — look for a Save or Discard dialog behind this window, then try again.',
+              }),
+            45_000,
+          );
+        }),
+      ]);
+      if ('cancelled' in reply && reply.cancelled) return;
+      if (!reply.ok || !('doc' in reply) || !reply.doc) {
         onError(reply.reason ?? 'the plan could not be created');
         return;
       }
       onCreated(reply.doc, {
         startRoomOutline: Boolean(customPrefs),
         customRoom: customPrefs,
+        applyKitId: customPrefs ? undefined : override?.applyKitId,
+        openBackground: Boolean(override?.openBackground),
       });
     } finally {
       setBusy(false);
@@ -391,6 +503,23 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   };
 
   const quickStart = (item: (typeof QUICK_START)[number]) => {
+    const ceilingHeight = item.ceilingFt && item.ceilingFt > 0 ? item.ceilingFt * FT : undefined;
+    if (ceilingHeight) setCeiling(formatLength(ceilingHeight, units));
+    if (item.sitePlan) {
+      // CAD / venue PDF path: large working sheet → Background Studio → trace walls.
+      void create({
+        custom: {
+          guideWidth: 120 * FT,
+          guideDepth: 80 * FT,
+          angleLock: 'ortho',
+          showGuide: true,
+          autoDimensions: true,
+        },
+        openBackground: true,
+        ceilingHeight,
+      });
+      return;
+    }
     if (item.custom) {
       // One click: empty sheet + outline tool, ortho guide at 60×40.
       void create({
@@ -401,6 +530,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           showGuide: true,
           autoDimensions: true,
         },
+        ceilingHeight,
       });
       return;
     }
@@ -412,6 +542,8 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     // Keep the plan file name; venue archetype is not the document identity.
     void create({
       room: { shape: 'rectangle', width: item.width * FT, depth: item.depth * FT },
+      applyKitId: item.kitId,
+      ceilingHeight,
     });
   };
 
@@ -445,8 +577,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
             <span className="new-plan-eyebrow">New plan</span>
             <h2 id="new-plan-title">Build the room</h2>
             <p>
-              From a 20-person boardroom to a full concert floor — pick a size or shape. Show details come
-              after the plan opens.
+              Sized rooms with a matching kit, or start from a site plan / CAD PDF and trace the walls.
             </p>
           </div>
           <span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>
@@ -457,7 +588,11 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
             <button
               key={item.id}
               type="button"
-              className={item.custom && customRoom ? 'is-on' : undefined}
+              className={
+                (item.custom && customRoom && !item.sitePlan) || (item.sitePlan && customRoom)
+                  ? 'is-on'
+                  : undefined
+              }
               disabled={busy}
               onClick={() => quickStart(item)}
             >
@@ -465,6 +600,57 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
               <small>{item.detail}</small>
             </button>
           ))}
+        </div>
+
+        <div className="new-plan-guest-row">
+          <label htmlFor="new-plan-guests">
+            Or start from headcount
+            <input
+              id="new-plan-guests"
+              className="num"
+              type="number"
+              min={1}
+              max={5000}
+              placeholder="e.g. 120"
+              value={guestTarget}
+              disabled={busy}
+              onChange={(e) => setGuestTarget(e.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn-solid"
+            disabled={busy || !(Number(guestTarget) > 0)}
+            onClick={() => {
+              const guests = Math.floor(Number(guestTarget));
+              if (!(guests > 0)) return;
+              const pick = suggestQuickStartForGuests(guests);
+              setShape('rectangle');
+              setWallTreatment('straight');
+              setWidth(formatLength(pick.width * FT, units));
+              setDepth(formatLength(pick.depth * FT, units));
+              setCeiling(formatLength(pick.ceilingFt * FT, units));
+              void create({
+                room: {
+                  shape: 'rectangle',
+                  width: pick.width * FT,
+                  depth: pick.depth * FT,
+                },
+                applyKitId: pick.kitId,
+                ceilingHeight: pick.ceilingFt * FT,
+                name: planName === 'Untitled plan' ? `${pick.label} · ${guests}` : planName,
+              });
+            }}
+          >
+            Create for {Number(guestTarget) > 0 ? Number(guestTarget).toLocaleString() : '…'}
+          </button>
+          {Number(guestTarget) > 0 ? (
+            <p className="hint">
+              Suggests {suggestQuickStartForGuests(Number(guestTarget)).label} (
+              {suggestQuickStartForGuests(Number(guestTarget)).width}′ ×{' '}
+              {suggestQuickStartForGuests(Number(guestTarget)).depth}′) with matching kit.
+            </p>
+          ) : null}
         </div>
 
         <div className="new-plan-body is-room-builder">
@@ -555,6 +741,15 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                             onChange={(e) => setDepth(e.target.value)}
                           />
                         </div>
+                        <div className="field">
+                          <label htmlFor="new-plan-custom-ceiling">Ceiling height</label>
+                          <input
+                            id="new-plan-custom-ceiling"
+                            value={ceiling}
+                            aria-invalid={ceiling.trim() !== '' && !((parsed.ceiling ?? 0) > 0)}
+                            onChange={(e) => setCeiling(e.target.value)}
+                          />
+                        </div>
                       </div>
                       <div className="field">
                         <label>Common footprints</label>
@@ -573,6 +768,9 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                                   onClick={() => {
                                     setWidth(formatLength(preset.width * FT, units));
                                     setDepth(formatLength(preset.depth * FT, units));
+                                    if (preset.ceilingFt && preset.ceilingFt > 0) {
+                                      setCeiling(formatLength(preset.ceilingFt * FT, units));
+                                    }
                                   }}
                                 >
                                   {preset.label}
@@ -679,6 +877,15 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                           <div className="field">
                             <label htmlFor="new-plan-depth">Outside depth</label>
                             <input id="new-plan-depth" value={depth} aria-invalid={depth.trim() !== '' && !((parsed.depth ?? 0) > 0)} onChange={(e) => setDepth(e.target.value)} />
+                          </div>
+                          <div className="field">
+                            <label htmlFor="new-plan-ceiling">Ceiling height</label>
+                            <input
+                              id="new-plan-ceiling"
+                              value={ceiling}
+                              aria-invalid={ceiling.trim() !== '' && !((parsed.ceiling ?? 0) > 0)}
+                              onChange={(e) => setCeiling(e.target.value)}
+                            />
                           </div>
                         </div>
                       )}

@@ -31,6 +31,8 @@ export interface ToolApi {
   ): Promise<EditLike & { text?: string }>;
   draw(shape: 'line' | 'rect' | 'ellipse', x1: number, y1: number, x2: number, y2: number): Promise<EditLike>;
   roomCreatePolygon(points: Array<{ x: number; y: number }>): Promise<EditLike>;
+  placeCablePath(name: string, points: Array<{ x: number; y: number }>): Promise<EditLike>;
+  placeAvPair(x: number, y: number): Promise<EditLike>;
 }
 
 interface EditLike {
@@ -110,6 +112,23 @@ export async function runEffect(effect: PendingEffect, api: ToolApi): Promise<Ef
       return {
         ...reply,
         status: reply.ok ? `Created a custom room with ${effect.points.length} corners` : undefined,
+      };
+    }
+    case 'placeCable': {
+      const reply = await api.placeCablePath(
+        effect.name,
+        effect.points.map(({ x, y }) => ({ x, y })),
+      );
+      return {
+        ...reply,
+        status: reply.ok ? `Placed ${effect.name}` : undefined,
+      };
+    }
+    case 'placeAvPair': {
+      const reply = await api.placeAvPair(effect.at.x, effect.at.y);
+      return {
+        ...reply,
+        status: reply.ok ? 'Placed screen + projector with throw' : undefined,
       };
     }
     case 'addDimension': {

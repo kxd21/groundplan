@@ -5,7 +5,8 @@
     "event": "Card Party South Florida",
     "venue": "South Florida",
     "roomLabel": "245' × 130'-7\"",
-    "date": "2026-08-03"
+    "date": "2026-08-03",
+    "capacityGuests": 2400
   },
   "room": {
     "widthFt": 245,

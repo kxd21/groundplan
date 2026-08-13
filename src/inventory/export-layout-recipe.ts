@@ -90,6 +90,7 @@ export function exportLayoutRecipe(doc: RVDocument): LayoutRecipe {
       venue: identity.venue || undefined,
       date: identity.date || undefined,
       roomLabel: derived.room.name || undefined,
+      capacityGuests: chairTotal > 0 ? chairTotal : undefined,
     },
     room: bounds
       ? {

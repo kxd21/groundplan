@@ -11,17 +11,19 @@ import { placeGear } from '../format/place.js';
 import { setPlanIdentity } from '../format/plan-skeleton.js';
 import { buildSchedule } from '../format/schedule.js';
 import { verifyWritable } from '../format/write.js';
-import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../format/rv.js';
+import { UNITS_PER_FOOT, UNITS_PER_INCH, walk, type RVNode } from '../format/rv.js';
 import type { Session } from '../main/session.js';
 import { addStage, createRectangularRoom } from '../main/plan-model.js';
 import type { UnitSystem } from '../format/units.js';
-import { deriveRoom } from '../format/room.js';
+import { deriveRoom, roomBounds } from '../format/room.js';
 import type { Inventory } from './model.js';
 import {
   applyLayoutRecipeAnnotations,
   applyLayoutRecipeGear,
   applyLayoutRecipeSeating,
   isLayoutRecipe,
+  layoutRecipeFitsRoom,
+  scaleLayoutRecipeToRoom,
   stageRequestFromRecipe,
   validateLayoutRecipe,
   type LayoutRecipe,
@@ -29,8 +31,10 @@ import {
 } from './layout-recipe.js';
 
 export interface ApplyFullLayoutOptions {
-  /** When the plan already has chairs, refuse unless true. */
+  /** When the plan already has chairs, refuse unless true — and clear seating first. */
   replaceExistingSeating?: boolean;
+  /** Also remove non-chair/table furniture before placing recipe gear. */
+  replaceExistingGear?: boolean;
   /** Inventory for exact gear/chair name checks. Optional for hermetic stubs. */
   inventory?: Inventory;
   units?: UnitSystem;
@@ -38,8 +42,17 @@ export interface ApplyFullLayoutOptions {
   createRoomIfMissing?: boolean;
   /** Replace/recreate rectangular room from recipe even if one exists (CLI rebuild). */
   forceRoom?: boolean;
+  /**
+   * When the plan already has a room, scale recipe coordinates into that room.
+   * Default true. Ignored when forceRoom creates the recipe’s own room size.
+   */
+  fitToExistingRoom?: boolean;
   /** Apply identity fields from the recipe. Default true. */
   applyIdentity?: boolean;
+  includeStage?: boolean;
+  includeSeating?: boolean;
+  includeGear?: boolean;
+  includeAnnotations?: boolean;
 }
 
 export interface ApplyFullLayoutResult {
@@ -53,6 +66,75 @@ export interface ApplyFullLayoutResult {
   stagesPlaced: number;
   created: number[];
   seating?: LayoutRecipeApplyResult['seating'];
+}
+
+const CHAIR_NAME_RE = /chair|seat|stool|chiavari/i;
+const TABLE_NAME_RE = /table|banquet|cabaret|cocktail|schoolroom|serpentine|high.?top/i;
+
+function shapeCatalogueName(node: RVNode): string {
+  return (
+    node.labels.find(
+      (l) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(l),
+    ) ?? ''
+  );
+}
+
+/** Delete RVShape objects whose catalogue name matches. Returns how many were removed. */
+export function clearMatchingShapes(
+  session: Session,
+  match: (name: string) => boolean,
+): number {
+  let deleted = 0;
+  for (let pass = 0; pass < 40; pass++) {
+    const index = indexDocument(session.loaded.document);
+    const targets: RVNode[] = [];
+    for (const node of walk(session.loaded.document)) {
+      if (node.cls !== 'RVShape') continue;
+      if (match(shapeCatalogueName(node))) targets.push(node);
+    }
+    if (!targets.length) break;
+    const depthOf = (node: RVNode): number => {
+      let depth = 0;
+      let current: RVNode | undefined = node;
+      while (current) {
+        const parent = index.parentOf.get(current);
+        if (!parent) break;
+        depth++;
+        current = parent;
+      }
+      return depth;
+    };
+    targets.sort((a, b) => depthOf(b) - depthOf(a));
+    let removedThisPass = 0;
+    for (const node of targets) {
+      const live = indexDocument(session.loaded.document);
+      const current = live.byId.get(node.id);
+      if (!current) continue;
+      const result = deleteNode(session.loaded.document, live, current);
+      if (result.ok) {
+        deleted++;
+        removedThisPass++;
+      }
+    }
+    if (removedThisPass) session.refresh();
+    else break;
+  }
+  return deleted;
+}
+
+export function clearSeatingShapes(session: Session): number {
+  return clearMatchingShapes(
+    session,
+    (name) => CHAIR_NAME_RE.test(name) || TABLE_NAME_RE.test(name),
+  );
+}
+
+export function clearGearShapes(session: Session): number {
+  return clearMatchingShapes(
+    session,
+    (name) =>
+      Boolean(name) && !CHAIR_NAME_RE.test(name) && !TABLE_NAME_RE.test(name) && !/stage/i.test(name),
+  );
 }
 
 function chairCount(session: Session): number {
@@ -118,6 +200,9 @@ export function applyFullLayoutRecipe(
   }
 
   const hasRoom = deriveRoom(session.loaded.document).source !== 'none';
+  let working: LayoutRecipe = recipe;
+  let fittedToRoom = false;
+
   if (recipe.room && (options.forceRoom || (!hasRoom && options.createRoomIfMissing !== false))) {
     const width = recipe.room.widthFt * UNITS_PER_FOOT;
     const depth = recipe.room.depthFt * UNITS_PER_FOOT;
@@ -127,116 +212,174 @@ export function applyFullLayoutRecipe(
     session.refresh();
   } else if (!hasRoom && recipe.room) {
     return { ...empty, reason: 'plan has no room — draw or create one before applying this kit' };
-  }
-
-  for (const [i, stage] of (recipe.stage ?? []).entries()) {
-    const req = stageRequestFromRecipe(stage);
-    const built = addStage(session, req.x, req.y, req.width, req.depth, req.height, {
-      back: req.back,
-      stairs: req.stairs,
-    });
-    if (!built.ok) {
-      return { ...empty, reason: `stage ${i + 1}: ${built.reason}`, created };
+  } else if (
+    hasRoom &&
+    options.fitToExistingRoom !== false &&
+    !options.forceRoom &&
+    recipe.room
+  ) {
+    const derived = deriveRoom(session.loaded.document);
+    const bounds = roomBounds(derived.room);
+    if (bounds) {
+      const widthFt = (bounds.maxX - bounds.minX) / UNITS_PER_FOOT;
+      const depthFt = (bounds.maxY - bounds.minY) / UNITS_PER_FOOT;
+      if (!layoutRecipeFitsRoom(recipe, widthFt, depthFt)) {
+        working = scaleLayoutRecipeToRoom(recipe, widthFt, depthFt);
+        fittedToRoom = true;
+      }
     }
-    if (built.created) created.push(...built.created);
-    stagesPlaced++;
-    session.refresh();
   }
 
-  // Seed a chair shape so theatre banks can synthesize without inventory IPC.
-  const chair = recipe.seating[0]?.chair ?? 'Chair';
-  let seedId: number | undefined;
-  {
-    const index = indexDocument(session.loaded.document);
-    const seed = placeGear(session.loaded.document, index, chair, 500 * UNITS_PER_FOOT, 500 * UNITS_PER_FOOT, {
-      width: 20.5 * UNITS_PER_INCH,
-      height: 23.23 * UNITS_PER_INCH,
-    });
-    if (seed.ok) {
-      seedId = seed.created?.[0];
+  if (options.replaceExistingSeating && options.includeSeating !== false) {
+    clearSeatingShapes(session);
+  }
+  if (options.replaceExistingGear && options.includeGear !== false) {
+    clearGearShapes(session);
+  }
+
+  const includeStage = options.includeStage !== false;
+  const includeSeating = options.includeSeating !== false;
+  const includeGear = options.includeGear !== false;
+  const includeAnnotations = options.includeAnnotations !== false;
+
+  if (includeStage) {
+    for (const [i, stage] of (working.stage ?? []).entries()) {
+      const req = stageRequestFromRecipe(stage);
+      const built = addStage(session, req.x, req.y, req.width, req.depth, req.height, {
+        back: req.back,
+        stairs: req.stairs,
+      });
+      if (!built.ok) {
+        return { ...empty, reason: `stage ${i + 1}: ${built.reason}`, created };
+      }
+      if (built.created) created.push(...built.created);
+      stagesPlaced++;
       session.refresh();
     }
   }
 
-  const seated = applyLayoutRecipeSeating(
-    session.loaded.document,
-    indexDocument(session.loaded.document),
-    recipe,
-  );
-  if (!seated.ok) {
-    return {
-      ...empty,
-      reason: seated.reason,
-      chairsPlaced: seated.chairsPlaced,
-      created,
-      seating: seated.seating,
-    };
-  }
-  session.refresh();
+  let seated: LayoutRecipeApplyResult = {
+    ok: true,
+    chairsPlaced: 0,
+    gearPlaced: 0,
+    labelsPlaced: 0,
+    dimensionsPlaced: 0,
+    seating: [],
+  };
 
-  if (seedId != null) {
-    const index = indexDocument(session.loaded.document);
-    const node = index.byId.get(seedId);
-    if (node) {
-      const removed = deleteNode(session.loaded.document, index, node);
-      if (removed.ok) session.refresh();
+  if (includeSeating && working.seating.length) {
+    // Seed a chair shape so theatre banks can synthesize without inventory IPC.
+    const chair = working.seating[0]?.chair ?? 'Chair';
+    let seedId: number | undefined;
+    {
+      const index = indexDocument(session.loaded.document);
+      const seed = placeGear(
+        session.loaded.document,
+        index,
+        chair,
+        500 * UNITS_PER_FOOT,
+        500 * UNITS_PER_FOOT,
+        {
+          width: 20.5 * UNITS_PER_INCH,
+          height: 23.23 * UNITS_PER_INCH,
+        },
+      );
+      if (seed.ok) {
+        seedId = seed.created?.[0];
+        session.refresh();
+      }
+    }
+
+    seated = applyLayoutRecipeSeating(
+      session.loaded.document,
+      indexDocument(session.loaded.document),
+      working,
+    );
+    if (!seated.ok) {
+      return {
+        ...empty,
+        reason: seated.reason,
+        chairsPlaced: seated.chairsPlaced,
+        created,
+        seating: seated.seating,
+      };
+    }
+    session.refresh();
+
+    if (seedId != null) {
+      const index = indexDocument(session.loaded.document);
+      const node = index.byId.get(seedId);
+      if (node) {
+        const removed = deleteNode(session.loaded.document, index, node);
+        if (removed.ok) session.refresh();
+      }
     }
   }
 
-  const geared = applyLayoutRecipeGear(
-    session.loaded.document,
-    indexDocument(session.loaded.document),
-    recipe,
-    options.inventory,
-  );
-  if (!geared.ok) {
-    return {
-      ...empty,
-      reason: geared.reason,
-      chairsPlaced: seated.chairsPlaced,
-      gearPlaced: geared.gearPlaced,
-      created,
-      seating: seated.seating,
-    };
+  let gearPlaced = 0;
+  if (includeGear) {
+    const geared = applyLayoutRecipeGear(
+      session.loaded.document,
+      indexDocument(session.loaded.document),
+      working,
+      options.inventory,
+    );
+    if (!geared.ok) {
+      return {
+        ...empty,
+        reason: geared.reason,
+        chairsPlaced: seated.chairsPlaced,
+        gearPlaced: geared.gearPlaced,
+        created,
+        seating: seated.seating,
+      };
+    }
+    gearPlaced = geared.gearPlaced;
+    session.refresh();
   }
-  session.refresh();
 
-  const notes = applyLayoutRecipeAnnotations(
-    session.loaded.document,
-    indexDocument(session.loaded.document),
-    recipe,
-  );
-  if (!notes.ok) {
-    return {
-      ...empty,
-      reason: notes.reason,
-      chairsPlaced: seated.chairsPlaced,
-      gearPlaced: geared.gearPlaced,
-      created,
-      seating: seated.seating,
-    };
+  let labelsPlaced = 0;
+  let dimensionsPlaced = 0;
+  if (includeAnnotations) {
+    const notes = applyLayoutRecipeAnnotations(
+      session.loaded.document,
+      indexDocument(session.loaded.document),
+      working,
+    );
+    if (!notes.ok) {
+      return {
+        ...empty,
+        reason: notes.reason,
+        chairsPlaced: seated.chairsPlaced,
+        gearPlaced,
+        created,
+        seating: seated.seating,
+      };
+    }
+    labelsPlaced = notes.labelsPlaced ?? 0;
+    dimensionsPlaced = notes.dimensionsPlaced ?? 0;
+    session.refresh();
   }
-  session.refresh();
 
-  for (const name of recipe.expectations.requireGearNames ?? []) {
-    if (![...gearNamesOnPlan(session)].some((n) => n === name || n.includes(name))) {
-      // Soft check: gear may be placed under a slightly different schedule label.
-      const onPlan = gearNamesOnPlan(session);
-      if (!onPlan.has(name)) {
-        // Exact-name placement used catalogue name; schedule uses that name.
-        const found = [...onPlan].some((n) => n.toLowerCase() === name.toLowerCase());
-        if (!found) {
-          return {
-            ...empty,
-            reason: `required gear “${name}” not found on plan after apply`,
-            chairsPlaced: seated.chairsPlaced,
-            gearPlaced: geared.gearPlaced,
-            labelsPlaced: notes.labelsPlaced,
-            dimensionsPlaced: notes.dimensionsPlaced,
-            stagesPlaced,
-            created,
-            seating: seated.seating,
-          };
+  if (includeGear) {
+    for (const name of recipe.expectations.requireGearNames ?? []) {
+      if (![...gearNamesOnPlan(session)].some((n) => n === name || n.includes(name))) {
+        const onPlan = gearNamesOnPlan(session);
+        if (!onPlan.has(name)) {
+          const found = [...onPlan].some((n) => n.toLowerCase() === name.toLowerCase());
+          if (!found) {
+            return {
+              ...empty,
+              reason: `required gear “${name}” not found on plan after apply`,
+              chairsPlaced: seated.chairsPlaced,
+              gearPlaced,
+              labelsPlaced,
+              dimensionsPlaced,
+              stagesPlaced,
+              created,
+              seating: seated.seating,
+            };
+          }
         }
       }
     }
@@ -248,22 +391,29 @@ export function applyFullLayoutRecipe(
       ...empty,
       reason: writable.reason ?? 'plan is not writable after apply',
       chairsPlaced: seated.chairsPlaced,
-      gearPlaced: geared.gearPlaced,
-      labelsPlaced: notes.labelsPlaced,
-      dimensionsPlaced: notes.dimensionsPlaced,
+      gearPlaced,
+      labelsPlaced,
+      dimensionsPlaced,
       stagesPlaced,
       created,
       seating: seated.seating,
     };
   }
 
+  const parts = [
+    includeSeating ? `${seated.chairsPlaced} chairs` : null,
+    includeGear ? `${gearPlaced} gear` : null,
+    includeStage ? `${stagesPlaced} stage(s)` : null,
+  ].filter(Boolean);
   return {
     ok: true,
-    status: `Applied kit · ${seated.chairsPlaced} chairs · ${geared.gearPlaced} gear · ${stagesPlaced} stage(s)`,
+    status: fittedToRoom
+      ? `Applied kit · fitted to room · ${parts.join(' · ')}`
+      : `Applied kit · ${parts.join(' · ')}`,
     chairsPlaced: seated.chairsPlaced,
-    gearPlaced: geared.gearPlaced,
-    labelsPlaced: notes.labelsPlaced,
-    dimensionsPlaced: notes.dimensionsPlaced,
+    gearPlaced,
+    labelsPlaced,
+    dimensionsPlaced,
     stagesPlaced,
     created,
     seating: seated.seating,

@@ -22,6 +22,7 @@
 
 import { walk, type RVDocument, type RVNode } from './rv.js';
 import type { Layer, Scene, ScenePrimitive } from './scene.js';
+import { instanceKey } from './definition.js';
 
 /** Logical units are tenths of an inch; DXF goes out in inches. */
 const UNITS_PER_INCH = 10;
@@ -40,6 +41,12 @@ const BLOCK_LAYER = 'GP-EQUIPMENT';
 export interface DxfOptions {
   /** Layers the user has switched off are left out, as they are when printing. */
   visible?: Set<Layer>;
+  /**
+   * Elevation above finished floor in logical units, keyed by instanceKey
+   * (name@inchX,inchY). Written as DXF INSERT group-code 30 so VW can hang
+   * symbols at height.
+   */
+  elevations?: Map<string, number> | Record<string, number>;
 }
 
 export interface DxfResult {
@@ -144,6 +151,11 @@ function textEntity(layer: string, x: number, y: number, height: number, value: 
 export function toDxf(doc: RVDocument, scene: Scene, options: DxfOptions = {}): DxfResult {
   const visible = options.visible;
   const isVisible = (p: ScenePrimitive): boolean => !visible || visible.has(p.layer);
+  const elevLookup = (key: string): number => {
+    if (!options.elevations) return 0;
+    if (options.elevations instanceof Map) return options.elevations.get(key) ?? 0;
+    return options.elevations[key] ?? 0;
+  };
 
   // Geometry, grouped by the shape that owns it.
   const byShape = new Map<number, ScenePrimitive[]>();
@@ -230,13 +242,14 @@ export function toDxf(doc: RVDocument, scene: Scene, options: DxfOptions = {}): 
 
     for (const placement of group) {
       consumed.add(placement.node.id);
+      const elev = elevLookup(instanceKey(placement.name, placement.x, placement.y));
       entities.push(
         [0, 'INSERT'],
         [8, BLOCK_LAYER],
         [2, block],
         [10, toInches(placement.x)],
         [20, toInches(placement.y)],
-        [30, 0],
+        [30, toInches(elev)],
         // Normalised: a shape turned twice round carries an angle of -630 in
         // the source, and not every importer reduces that before using it.
         [50, ((((placement.angle * 180) / Math.PI) % 360) + 360) % 360],

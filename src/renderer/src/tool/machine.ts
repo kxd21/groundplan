@@ -33,7 +33,8 @@ export type Stamp =
   | { what: 'gear'; description: string }
   | { what: 'inventory'; id: string; name: string }
   | { what: 'label'; text: string; color?: number }
-  | { what: 'seating'; request: SeatingRequest; description: string };
+  | { what: 'seating'; request: SeatingRequest; description: string }
+  | { what: 'av-pair' };
 
 /** Two clicks make one object, or one readout. */
 export type Span =
@@ -42,7 +43,7 @@ export type Span =
   | { what: 'draw'; shape: DrawShape };
 
 /** A run of corners that closes into one room when the user finishes it. */
-export type Path = { what: 'room' };
+export type Path = { what: 'room' } | { what: 'cable'; name: string };
 
 /**
  * The tool in hand.
@@ -116,6 +117,8 @@ export type ToolEffect =
   | { do: 'placeSeating'; request: SeatingRequest; at: PlanPoint }
   | { do: 'draw'; shape: DrawShape; from: PlanPoint; to: PlanPoint }
   | { do: 'createRoom'; points: PlanPoint[] }
+  | { do: 'placeCable'; name: string; points: PlanPoint[] }
+  | { do: 'placeAvPair'; at: PlanPoint }
   | { do: 'addDimension'; from: PlanPoint; to: PlanPoint }
   /** Local only — the temporary readout, which never reaches the file. */
   | { do: 'showReadout'; from: PlanPoint; to: PlanPoint };
@@ -163,12 +166,14 @@ export function choiceId(choice: ToolChoice): string {
           return 'stamp:label';
         case 'seating':
           return 'stamp:seating';
+        case 'av-pair':
+          return 'stamp:av-pair';
       }
       break;
     case 'span':
       return choice.span.what === 'draw' ? `span:draw:${choice.span.shape}` : `span:${choice.span.what}`;
     case 'path':
-      return `path:${choice.path.what}`;
+      return choice.path.what === 'cable' ? `path:cable:${choice.path.name}` : 'path:room';
   }
   /* c8 ignore next */
   return 'select';
@@ -202,6 +207,8 @@ export function stampDescription(stamp: Stamp): string {
       return `label “${stamp.text}”`;
     case 'seating':
       return stamp.description;
+    case 'av-pair':
+      return 'screen + projector';
   }
 }
 
@@ -329,6 +336,20 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
       const tool = state.tool;
       if (tool.kind !== 'path') return { state, effect: null };
       if (tool.closing) return { state, effect: null };
+      if (tool.path.what === 'cable') {
+        if (tool.points.length < 2) {
+          return { state, effect: null, refusal: 'Click at least two points for a cable run.' };
+        }
+        return {
+          state: { ...state, tool: { ...tool, closing: true } },
+          effect: {
+            do: 'placeCable',
+            name: tool.path.name,
+            points: tool.points.map((point) => ({ ...point })),
+            epoch: state.epoch,
+          },
+        };
+      }
       if (tool.points.length < 3) {
         return { state, effect: null, refusal: 'Click at least three corners before finishing the room.' };
       }
@@ -447,6 +468,8 @@ function stampEffect(stamp: Stamp, at: PlanPoint): ToolEffect {
       return { do: 'placeLabel', text: stamp.text, color: stamp.color, at };
     case 'seating':
       return { do: 'placeSeating', request: stamp.request, at };
+    case 'av-pair':
+      return { do: 'placeAvPair', at };
   }
 }
 
@@ -554,6 +577,27 @@ export function banner(state: ToolState): Banner | null {
   }
   if (tool.kind === 'path') {
     const count = tool.points.length;
+    if (tool.path.what === 'cable') {
+      return {
+        badge: { text: tool.path.name, tone: 'persistent' },
+        message: tool.closing
+          ? 'Creating the run…'
+          : count === 0
+            ? 'Click the start of the cable / power run'
+            : count === 1
+              ? '1 point · click the next bend or end'
+              : `${count} points · Enter or Finish to place`,
+        actions: tool.closing
+          ? []
+          : [
+              ...(count >= 2
+                ? [{ id: 'finish-room' as const, label: 'Finish run', primary: true as const }]
+                : []),
+              ...(count ? [{ id: 'undo-point' as const, label: 'Undo point' }] : []),
+              { id: 'done', label: 'Cancel' },
+            ],
+      };
+    }
     return {
       badge: { text: 'Room outline', tone: 'persistent' },
       message: tool.closing
@@ -637,6 +681,15 @@ export const MEASURE: ToolChoice = { kind: 'span', span: { what: 'measure' } };
 export const DIMENSION: ToolChoice = { kind: 'span', span: { what: 'dimension' } };
 export const drawChoice = (shape: DrawShape): ToolChoice => ({ kind: 'span', span: { what: 'draw', shape } });
 export const roomOutlineChoice: ToolChoice = { kind: 'path', path: { what: 'room' } };
+export const powerCableChoice: ToolChoice = {
+  kind: 'path',
+  path: { what: 'cable', name: 'Power run' },
+};
+export const signalCableChoice: ToolChoice = {
+  kind: 'path',
+  path: { what: 'cable', name: 'Signal run' },
+};
+export const avPairChoice: ToolChoice = { kind: 'stamp', stamp: { what: 'av-pair' } };
 export const labelChoice = (text: string, color?: number): ToolChoice => ({
   kind: 'stamp',
   stamp: { what: 'label', text, color },

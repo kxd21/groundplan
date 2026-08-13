@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 
@@ -36,29 +36,44 @@ export default function PointEditor({ paths, units, editable, onMovePoint, onSet
   const [openPaths, setOpenPaths] = useState<Set<number>>(() => new Set());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [changingPath, setChangingPath] = useState<number | null>(null);
+  const dirtyKeysRef = useRef<Set<string>>(new Set());
+  const focusedKeyRef = useRef<string | null>(null);
   const pathSignature = useMemo(
     () => paths.map((path) => `${path.nodeId}:${path.points.map((point) => `${point.index},${point.x},${point.y}`).join(';')}`).join('|'),
     [paths],
   );
 
   useEffect(() => {
-    const next: Record<string, Draft> = {};
-    for (const path of paths) {
-      for (const point of path.points) {
-        next[keyFor(path.nodeId, point.index)] = {
-          x: formatLength(point.x, units),
-          y: formatLength(point.y, units),
-        };
+    setDrafts((current) => {
+      const next: Record<string, Draft> = {};
+      for (const path of paths) {
+        for (const point of path.points) {
+          const key = keyFor(path.nodeId, point.index);
+          const incoming = {
+            x: formatLength(point.x, units),
+            y: formatLength(point.y, units),
+          };
+          // Keep mid-edit drafts for focused or dirty rows; sync the rest from geometry.
+          if (
+            (focusedKeyRef.current === key || dirtyKeysRef.current.has(key)) &&
+            current[key]
+          ) {
+            next[key] = current[key];
+          } else {
+            next[key] = incoming;
+            dirtyKeysRef.current.delete(key);
+          }
+        }
       }
-    }
-    setDrafts(next);
+      return next;
+    });
     setOpenPaths((current) => {
       const live = new Set(paths.map((path) => path.nodeId));
       const kept = new Set([...current].filter((id) => live.has(id)));
       if (!kept.size && paths[0]) kept.add(paths[0].nodeId);
       return kept;
     });
-  }, [pathSignature, units]);
+  }, [pathSignature, units, paths]);
 
   if (!paths.length) {
     return (
@@ -70,7 +85,8 @@ export default function PointEditor({ paths, units, editable, onMovePoint, onSet
   }
 
   const commit = async (path: EditablePointPath, pointIndex: number) => {
-    const draft = drafts[keyFor(path.nodeId, pointIndex)];
+    const key = keyFor(path.nodeId, pointIndex);
+    const draft = drafts[key];
     const x = draft ? parseLength(draft.x, units) : null;
     const y = draft ? parseLength(draft.y, units) : null;
     if (x == null || y == null) {
@@ -81,7 +97,8 @@ export default function PointEditor({ paths, units, editable, onMovePoint, onSet
       );
       return;
     }
-    await onMovePoint(path.nodeId, pointIndex, x, y);
+    const ok = await onMovePoint(path.nodeId, pointIndex, x, y);
+    if (ok) dirtyKeysRef.current.delete(key);
   };
 
   const setPathKind = async (path: EditablePointPath, kind: 'line' | 'curve') => {
@@ -174,7 +191,17 @@ export default function PointEditor({ paths, units, editable, onMovePoint, onSet
                         <input
                           value={draft.x}
                           disabled={!editable || !path.canEdit}
-                          onChange={(event) => setDrafts((current) => ({ ...current, [key]: { ...draft, x: event.target.value } }))}
+                          onFocus={() => {
+                            focusedKeyRef.current = key;
+                          }}
+                          onChange={(event) => {
+                            dirtyKeysRef.current.add(key);
+                            setDrafts((current) => ({ ...current, [key]: { ...draft, x: event.target.value } }));
+                          }}
+                          onBlur={() => {
+                            if (focusedKeyRef.current === key) focusedKeyRef.current = null;
+                            void commit(path, point.index);
+                          }}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter') void commit(path, point.index);
                           }}
@@ -185,7 +212,17 @@ export default function PointEditor({ paths, units, editable, onMovePoint, onSet
                         <input
                           value={draft.y}
                           disabled={!editable || !path.canEdit}
-                          onChange={(event) => setDrafts((current) => ({ ...current, [key]: { ...draft, y: event.target.value } }))}
+                          onFocus={() => {
+                            focusedKeyRef.current = key;
+                          }}
+                          onChange={(event) => {
+                            dirtyKeysRef.current.add(key);
+                            setDrafts((current) => ({ ...current, [key]: { ...draft, y: event.target.value } }));
+                          }}
+                          onBlur={() => {
+                            if (focusedKeyRef.current === key) focusedKeyRef.current = null;
+                            void commit(path, point.index);
+                          }}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter') void commit(path, point.index);
                           }}

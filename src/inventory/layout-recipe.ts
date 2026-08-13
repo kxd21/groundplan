@@ -88,7 +88,16 @@ export interface LayoutRecipeDimension {
 export interface LayoutRecipe {
   format: typeof LAYOUT_RECIPE_FORMAT;
   version: typeof LAYOUT_RECIPE_VERSION;
-  identity?: { event?: string; venue?: string; roomLabel?: string; date?: string };
+  identity?: {
+    event?: string;
+    venue?: string;
+    roomLabel?: string;
+    date?: string;
+    /** Guest/capacity label for variant kits (e.g. 1200). */
+    capacityGuests?: number;
+    /** Kit id this recipe is a capacity/variant of (e.g. bundled:card-party). */
+    variantOf?: string;
+  };
   room?: { widthFt: number; depthFt: number };
   stage?: LayoutRecipeStage[];
   seating: LayoutRecipeSeatingBlock[];
@@ -121,6 +130,87 @@ export function isLayoutRecipe(value: unknown): value is LayoutRecipe {
     Array.isArray(v.seating) &&
     !!v.expectations &&
     typeof v.expectations.chairs === 'number'
+  );
+}
+
+/**
+ * Scale a recipe from its authored room into a different room size.
+ * Rooms are origin-centred; positions and sizes stretch with width/depth.
+ * Seat counts stay the same — only spacing and placement change.
+ */
+export function scaleLayoutRecipeToRoom(
+  recipe: LayoutRecipe,
+  targetWidthFt: number,
+  targetDepthFt: number,
+): LayoutRecipe {
+  const sourceW = recipe.room?.widthFt ?? 0;
+  const sourceD = recipe.room?.depthFt ?? 0;
+  if (!(sourceW > 0 && sourceD > 0 && targetWidthFt > 0 && targetDepthFt > 0)) {
+    return recipe;
+  }
+  const sx = targetWidthFt / sourceW;
+  const sy = targetDepthFt / sourceD;
+  if (Math.abs(sx - 1) < 0.005 && Math.abs(sy - 1) < 0.005) {
+    return recipe;
+  }
+  const sAvg = (sx + sy) / 2;
+
+  return {
+    ...recipe,
+    room: { widthFt: targetWidthFt, depthFt: targetDepthFt },
+    stage: recipe.stage?.map((stage) => ({
+      ...stage,
+      xFt: stage.xFt * sx,
+      yFt: stage.yFt * sy,
+      widthFt: stage.widthFt * sx,
+      depthFt: stage.depthFt * sy,
+      back: stage.back
+        ? { ...stage.back, depthFt: stage.back.depthFt * sy }
+        : undefined,
+    })),
+    seating: recipe.seating.map((block) => ({
+      ...block,
+      xFt: block.xFt * sx,
+      yFt: block.yFt * sy,
+      seatSpacingFt:
+        block.seatSpacingFt != null ? block.seatSpacingFt * sAvg : undefined,
+      rowSpacingFt:
+        block.rowSpacingFt != null ? block.rowSpacingFt * sy : undefined,
+    })),
+    gear: recipe.gear?.map((spot) => ({
+      ...spot,
+      xFt: spot.xFt * sx,
+      yFt: spot.yFt * sy,
+    })),
+    labels: recipe.labels?.map((label) => ({
+      ...label,
+      xFt: label.xFt * sx,
+      yFt: label.yFt * sy,
+    })),
+    dimensions: recipe.dimensions?.map((dim) => ({
+      x1Ft: dim.x1Ft * sx,
+      y1Ft: dim.y1Ft * sy,
+      x2Ft: dim.x2Ft * sx,
+      y2Ft: dim.y2Ft * sy,
+    })),
+  };
+}
+
+/** True when the recipe room already matches the target within a small tolerance. */
+export function layoutRecipeFitsRoom(
+  recipe: LayoutRecipe,
+  targetWidthFt: number,
+  targetDepthFt: number,
+  tolerance = 0.02,
+): boolean {
+  const sourceW = recipe.room?.widthFt ?? 0;
+  const sourceD = recipe.room?.depthFt ?? 0;
+  if (!(sourceW > 0 && sourceD > 0 && targetWidthFt > 0 && targetDepthFt > 0)) {
+    return false;
+  }
+  return (
+    Math.abs(sourceW - targetWidthFt) / sourceW <= tolerance &&
+    Math.abs(sourceD - targetDepthFt) / sourceD <= tolerance
   );
 }
 

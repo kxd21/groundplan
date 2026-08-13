@@ -13,6 +13,7 @@ interface Props {
   onCommit: (background: PlanBackground | null, message?: string) => void;
   onError: (message: string) => void;
   onClose: () => void;
+  onStartTwoPointScale?: () => void;
 }
 
 /** Detailed background workflow opened by the ribbon's Background button. */

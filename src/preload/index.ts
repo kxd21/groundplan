@@ -82,6 +82,8 @@ const api = {
     name?: string;
     width?: number;
     depth?: number;
+    /** Ceiling / clear height in logical units. */
+    ceilingHeight?: number;
     room?: NewRoomSpec;
     /** Empty-sheet fit bounds for custom room tracing (no walls drawn). */
     sheetSize?: { width: number; depth: number };
@@ -94,7 +96,7 @@ const api = {
   /** Close and delete an empty new plan that never got a room outline. */
   discardEmptyPlan: (): Promise<{ ok: boolean; cancelled?: boolean; reason?: string }> =>
     ipcRenderer.invoke('file:discard-empty-plan'),
-  roomPresets: (): Promise<Array<{ label: string; width: number; depth: number }>> =>
+  roomPresets: (): Promise<Array<{ label: string; width: number; depth: number; ceilingFt?: number }>> =>
     ipcRenderer.invoke('plan:room-presets'),
   openFolderDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-folder'),
   openPath: (path: string): Promise<OpenResult | null> => ipcRenderer.invoke('file:open', path),
@@ -142,6 +144,10 @@ const api = {
   scheduleKey: (name: string, x: number, y: number): Promise<string> =>
     ipcRenderer.invoke('schedule:key', name, x, y),
   scheduleExport: (summary: boolean): Promise<string | null> => ipcRenderer.invoke('schedule:export', summary),
+  pullSheetExport: (
+    owned: Array<{ name: string; quantity: number }>,
+  ): Promise<{ ok: boolean; cancelled?: boolean; reason?: string; path?: string }> =>
+    ipcRenderer.invoke('plan:pull-sheet-export', owned),
   exportDxf: (
     layers?: string[],
     includeSchedule?: boolean,
@@ -159,11 +165,18 @@ const api = {
     svg: string;
     title: string;
     subtitle?: string;
+    venue?: string;
+    event?: string;
+    contact?: string;
     roomWidth?: number;
+    /** Floor-plan depth (Y extent), not ceiling. */
     roomHeight?: number;
+    /** Clear / ceiling height when known. */
+    ceilingHeight?: number;
     scale: string;
     paper: string;
     landscape: boolean;
+    tilePages?: boolean;
     suggestedName: string;
   }): Promise<{
     ok: boolean;
@@ -173,6 +186,7 @@ const api = {
     /** False when a fixed scale makes the drawing larger than the sheet. */
     fits?: boolean;
     overBy?: number;
+    pages?: number;
   }> => ipcRenderer.invoke('print:pdf', payload),
   checkAppUpdate: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('app:check-update'),
   /** Installs a release from a folder on a USB stick, signature checked. */
@@ -221,6 +235,8 @@ const api = {
       | 'delete'
       | 'duplicate'
       | 'rotate'
+      | 'rotate-each'
+      | 'orient'
       | 'recolor'
       | 'flip-horizontal'
       | 'flip-vertical'
@@ -235,6 +251,18 @@ const api = {
     count: number,
     direction?: 'right' | 'left' | 'down' | 'up',
   ): Promise<EditReply> => ipcRenderer.invoke('edit:repeat-across', nodeId, count, direction ?? 'right'),
+  arrayGrid: (
+    nodeId: number,
+    columns: number,
+    rows: number,
+    gapX?: number | null,
+    gapY?: number | null,
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:array-grid', nodeId, columns, rows, gapX, gapY),
+  setbackFromWall: (
+    ids: number[],
+    distance: number,
+    options?: { mode?: 'each' | 'group'; faceWall?: boolean },
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:setback-from-wall', ids, distance, options ?? {}),
   arrange: (
     mode:
       | 'align-left'
@@ -253,6 +281,9 @@ const api = {
   pastePlanObjects: (): Promise<EditReply> => ipcRenderer.invoke('edit:clipboard-paste'),
   groupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:group', ids),
   ungroupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:ungroup', ids),
+  attachStack: (parentId: number, childId: number): Promise<EditReply> =>
+    ipcRenderer.invoke('edit:attach-stack', parentId, childId),
+  detachStack: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:detach-stack', ids),
   undo: (): Promise<OpenResult | null> => ipcRenderer.invoke('edit:undo'),
   redo: (): Promise<OpenResult | null> => ipcRenderer.invoke('edit:redo'),
   selectionInfo: (nodeId: number): Promise<SelectionInfo | null> =>
@@ -408,7 +439,16 @@ const api = {
     ipcRenderer.invoke('plan:load-layout-kit', kitId),
   applyLayoutRecipe: (
     recipeOrKitId: unknown,
-    options?: { replaceExistingSeating?: boolean; kitId?: string },
+    options?: {
+      replaceExistingSeating?: boolean;
+      replaceExistingGear?: boolean;
+      kitId?: string;
+      fitToExistingRoom?: boolean;
+      includeStage?: boolean;
+      includeSeating?: boolean;
+      includeGear?: boolean;
+      includeAnnotations?: boolean;
+    },
   ): Promise<EditReply & { placed?: number }> =>
     ipcRenderer.invoke('plan:apply-layout-recipe', recipeOrKitId, options),
   saveLayoutKit: (
@@ -416,6 +456,18 @@ const api = {
     fileName?: string,
   ): Promise<{ ok: boolean; reason?: string; path?: string; id?: string }> =>
     ipcRenderer.invoke('plan:save-layout-kit', recipe, fileName),
+  saveOpenPlanAsKit: (
+    fileName?: string,
+  ): Promise<{ ok: boolean; reason?: string; path?: string; id?: string }> =>
+    ipcRenderer.invoke('plan:save-open-as-kit', fileName),
+  clearFurniture: (
+    kind?: 'seating' | 'gear' | 'all',
+  ): Promise<EditReply & { placed?: number }> =>
+    ipcRenderer.invoke('plan:clear-furniture', kind ?? 'seating'),
+  duplicatePlanPath: (
+    path: string,
+  ): Promise<{ ok: boolean; reason?: string; doc?: unknown; path?: string }> =>
+    ipcRenderer.invoke('file:duplicate-path', path),
   importLayoutKit: (): Promise<{
     ok: boolean;
     cancelled?: boolean;
@@ -473,6 +525,40 @@ const api = {
     x2: number,
     y2: number,
   ): Promise<EditReply> => ipcRenderer.invoke('plan:draw', tool, x1, y1, x2, y2),
+
+  placeCablePath: (
+    name: string,
+    points: Array<{ x: number; y: number }>,
+  ): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:add-cable-path', name, points),
+
+  placeAvPair: (x: number, y: number): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:place-av-pair', x, y),
+
+  setElevation: (
+    key: string,
+    elevation: number | null,
+  ): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:set-elevation', key, elevation),
+
+  selectionElevation: (
+    nodeId: number,
+  ): Promise<{ key: string; elevation: number; inferred: boolean } | null> =>
+    ipcRenderer.invoke('plan:selection-elevation', nodeId),
+
+  selectionElevations: (
+    ids: number[],
+  ): Promise<Array<{ id: number; key: string; elevation: number; inferred: boolean }>> =>
+    ipcRenderer.invoke('plan:selection-elevations', ids),
+
+  linkedSet: (
+    ids: number[],
+  ): Promise<Array<{ id: number; name: string; elevation: number; kind: string }>> =>
+    ipcRenderer.invoke('plan:linked-set', ids),
+
+  sightlineMarkers: (): Promise<
+    Array<{ x: number; y: number; verdict: string }>
+  > => ipcRenderer.invoke('plan:sightline-markers'),
 
   allocation: (
     owned: Array<{ name: string; quantity: number }>,
@@ -695,6 +781,13 @@ const api = {
       'menu:edit-walls',
       'menu:group',
       'menu:ungroup',
+      'menu:palette',
+      'menu:shortcuts',
+      'menu:mode-browse',
+      'menu:mode-place',
+      'menu:mode-inspect',
+      'menu:mode-setup',
+      'menu:mode-draw',
     ];
     const listeners = channels.map((channel) => {
       const listener = (_event: IpcRendererEvent, arg?: string) => handler(channel, arg);
@@ -702,6 +795,41 @@ const api = {
       return () => ipcRenderer.removeListener(channel, listener);
     });
     return () => listeners.forEach((off) => off());
+  },
+
+  /** Stable command catalog for agents and automation. */
+  commandsList: (): Promise<
+    Array<{ id: string; title: string; section: string; shortcut?: string }>
+  > => ipcRenderer.invoke('command:list'),
+
+  /** Run a structured command ID (same path as ⌘K). */
+  commandsRun: (
+    id: string,
+  ): Promise<{ ok: boolean; id?: string; reason?: string }> =>
+    ipcRenderer.invoke('command:run', id),
+
+  /** Renderer listens for main-forwarded command invocations. */
+  onCommandRun: (
+    handler: (payload: { id: string; requestId: string }) => void,
+  ): (() => void) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: { id?: string; requestId?: string },
+    ) => {
+      if (!payload?.id || !payload?.requestId) return;
+      handler({ id: payload.id, requestId: payload.requestId });
+    };
+    ipcRenderer.on('command:run', listener);
+    return () => ipcRenderer.removeListener('command:run', listener);
+  },
+
+  replyCommandRun: (result: {
+    requestId: string;
+    ok: boolean;
+    id?: string;
+    reason?: string;
+  }): void => {
+    ipcRenderer.send('command:run-result', result);
   },
 };
 

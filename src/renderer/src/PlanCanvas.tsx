@@ -77,10 +77,27 @@ interface Props {
   objectSnap?: boolean;
   /** Raster underlay rendered in plan coordinates below the editable geometry. */
   background?: PlanBackground | null;
+  /** Seat dots tinted by A/V sightline verdict (clear / blocked / …). */
+  sightlineMarkers?: Array<{ x: number; y: number; verdict: string }>;
   fitToken: number;
   /** Selected object ids. Empty means nothing is selected. */
   selection: number[];
   onSelect: (ids: number[]) => void;
+  /**
+   * Objects under the pointer when ≥2 overlap (for the Properties stack list).
+   * Cleared when the pointer leaves a stack or selection starts elsewhere.
+   */
+  onStackCandidates?: (items: Array<{ id: number; name: string }>) => void;
+  /** Enriched stack peek for the hover card (elevations filled by App). */
+  stackPeekItems?: Array<{ id: number; name: string; elevation?: number }> | null;
+  /** Status line when Alt-click cycles the stack. */
+  onStackCycle?: (message: string) => void;
+  showStackPeek?: boolean;
+  /** Surface armed for “Place next on this” — drawn as a warm target. */
+  placeOnParentId?: number | null;
+  placeOnLabel?: string | null;
+  /** Linked stack set for the current selection (parent + children). */
+  stackSet?: Array<{ id: number; name: string; elevation: number; kind: string }> | null;
   /** Fired once a drag ends, with the total movement in logical units. */
   onMoveSelection: (dx: number, dy: number) => void;
   editable: boolean;
@@ -255,23 +272,26 @@ function pointInPolygon(x: number, y: number, pts: number[]): boolean {
 }
 
 /**
- * Finds the object nearest a point.
+ * Finds every object under a point, nearest first.
  *
- * Ties break toward the physically smaller object, so clicking a chair that
- * overlaps a table selects the chair rather than the table beneath it.
+ * Ties break toward the physically smaller object, so a chair that overlaps a
+ * table sorts ahead of the table. Callers that only need one winner use
+ * `hitTest` (first candidate).
  */
-function hitTest(
+function hitTestCandidates(
   prepared: PreparedPrimitive[],
   visible: Set<Layer>,
   x: number,
   y: number,
   tolerance: number,
-): number | null {
-  let best: { id: number; distance: number; size: number } | null = null;
+): Array<{ id: number; distance: number; size: number; name: string }> {
+  const hits: Array<{ id: number; distance: number; size: number; name: string }> = [];
+  const seen = new Set<number>();
 
   for (const item of prepared) {
     const p = item.primitive;
     if (!visible.has(p.layer)) continue;
+    if (seen.has(p.selectId)) continue;
 
     let distance = Infinity;
 
@@ -306,12 +326,27 @@ function hitTest(
 
     if (distance > tolerance) continue;
     const size = Math.max(1, (item.maxX - item.minX) * (item.maxY - item.minY));
-    if (!best || distance < best.distance - 1 || (Math.abs(distance - best.distance) <= 1 && size < best.size)) {
-      best = { id: p.selectId, distance, size };
-    }
+    const name = p.owner || p.text || `Object ${p.selectId}`;
+    seen.add(p.selectId);
+    hits.push({ id: p.selectId, distance, size, name });
   }
 
-  return best?.id ?? null;
+  hits.sort((a, b) => {
+    if (Math.abs(a.distance - b.distance) > 1) return a.distance - b.distance;
+    return a.size - b.size;
+  });
+  return hits;
+}
+
+/** Finds the object nearest a point (first of `hitTestCandidates`). */
+function hitTest(
+  prepared: PreparedPrimitive[],
+  visible: Set<Layer>,
+  x: number,
+  y: number,
+  tolerance: number,
+): number | null {
+  return hitTestCandidates(prepared, visible, x, y, tolerance)[0]?.id ?? null;
 }
 
 /** COLORREF (0x00BBGGRR) to a CSS colour. */
@@ -353,9 +388,17 @@ export function PlanCanvas({
   showGrid = true,
   objectSnap = true,
   background = null,
+  sightlineMarkers = [],
   fitToken,
   selection,
   onSelect,
+  onStackCandidates,
+  stackPeekItems = null,
+  onStackCycle,
+  showStackPeek = true,
+  placeOnParentId = null,
+  placeOnLabel = null,
+  stackSet = null,
   onMoveSelection,
   editable,
   onCursor,
@@ -429,6 +472,10 @@ export function PlanCanvas({
   } | null>(null);
   const [nudge, setNudge] = useState<{ dx: number; dy: number } | null>(null);
   const [hover, setHover] = useState<number | null>(null);
+  const [peekStack, setPeekStack] = useState<Array<{ id: number; name: string }>>([]);
+  const [peekCardPos, setPeekCardPos] = useState<{ x: number; y: number } | null>(null);
+  const pointerScreenRef = useRef<{ x: number; y: number } | null>(null);
+  const stackCycleRef = useRef<{ key: string; index: number; ids: number[] } | null>(null);
   const [dropping, setDropping] = useState<{
     kind: 'inventory' | 'gear';
     label: string;
@@ -568,10 +615,64 @@ export function PlanCanvas({
     });
   }, []);
 
+  const cursorFrameRef = useRef<number | null>(null);
+  const queuedCursorRef = useRef<{ x: number; y: number } | null | undefined>(undefined);
+  const scheduleCursor = useCallback(
+    (position: { x: number; y: number } | null) => {
+      if (!onCursor) return;
+      queuedCursorRef.current = position;
+      if (cursorFrameRef.current != null) return;
+      cursorFrameRef.current = window.requestAnimationFrame(() => {
+        cursorFrameRef.current = null;
+        const next = queuedCursorRef.current;
+        queuedCursorRef.current = undefined;
+        if (next === undefined) return;
+        onCursor(next);
+      });
+    },
+    [onCursor],
+  );
+
+  const stackPeekTimerRef = useRef<number | null>(null);
+  const lastStackPeekKeyRef = useRef('');
+  const publishStackCandidates = useCallback(
+    (peek: Array<{ id: number; name: string }>) => {
+      if (!onStackCandidates) return;
+      const key = peek.map((item) => item.id).join(',');
+      if (key === lastStackPeekKeyRef.current) return;
+      lastStackPeekKeyRef.current = key;
+      if (stackPeekTimerRef.current != null) window.clearTimeout(stackPeekTimerRef.current);
+      // Keep the hover card local and snappy; only lift to App after the set settles.
+      stackPeekTimerRef.current = window.setTimeout(() => {
+        stackPeekTimerRef.current = null;
+        onStackCandidates(peek);
+      }, peek.length >= 2 ? 120 : 0);
+    },
+    [onStackCandidates],
+  );
+
+  const nudgeFrameRef = useRef<number | null>(null);
+  const queuedNudgeRef = useRef<{ dx: number; dy: number; guides: { x?: number; y?: number } } | null>(null);
+  const scheduleNudge = useCallback((next: { dx: number; dy: number }, guides: { x?: number; y?: number }) => {
+    queuedNudgeRef.current = { ...next, guides };
+    if (nudgeFrameRef.current != null) return;
+    nudgeFrameRef.current = window.requestAnimationFrame(() => {
+      nudgeFrameRef.current = null;
+      const queued = queuedNudgeRef.current;
+      queuedNudgeRef.current = null;
+      if (!queued) return;
+      setGuides(queued.guides);
+      setNudge({ dx: queued.dx, dy: queued.dy });
+    });
+  }, []);
+
   useEffect(
     () => () => {
       if (viewFrameRef.current != null) window.cancelAnimationFrame(viewFrameRef.current);
       if (hoverFrameRef.current != null) window.cancelAnimationFrame(hoverFrameRef.current);
+      if (cursorFrameRef.current != null) window.cancelAnimationFrame(cursorFrameRef.current);
+      if (nudgeFrameRef.current != null) window.cancelAnimationFrame(nudgeFrameRef.current);
+      if (stackPeekTimerRef.current != null) window.clearTimeout(stackPeekTimerRef.current);
     },
     [],
   );
@@ -695,16 +796,25 @@ export function PlanCanvas({
     });
   };
 
+  // Resize the backing store only when the CSS size or DPR changes — reallocating
+  // on every hover/nudge paint was a major stutter with dense seating.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const nextW = Math.floor(size.width * dpr);
+    const nextH = Math.floor(size.height * dpr);
+    if (canvas.width !== nextW) canvas.width = nextW;
+    if (canvas.height !== nextH) canvas.height = nextH;
+    canvas.style.width = `${size.width}px`;
+    canvas.style.height = `${size.height}px`;
+  }, [size.width, size.height]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(size.width * dpr);
-    canvas.height = Math.floor(size.height * dpr);
-    canvas.style.width = `${size.width}px`;
-    canvas.style.height = `${size.height}px`;
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -882,6 +992,17 @@ export function PlanCanvas({
       if (group) drawSelectionFrame(ctx, group, view, nudge, 'group', selection.length);
     }
 
+    if (placeOnParentId != null) {
+      const b = objectBounds.get(placeOnParentId);
+      if (b) {
+        drawPlaceOnSurface(ctx, b, view, paper, placeOnLabel ?? 'Place on this');
+      }
+    }
+
+    if (stackSet && stackSet.length >= 2) {
+      drawStackSetOverlay(ctx, objectBounds, stackSet, view, nudge, paper, units, showStackPeek);
+    }
+
     if (wallEdit && wallEdit.walls.length) {
       for (const wall of wallEdit.walls) {
         const selected = wall.index === wallEdit.selected;
@@ -1049,6 +1170,25 @@ export function PlanCanvas({
       drawMeasurement(ctx, readout.from, readout.to, view, paper, units);
     }
 
+    if (sightlineMarkers.length) {
+      for (const marker of sightlineMarkers) {
+        const sx = marker.x * view.scale + view.offsetX;
+        const sy = marker.y * view.scale + view.offsetY;
+        const fill =
+          marker.verdict === 'clear'
+            ? 'rgba(46, 160, 67, 0.55)'
+            : marker.verdict === 'blocked'
+              ? 'rgba(207, 34, 46, 0.65)'
+              : marker.verdict === 'too-far' || marker.verdict === 'too-close'
+                ? 'rgba(210, 153, 34, 0.6)'
+                : 'rgba(88, 96, 105, 0.5)';
+        ctx.beginPath();
+        ctx.fillStyle = fill;
+        ctx.arc(sx, sy, Math.max(3, 4 * view.scale * 12), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     drawRulers(ctx, size, view, paper, units);
   }, [
     scene,
@@ -1070,6 +1210,7 @@ export function PlanCanvas({
     pathAngleLock,
     shiftHeld,
     readout,
+    sightlineMarkers,
     pointerMode,
     pointer,
     pointPreview,
@@ -1081,6 +1222,10 @@ export function PlanCanvas({
     textEditor,
     wallEdit,
     wallDragPreview,
+    placeOnParentId,
+    placeOnLabel,
+    stackSet,
+    showStackPeek,
   ]);
 
   const editingTextPrimitive = useMemo(
@@ -1284,7 +1429,44 @@ export function PlanCanvas({
 
     if (scene) {
       const { x, y } = toPlan(e);
-      const hit = hitTest(prepared, visibleLayers, x, y, 8 / view.scale);
+      const tolerance = 8 / view.scale;
+      const candidates = hitTestCandidates(prepared, visibleLayers, x, y, tolerance);
+
+      if (candidates.length >= 2) {
+        onStackCandidates?.(candidates.map((c) => ({ id: c.id, name: c.name })));
+      } else {
+        onStackCandidates?.([]);
+      }
+
+      if (e.altKey && candidates.length >= 1) {
+        e.preventDefault();
+        const key = `${Math.round(x / 20)}:${Math.round(y / 20)}:${candidates.map((c) => c.id).join(',')}`;
+        let cycle = stackCycleRef.current;
+        if (!cycle || cycle.key !== key) {
+          cycle = { key, index: 0, ids: candidates.map((c) => c.id) };
+        } else {
+          cycle = { ...cycle, index: (cycle.index + 1) % cycle.ids.length };
+        }
+        stackCycleRef.current = cycle;
+        const pick = cycle.ids[cycle.index]!;
+        const name = candidates.find((c) => c.id === pick)?.name ?? `Object ${pick}`;
+        const next = e.shiftKey
+          ? selection.includes(pick)
+            ? selection.filter((id) => id !== pick)
+            : [...selection, pick]
+          : [pick];
+        onSelect(next);
+        onStackCycle?.(
+          `${cycle.index + 1} of ${cycle.ids.length} under cursor · ${name}`,
+        );
+        if (editable && next.length && pointerMode.mode !== 'direct-select' && !e.shiftKey) {
+          moveRef.current = { startX: x, startY: y };
+          setNudge({ dx: 0, dy: 0 });
+        }
+        return;
+      }
+
+      const hit = candidates[0]?.id ?? null;
 
       if (hit != null) {
         // Shift extends the selection; a plain click replaces it. Clicking
@@ -1297,6 +1479,7 @@ export function PlanCanvas({
             ? selection
             : [hit];
         onSelect(next);
+        stackCycleRef.current = null;
 
         if (editable && next.length && pointerMode.mode !== 'direct-select') {
           moveRef.current = { startX: x, startY: y };
@@ -1308,6 +1491,8 @@ export function PlanCanvas({
         marqueeRef.current = { x0: x, y0: y };
         setMarquee({ x0: x, y0: y, x1: x, y1: y });
         if (!e.shiftKey) onSelect([]);
+        onStackCandidates?.([]);
+        stackCycleRef.current = null;
         return;
       }
     }
@@ -1336,7 +1521,29 @@ export function PlanCanvas({
     onEditText(textPrimitive.nodeId);
   };
 
+  const clearStackPeek = useCallback(() => {
+    setPeekStack([]);
+    setPeekCardPos(null);
+    lastStackPeekKeyRef.current = '';
+    if (stackPeekTimerRef.current != null) {
+      window.clearTimeout(stackPeekTimerRef.current);
+      stackPeekTimerRef.current = null;
+    }
+    onStackCandidates?.([]);
+  }, [onStackCandidates]);
+
+  const peekCardItems = useMemo(() => {
+    if (peekStack.length < 2) return [];
+    const byId = new Map((stackPeekItems ?? []).map((item) => [item.id, item]));
+    return peekStack.map((item) => ({
+      id: item.id,
+      name: item.name,
+      elevation: byId.get(item.id)?.elevation,
+    }));
+  }, [peekStack, stackPeekItems]);
+
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    pointerScreenRef.current = { x: e.clientX, y: e.clientY };
     const pan = panRef.current;
     if (pan) {
       scheduleView((v) => ({
@@ -1348,7 +1555,7 @@ export function PlanCanvas({
     }
 
     const plan = toPlan(e);
-    onCursor?.(plan);
+    scheduleCursor(plan);
     setShiftHeld(e.shiftKey);
     if (pointerMode.mode === 'span' || pointerMode.mode === 'path') setPointer(plan);
 
@@ -1408,8 +1615,7 @@ export function PlanCanvas({
             alt: e.altKey,
           })
         : { ...raw, guides: {} };
-      setGuides(snapped.guides);
-      setNudge({ dx: snapped.dx, dy: snapped.dy });
+      scheduleNudge({ dx: snapped.dx, dy: snapped.dy }, snapped.guides);
       return;
     }
 
@@ -1419,7 +1625,33 @@ export function PlanCanvas({
         hoverFrameRef.current = window.requestAnimationFrame(() => {
           hoverFrameRef.current = null;
           const point = hoverPointRef.current;
-          if (point) setHover(hitTest(prepared, visibleLayers, point.x, point.y, 8 / viewRef.current.scale));
+          if (!point) return;
+          const candidates = hitTestCandidates(
+            prepared,
+            visibleLayers,
+            point.x,
+            point.y,
+            8 / viewRef.current.scale,
+          );
+          setHover(candidates[0]?.id ?? null);
+          const peek =
+            candidates.length >= 2 ? candidates.map((c) => ({ id: c.id, name: c.name })) : [];
+          setPeekStack(peek);
+          publishStackCandidates(peek);
+          if (peek.length >= 2 && wrapRef.current) {
+            const rect = wrapRef.current.getBoundingClientRect();
+            const client = pointerScreenRef.current;
+            const rawX = client ? client.x - rect.left + 14 : point.x * viewRef.current.scale + viewRef.current.offsetX + 14;
+            const rawY = client ? client.y - rect.top + 10 : point.y * viewRef.current.scale + viewRef.current.offsetY + 10;
+            const cardW = 188;
+            const cardH = 28 + peek.length * 28;
+            setPeekCardPos({
+              x: Math.max(8, Math.min(rect.width - cardW - 8, rawX)),
+              y: Math.max(8, Math.min(rect.height - cardH - 8, rawY)),
+            });
+          } else {
+            setPeekCardPos(null);
+          }
         });
       }
     }
@@ -1522,6 +1754,13 @@ export function PlanCanvas({
       data-two-point={twoPoint}
       data-path-points={pointerMode.mode === 'path' ? pathPoints.length : undefined}
       data-dropping={dropping?.kind}
+      onPointerLeave={(e) => {
+        const related = e.relatedTarget;
+        if (related instanceof Node && e.currentTarget.contains(related)) return;
+        scheduleCursor(null);
+        setHover(null);
+        clearStackPeek();
+      }}
     >
       <canvas
         ref={canvasRef}
@@ -1535,10 +1774,6 @@ export function PlanCanvas({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onContextMenu={(e) => e.preventDefault()}
-        onPointerLeave={() => {
-          onCursor?.(null);
-          setHover(null);
-        }}
         onDragOver={(e) => {
           const inventoryDrop =
             !!onDropItem && e.dataTransfer.types.includes('application/x-groundplan-item');
@@ -1614,6 +1849,47 @@ export function PlanCanvas({
           </span>
         </div>
       )}
+      {showStackPeek && peekCardItems.length >= 2 && peekCardPos && (
+        <div
+          className="stack-hover-card"
+          role="dialog"
+          aria-label="Stacked items under pointer"
+          style={{ left: peekCardPos.x, top: peekCardPos.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="stack-hover-card-header">
+            <strong>{peekCardItems.length} stacked</strong>
+          </div>
+          <ul className="stack-hover-card-list">
+            {peekCardItems.map((item, index) => {
+              const accent = STACK_PEEK_ACCENTS[index % STACK_PEEK_ACCENTS.length];
+              const elev =
+                item.elevation != null && item.elevation > 0
+                  ? formatLength(item.elevation, units)
+                  : 'floor';
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className={selection.includes(item.id) ? 'is-on' : undefined}
+                    style={{ ['--stack-accent' as string]: accent }}
+                    onClick={() => {
+                      onSelect([item.id]);
+                      onStackCycle?.(`${index + 1} of ${peekCardItems.length} · ${item.name}`);
+                    }}
+                  >
+                    <span className="stack-hover-accent" aria-hidden />
+                    <span className="stack-hover-body">
+                      <strong className="stack-hover-name">{item.name}</strong>
+                      <span className="stack-hover-meta">{elev}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
       <div className="zoom-cluster">
         <button
           className={`icon-btn${pointerMode.mode === 'pan' ? ' is-on' : ''}`}
@@ -1676,7 +1952,7 @@ function applySnap(
   let bestX: { at: number; gap: number } | null = null;
   let bestY: { at: number; gap: number } | null = null;
 
-  if (objectSnap && !keys.alt) {
+  if (objectSnap && !keys.alt && selection.length <= 40) {
     for (const [id, bounds] of objectBounds) {
       if (selected.has(id)) continue;
       const { minX, minY, maxX, maxY } = bounds;
@@ -2054,6 +2330,144 @@ function drawSelectionFrame(
     ctx.strokeRect(left, top, w, h);
   }
   ctx.restore();
+}
+
+/** Warm surface ring — the digital “floor” the next piece will sit on. */
+function drawPlaceOnSurface(
+  ctx: CanvasRenderingContext2D,
+  b: { minX: number; minY: number; maxX: number; maxY: number },
+  view: View,
+  paper: boolean,
+  label: string,
+): void {
+  const pad = 10;
+  const left = Math.round(b.minX * view.scale + view.offsetX - pad) + 0.5;
+  const top = Math.round(b.minY * view.scale + view.offsetY - pad) + 0.5;
+  const w = Math.round((b.maxX - b.minX) * view.scale + pad * 2);
+  const h = Math.round((b.maxY - b.minY) * view.scale + pad * 2);
+  ctx.save();
+  ctx.fillStyle = paper ? 'rgba(230, 167, 61, 0.14)' : 'rgba(230, 167, 61, 0.18)';
+  ctx.fillRect(left, top, w, h);
+  ctx.strokeStyle = paper ? 'rgba(184, 120, 20, 0.95)' : 'rgba(255, 196, 90, 0.95)';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([8, 5]);
+  ctx.strokeRect(left, top, w, h);
+  ctx.setLineDash([]);
+
+  const chip = `PLACE ON · ${label}`;
+  ctx.font = '700 11px -apple-system, "Segoe UI", system-ui, sans-serif';
+  const tw = ctx.measureText(chip).width;
+  const chipW = tw + 16;
+  const chipH = 22;
+  const chipX = left;
+  const chipY = Math.max(RULER + 4, top - chipH - 6);
+  ctx.fillStyle = paper ? 'rgba(184, 120, 20, 0.96)' : 'rgba(230, 167, 61, 0.96)';
+  roundRect(ctx, chipX, chipY, chipW, chipH, 6);
+  ctx.fill();
+  ctx.fillStyle = paper ? '#fff8e8' : '#1a1408';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(chip, chipX + 8, chipY + chipH / 2);
+  ctx.restore();
+}
+
+/** Dashed enclosure + height chips for a linked stack set. */
+function drawStackSetOverlay(
+  ctx: CanvasRenderingContext2D,
+  objectBounds: Map<number, { minX: number; minY: number; maxX: number; maxY: number }>,
+  stackSet: Array<{ id: number; name: string; elevation: number; kind: string }>,
+  view: View,
+  nudge: { dx: number; dy: number } | null,
+  paper: boolean,
+  units: UnitSystem,
+  showMarkers: boolean,
+): void {
+  const ids = stackSet.map((s) => s.id);
+  const group = boundsOfMany(objectBounds, ids);
+  if (!group) return;
+  const dx = nudge?.dx ?? 0;
+  const dy = nudge?.dy ?? 0;
+  const pad = 12;
+  const left = Math.round((group.minX + dx) * view.scale + view.offsetX - pad) + 0.5;
+  const top = Math.round((group.minY + dy) * view.scale + view.offsetY - pad) + 0.5;
+  const w = Math.round((group.maxX - group.minX) * view.scale + pad * 2);
+  const h = Math.round((group.maxY - group.minY) * view.scale + pad * 2);
+
+  ctx.save();
+  ctx.strokeStyle = paper ? 'rgba(79, 184, 121, 0.85)' : 'rgba(110, 210, 150, 0.9)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(left, top, w, h);
+  ctx.setLineDash([]);
+
+  const title = `STACK · ${stackSet.length} pieces move together`;
+  ctx.font = '700 11px -apple-system, "Segoe UI", system-ui, sans-serif';
+  const tw = ctx.measureText(title).width;
+  const chipW = tw + 14;
+  const chipH = 20;
+  const chipX = left;
+  const chipY = Math.max(RULER + 4, top - chipH - 4);
+  ctx.fillStyle = paper ? 'rgba(40, 140, 85, 0.95)' : 'rgba(70, 170, 110, 0.95)';
+  roundRect(ctx, chipX, chipY, chipW, chipH, 5);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(title, chipX + 7, chipY + chipH / 2);
+
+  if (!showMarkers) {
+    ctx.restore();
+    return;
+  }
+
+  // Height callouts at each member centre, sorted low→high digitally.
+  const ordered = [...stackSet].sort((a, b) => a.elevation - b.elevation || a.name.localeCompare(b.name));
+  ordered.forEach((member, index) => {
+    const b = objectBounds.get(member.id);
+    if (!b) return;
+    const cx = ((b.minX + b.maxX) / 2 + dx) * view.scale + view.offsetX;
+    const cy = ((b.minY + b.maxY) / 2 + dy) * view.scale + view.offsetY;
+    const elev =
+      member.elevation > 0 ? formatLength(member.elevation, units) : 'floor';
+    const tag = `${index + 1}  ${elev}`;
+    ctx.font = '600 10px -apple-system, "Segoe UI", system-ui, sans-serif';
+    const tagW = ctx.measureText(tag).width + 12;
+    const tagH = 16;
+    const tagX = cx - tagW / 2;
+    const tagY = cy - tagH / 2;
+    ctx.fillStyle =
+      member.kind === 'focus'
+        ? paper
+          ? 'rgba(22,135,248,0.95)'
+          : 'rgba(77,148,255,0.95)'
+        : paper
+          ? 'rgba(40, 140, 85, 0.92)'
+          : 'rgba(70, 170, 110, 0.92)';
+    roundRect(ctx, tagX, tagY, tagW, tagH, 4);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(tag, tagX + 6, tagY + tagH / 2);
+  });
+  ctx.restore();
+}
+
+const STACK_PEEK_ACCENTS = ['#7c5cfc', '#4a9eff', '#e8b84a', '#4fb879'];
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
 }
 
 /**

@@ -40,13 +40,23 @@ export interface PrintRequest {
   svg: string;
   title: string;
   subtitle?: string;
+  venue?: string;
+  event?: string;
+  contact?: string;
   /** Room size in logical units, for the title block. */
   roomWidth?: number;
   roomHeight?: number;
+  /** Clear / ceiling height in logical units. */
+  ceilingHeight?: number;
   scale: ScaleId;
   paper: PaperId;
   landscape: boolean;
   printedOn: string;
+  /**
+   * When true (default), oversize drawings at a fixed scale are split across
+   * multiple sheets instead of silently cropping.
+   */
+  tilePages?: boolean;
 }
 
 const MARGIN = 0.4;
@@ -106,7 +116,48 @@ function fitCheck(request: PrintRequest): { fits: boolean; overBy: number } {
   return { fits: over <= 1.001, overBy: over };
 }
 
-function buildSheet(request: PrintRequest): string {
+function parseViewBox(svg: string): { minX: number; minY: number; width: number; height: number } | null {
+  const match = svg.match(/viewBox="\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*"/);
+  if (!match) return null;
+  const minX = Number(match[1]);
+  const minY = Number(match[2]);
+  const width = Number(match[3]);
+  const height = Number(match[4]);
+  return width > 0 && height > 0 ? { minX, minY, width, height } : null;
+}
+
+function svgWithViewBox(
+  svg: string,
+  box: { minX: number; minY: number; width: number; height: number },
+): string {
+  const next = `viewBox="${box.minX} ${box.minY} ${box.width} ${box.height}"`;
+  if (/viewBox="[^"]*"/.test(svg)) return svg.replace(/viewBox="[^"]*"/, next);
+  return svg.replace(/<svg\b/, `<svg ${next}`);
+}
+
+function titleBlockHtml(
+  request: PrintRequest,
+  drawnAt: string,
+  sheetLabel: string,
+): string {
+  const job =
+    request.subtitle ||
+    [request.venue, request.event].filter(Boolean).join(' · ') ||
+    '';
+  return `<div class="title">
+      <div class="grow"><span class="k">Plan</span><span class="v">${escapeHtml(request.title)}</span></div>
+      ${job ? `<div><span class="k">Job</span><span class="v small">${escapeHtml(job)}</span></div>` : ''}
+      ${request.contact ? `<div><span class="k">Contact</span><span class="v small">${escapeHtml(request.contact)}</span></div>` : ''}
+      <div><span class="k">Room</span><span class="v small">${feetInches(request.roomWidth)} × ${feetInches(request.roomHeight)}${
+        request.ceilingHeight ? ` × ${feetInches(request.ceilingHeight)} ceiling` : ''
+      }</span></div>
+      <div><span class="k">Scale</span><span class="v small">${escapeHtml(drawnAt)}</span></div>
+      <div><span class="k">Sheet</span><span class="v small">${escapeHtml(sheetLabel)}</span></div>
+      <div><span class="k">Printed</span><span class="v small">${escapeHtml(request.printedOn)}</span></div>
+    </div>`;
+}
+
+function buildSheet(request: PrintRequest): { html: string; pageCount: number } {
   const paper = PAPERS[request.paper];
   const pageWidth = request.landscape ? paper.height : paper.width;
   const pageHeight = request.landscape ? paper.width : paper.height;
@@ -116,31 +167,85 @@ function buildSheet(request: PrintRequest): string {
     ? `${scale.label}`
     : 'Fit to page — not to scale';
 
-  // The plan is placed with the SVG's own aspect preserved; at a fixed scale
-  // the sheet may crop, which is honest and expected for a large room.
-  const extent = viewBoxExtent(request.svg);
-  const sizing =
-    scale.inchesPerFoot && extent
-      ? `width:${(extent.width / 120) * scale.inchesPerFoot}in;` +
-        `height:${(extent.height / 120) * scale.inchesPerFoot}in;`
-      : `max-width:100%;max-height:100%;`;
+  const box = parseViewBox(request.svg);
+  const frameWidth = pageWidth - MARGIN * 2 - 0.2;
+  const frameHeight = pageHeight - MARGIN * 2 - TITLE_BLOCK - 0.2;
 
-  return `<!doctype html>
+  type Tile = { svg: string; sheetLabel: string; sizing: string };
+  const tiles: Tile[] = [];
+
+  const wantTiles = request.tilePages !== false && !!scale.inchesPerFoot && !!box;
+  if (wantTiles && box && scale.inchesPerFoot) {
+    const unitsPerInch = 120 / scale.inchesPerFoot;
+    const tileW = frameWidth * unitsPerInch;
+    const tileH = frameHeight * unitsPerInch;
+    const cols = Math.max(1, Math.ceil(box.width / tileW - 1e-6));
+    const rows = Math.max(1, Math.ceil(box.height / tileH - 1e-6));
+    const total = cols * rows;
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const minX = box.minX + col * tileW;
+        const minY = box.minY + row * tileH;
+        const width = Math.min(tileW, box.minX + box.width - minX);
+        const height = Math.min(tileH, box.minY + box.height - minY);
+        tiles.push({
+          svg: svgWithViewBox(request.svg, { minX, minY, width, height }),
+          sheetLabel: `${col + 1},${row + 1} of ${cols}×${rows} · ${request.paper}`,
+          sizing:
+            `width:${(width / 120) * scale.inchesPerFoot}in;` +
+            `height:${(height / 120) * scale.inchesPerFoot}in;`,
+        });
+      }
+    }
+    if (total === 1) {
+      tiles[0]!.sheetLabel = `${request.paper} ${request.landscape ? 'landscape' : 'portrait'}`;
+    }
+  } else {
+    const sizing =
+      scale.inchesPerFoot && box
+        ? `width:${(box.width / 120) * scale.inchesPerFoot}in;` +
+          `height:${(box.height / 120) * scale.inchesPerFoot}in;`
+        : `max-width:100%;max-height:100%;`;
+    tiles.push({
+      svg: request.svg,
+      sheetLabel: `${request.paper} ${request.landscape ? 'landscape' : 'portrait'}`,
+      sizing,
+    });
+  }
+
+  const pages = tiles
+    .map(
+      (tile, index) => `
+  <div class="sheet${index < tiles.length - 1 ? ' break' : ''}">
+    <div class="frame" style="--svg-size:${tile.sizing}">${tile.svg}</div>
+    ${titleBlockHtml(request, drawnAt, tile.sheetLabel)}
+  </div>`,
+    )
+    .join('\n');
+
+  const html = `<!doctype html>
 <html><head><meta charset="utf-8"><style>
   @page { size: ${pageWidth}in ${pageHeight}in; margin: 0; }
-  html, body { margin: 0; padding: 0; background: #fff; -webkit-print-color-adjust: exact; overflow: hidden; }
+  html, body { margin: 0; padding: 0; background: #fff; -webkit-print-color-adjust: exact; }
   .sheet {
     width: ${pageWidth}in; height: ${pageHeight}in;
     padding: ${MARGIN}in; box-sizing: border-box;
     display: flex; flex-direction: column; overflow: hidden;
     font: 9pt -apple-system, "Segoe UI", system-ui, sans-serif; color: #111;
   }
+  .sheet.break { page-break-after: always; break-after: page; }
   .frame {
     flex: 1; min-height: 0; border: 0.5pt solid #999;
     display: flex; align-items: center; justify-content: center;
     overflow: hidden; padding: 0.1in; box-sizing: border-box;
   }
-  .frame svg { flex: none; ${sizing} }
+  .frame svg { flex: none; max-width: 100%; max-height: 100%; }
+  ${tiles
+    .map(
+      (tile, i) =>
+        `.sheet:nth-child(${i + 1}) .frame svg { ${tile.sizing} }`,
+    )
+    .join('\n  ')}
   .title {
     height: ${TITLE_BLOCK}in; border: 0.5pt solid #999; border-top: none;
     display: flex; align-items: stretch;
@@ -152,18 +257,10 @@ function buildSheet(request: PrintRequest): string {
   .v { font-size: 10pt; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .v.small { font-size: 8.5pt; font-weight: 500; }
 </style></head><body>
-  <div class="sheet">
-    <div class="frame">${request.svg}</div>
-    <div class="title">
-      <div class="grow"><span class="k">Plan</span><span class="v">${escapeHtml(request.title)}</span></div>
-      ${request.subtitle ? `<div><span class="k">Job</span><span class="v small">${escapeHtml(request.subtitle)}</span></div>` : ''}
-      <div><span class="k">Room</span><span class="v small">${feetInches(request.roomWidth)} × ${feetInches(request.roomHeight)}</span></div>
-      <div><span class="k">Scale</span><span class="v small">${escapeHtml(drawnAt)}</span></div>
-      <div><span class="k">Sheet</span><span class="v small">${escapeHtml(request.paper)} ${request.landscape ? 'landscape' : 'portrait'}</span></div>
-      <div><span class="k">Printed</span><span class="v small">${escapeHtml(request.printedOn)}</span></div>
-    </div>
-  </div>
+${pages}
 </body></html>`;
+
+  return { html, pageCount: tiles.length };
 }
 
 /**
@@ -175,7 +272,7 @@ function buildSheet(request: PrintRequest): string {
 export async function printPlanToPdf(
   request: PrintRequest,
   target: string,
-): Promise<{ fits: boolean; overBy: number }> {
+): Promise<{ fits: boolean; overBy: number; pages?: number }> {
   const paper = PAPERS[request.paper];
   const win = new BrowserWindow({
     show: false,
@@ -183,7 +280,8 @@ export async function printPlanToPdf(
   });
 
   try {
-    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildSheet(request))}`);
+    const { html, pageCount } = buildSheet(request);
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     const pdf = await win.webContents.printToPDF({
       // Electron takes this in inches. Passing microns silently yields a sheet
       // hundreds of thousands of inches wide, which then paginates.
@@ -192,12 +290,13 @@ export async function printPlanToPdf(
         : { width: paper.width, height: paper.height },
       printBackground: true,
       margins: { marginType: 'none' },
-      pageRanges: '1',
+      // Omit pageRanges so tiled multi-sheet HTML prints every page.
     });
     await atomicWriteFile(target, pdf, {
       backupPath: existsSync(target) ? `${target}.bak` : undefined,
     });
-    return fitCheck(request);
+    const check = fitCheck(request);
+    return { ...check, fits: check.fits || pageCount > 1, pages: pageCount };
   } finally {
     win.destroy();
   }

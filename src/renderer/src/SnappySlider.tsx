@@ -1,6 +1,9 @@
 /**
  * SnappySlider — marked range control with snap points, typed value, and
  * double-click reset. Styled for Groundplan panels (no Tailwind).
+ *
+ * While dragging, the thumb tracks local state immediately so the UI stays
+ * live even when the parent `value` updates asynchronously.
  */
 
 import {
@@ -92,37 +95,48 @@ export const SnappySlider = forwardRef<HTMLDivElement, SnappySliderProps>(
     const computedStep = step ?? (/\bduration\b/i.test(label) ? 1 : 0.1);
     const span = Math.max(sliderMax - sliderMin, Number.EPSILON);
 
-    const [internalValue, setInternalValue] = useState(defaultValue);
-    const currentValue = value ?? internalValue;
+    const [internalValue, setInternalValue] = useState(value ?? defaultValue);
+    const [dragging, setDragging] = useState(false);
+    const draggingRef = useRef(false);
+    const liveValueRef = useRef(internalValue);
+    const onChangeRef = useRef(onChange);
+    const onChangeEndRef = useRef(onChangeEnd);
+    onChangeRef.current = onChange;
+    onChangeEndRef.current = onChangeEnd;
+
+    // Prefer local value while dragging so the thumb never waits on parent IPC/state.
+    const currentValue = dragging || value === undefined ? internalValue : value;
     const [inputValue, setInputValue] = useState(formatNumber(currentValue, computedStep));
     const isOutOfBounds = currentValue < sliderMin || currentValue > sliderMax;
     const sliderPercentage =
       ((clamp(currentValue, sliderMin, sliderMax) - sliderMin) / span) * 100;
 
-    const liveValueRef = useRef(currentValue);
     liveValueRef.current = currentValue;
 
     useEffect(() => {
-      if (value !== undefined) {
-        setInternalValue(value);
-        setInputValue(formatNumber(value, computedStep));
-      }
+      if (draggingRef.current) return;
+      if (value === undefined) return;
+      setInternalValue(value);
+      setInputValue(formatNumber(value, computedStep));
     }, [value, computedStep]);
 
     useEffect(() => {
       if (resetKey === undefined) return;
+      draggingRef.current = false;
+      setDragging(false);
       setInternalValue(defaultValue);
       setInputValue(formatNumber(defaultValue, computedStep));
     }, [resetKey, defaultValue, computedStep]);
 
     const publish = useCallback(
       (next: number, end = false) => {
+        liveValueRef.current = next;
         setInternalValue(next);
         setInputValue(formatNumber(next, computedStep));
-        onChange(next);
-        if (end) onChangeEnd?.(next);
+        onChangeRef.current(next);
+        if (end) onChangeEndRef.current?.(next);
       },
-      [computedStep, onChange, onChangeEnd],
+      [computedStep],
     );
 
     const resolveFromClientX = useCallback(
@@ -146,72 +160,77 @@ export const SnappySlider = forwardRef<HTMLDivElement, SnappySliderProps>(
         const stepped = Math.round(rawValue / computedStep) * computedStep;
         return clamp(stepped, sliderMin, sliderMax);
       },
-      [
-        span,
-        sliderMin,
-        sliderMax,
-        snapping,
-        defaultValueArray,
-        snappingThreshold,
-        computedStep,
-      ],
+      [span, sliderMin, sliderMax, snapping, defaultValueArray, snappingThreshold, computedStep],
     );
+
+    const publishRef = useRef(publish);
+    const resolveRef = useRef(resolveFromClientX);
+    publishRef.current = publish;
+    resolveRef.current = resolveFromClientX;
 
     useEffect(() => {
       const slider = sliderRef.current;
       if (!slider || disabled) return;
 
-      const handleMouseDown = (event: MouseEvent) => {
-        event.preventDefault();
-        publish(resolveFromClientX(event.clientX));
-        document.body.style.userSelect = 'none';
-
-        const handleMouseMove = (move: MouseEvent) => {
-          publish(resolveFromClientX(move.clientX));
-        };
-        const handleMouseUp = () => {
-          document.removeEventListener('mousemove', handleMouseMove);
-          document.body.style.userSelect = '';
-          onChangeEnd?.(liveValueRef.current);
-        };
-
-        document.addEventListener('mousemove', handleMouseMove);
-        document.addEventListener('mouseup', handleMouseUp, { once: true });
+      const endDrag = () => {
+        if (!draggingRef.current) return;
+        draggingRef.current = false;
+        setDragging(false);
+        document.body.style.userSelect = '';
+        onChangeEndRef.current?.(liveValueRef.current);
       };
 
-      const handleTouchStart = (event: TouchEvent) => {
+      const handlePointerDown = (event: PointerEvent) => {
+        if (event.button !== 0) return;
         event.preventDefault();
-        const touch = event.touches[0];
-        if (!touch) return;
-        publish(resolveFromClientX(touch.clientX));
+        draggingRef.current = true;
+        setDragging(true);
+        document.body.style.userSelect = 'none';
+        try {
+          slider.setPointerCapture(event.pointerId);
+        } catch {
+          /* capture optional */
+        }
+        publishRef.current(resolveRef.current(event.clientX));
+      };
 
-        const handleTouchMove = (move: TouchEvent) => {
-          const next = move.touches[0];
-          if (next) publish(resolveFromClientX(next.clientX));
-        };
-        const handleTouchEnd = () => {
-          document.removeEventListener('touchmove', handleTouchMove);
-          onChangeEnd?.(liveValueRef.current);
-        };
+      const handlePointerMove = (event: PointerEvent) => {
+        if (!draggingRef.current) return;
+        event.preventDefault();
+        publishRef.current(resolveRef.current(event.clientX));
+      };
 
-        document.addEventListener('touchmove', handleTouchMove, { passive: false });
-        document.addEventListener('touchend', handleTouchEnd, { once: true });
+      const handlePointerUp = (event: PointerEvent) => {
+        if (!draggingRef.current) return;
+        try {
+          slider.releasePointerCapture(event.pointerId);
+        } catch {
+          /* already released */
+        }
+        endDrag();
       };
 
       const handleDoubleClick = () => {
-        publish(defaultValue, true);
+        publishRef.current(defaultValue, true);
       };
 
-      slider.addEventListener('mousedown', handleMouseDown);
-      slider.addEventListener('touchstart', handleTouchStart, { passive: false });
+      slider.addEventListener('pointerdown', handlePointerDown);
+      slider.addEventListener('pointermove', handlePointerMove);
+      slider.addEventListener('pointerup', handlePointerUp);
+      slider.addEventListener('pointercancel', handlePointerUp);
       slider.addEventListener('dblclick', handleDoubleClick);
       return () => {
-        slider.removeEventListener('mousedown', handleMouseDown);
-        slider.removeEventListener('touchstart', handleTouchStart);
+        slider.removeEventListener('pointerdown', handlePointerDown);
+        slider.removeEventListener('pointermove', handlePointerMove);
+        slider.removeEventListener('pointerup', handlePointerUp);
+        slider.removeEventListener('pointercancel', handlePointerUp);
         slider.removeEventListener('dblclick', handleDoubleClick);
-        document.body.style.userSelect = '';
+        if (draggingRef.current) {
+          draggingRef.current = false;
+          document.body.style.userSelect = '';
+        }
       };
-    }, [disabled, publish, resolveFromClientX, defaultValue, onChangeEnd]);
+    }, [disabled, defaultValue]);
 
     const handleInputChange = (event: ChangeEvent<HTMLInputElement>) => {
       setInputValue(event.target.value);
@@ -254,6 +273,7 @@ export const SnappySlider = forwardRef<HTMLDivElement, SnappySliderProps>(
       compact ? 'is-compact' : '',
       disabled ? 'is-disabled' : '',
       isOutOfBounds ? 'is-out-of-bounds' : '',
+      dragging ? 'is-dragging' : '',
       className ?? '',
     ]
       .filter(Boolean)

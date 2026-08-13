@@ -1,11 +1,11 @@
 /**
- * Show Setup — room first, then production steps, then optional kits / details.
+ * Show Setup — room first, then apply a matching kit (or build by hand), then print.
  * Lives on the Create inspector tab and stays available after New Plan.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { IconDrawPolygon, IconPrint, IconRuler } from './icons.js';
+import { IconDrawPolygon, IconFile, IconPrint, IconRuler } from './icons.js';
 
 export interface PlanIdentityFields {
   date: string;
@@ -23,6 +23,8 @@ export interface ShowKitInfo {
   gear: number;
   event?: string;
   venue?: string;
+  capacityGuests?: number;
+  variantOf?: string;
 }
 
 interface Props {
@@ -30,24 +32,48 @@ interface Props {
   hasRoom: boolean;
   drawingRoomOutline: boolean;
   identity: PlanIdentityFields;
-  selectedCount: number;
+  selectedCount?: number;
   onSaveIdentity: (next: PlanIdentityFields) => void | Promise<void>;
   identityBusy?: boolean;
+  /** Room size summary from the plan model (includes ceiling when set). */
+  roomSizeText?: string | null;
   onOpenRoom: () => void;
   onDrawRoomOutline: () => void;
+  /** Open Background Studio for site plan / CAD underlay. */
+  onOpenBackground?: () => void;
+  hasBackground?: boolean;
   onFinishRoomAsRectangle?: () => void;
   onDiscardEmptyPlan?: () => void;
   onBuildStage: () => void;
   onInsert: () => void;
-  onRepeat: () => void;
+  onRepeat?: () => void;
   onSeating: () => void;
   onPrint: () => void;
   kits?: ShowKitInfo[];
   kitsBusy?: boolean;
+  /** Room size in feet — used to pick a matching kit. */
+  roomWidthFt?: number;
+  roomDepthFt?: number;
   onRefreshKits?: () => void;
-  onApplyKit?: (kitId: string) => void;
+  onApplyKit?: (
+    kitId: string,
+    parts?: { includeStage?: boolean; includeSeating?: boolean; includeGear?: boolean },
+  ) => void;
   onImportKit?: () => void;
   onExportRecipe?: () => void;
+  onSaveAsKit?: () => void;
+  onClearSeating?: () => void;
+  onClearGear?: () => void;
+  /** Arm door / opening stamp (snaps to walls). */
+  onPlaceDoor?: () => void;
+  onPlaceOpening?: () => void;
+  /** Live furniture tallies for the report strip. */
+  chairCount?: number;
+  tableCount?: number;
+  onExportSchedule?: () => void;
+  onExportReport?: () => void;
+  onExportPullSheet?: () => void;
+  allocationSummary?: { short: number; ok: number; untracked: number } | null;
   completed?: {
     stage?: boolean;
     insert?: boolean;
@@ -61,21 +87,39 @@ function sameIdentity(a: PlanIdentityFields, b: PlanIdentityFields): boolean {
   return a.date === b.date && a.venue === b.venue && a.event === b.event && a.contact === b.contact;
 }
 
+/** Pick the bundled kit that matches this room, so Apply is one click. */
+export function suggestKitForRoom(
+  kits: ShowKitInfo[],
+  widthFt?: number,
+  depthFt?: number,
+): string | undefined {
+  if (!kits.length) return undefined;
+  const w = widthFt ?? 0;
+  const d = depthFt ?? 0;
+  const area = w * d;
+  const by = (re: RegExp) => kits.find((k) => re.test(`${k.name} ${k.id}`));
+  if (w > 0 && w <= 24 && d <= 20) return by(/boardroom/i)?.id;
+  if (area > 0 && area <= 2800) return by(/banquet/i)?.id;
+  if (area > 0 && area <= 28000) return by(/arena|concert/i)?.id;
+  return by(/card.?party/i)?.id ?? kits[kits.length - 1]?.id;
+}
+
 export default function ShowSetupPanel({
   editable,
   hasRoom,
   drawingRoomOutline,
   identity,
-  selectedCount,
   onSaveIdentity,
   identityBusy,
+  roomSizeText = null,
   onOpenRoom,
   onDrawRoomOutline,
+  onOpenBackground,
+  hasBackground,
   onFinishRoomAsRectangle,
   onDiscardEmptyPlan,
   onBuildStage,
   onInsert,
-  onRepeat,
   onSeating,
   onPrint,
   kits = [],
@@ -84,20 +128,44 @@ export default function ShowSetupPanel({
   onApplyKit,
   onImportKit,
   onExportRecipe,
+  onSaveAsKit,
+  onClearSeating,
+  onClearGear,
+  onPlaceDoor,
+  onPlaceOpening,
+  chairCount = 0,
+  tableCount = 0,
+  onExportSchedule,
+  onExportReport,
+  onExportPullSheet,
+  allocationSummary = null,
   completed = {},
+  roomWidthFt,
+  roomDepthFt,
 }: Props) {
+  const suggestedKit = suggestKitForRoom(kits, roomWidthFt, roomDepthFt);
   const [draft, setDraft] = useState<PlanIdentityFields>(identity);
   const [selectedKit, setSelectedKit] = useState<string>('');
-  const [kitsOpen, setKitsOpen] = useState(false);
+  const identityDirtyRef = useRef(false);
+  const layoutDone = !!(completed.stage && completed.seating);
+  const [kitsOpen, setKitsOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
+    if (layoutDone) setKitsOpen(false);
+  }, [layoutDone]);
+
+  useEffect(() => {
+    if (identityDirtyRef.current) return;
     setDraft(identity);
   }, [identity.date, identity.venue, identity.event, identity.contact]);
 
   useEffect(() => {
-    if (!selectedKit && kits[0]) setSelectedKit(kits[0].id);
-  }, [kits, selectedKit]);
+    setSelectedKit((current) => {
+      if (current && kits.some((k) => k.id === current)) return current;
+      return suggestedKit ?? kits[0]?.id ?? '';
+    });
+  }, [suggestedKit, kits]);
 
   const dirty = !sameIdentity(draft, identity);
   const roomStatus = drawingRoomOutline ? 'drawing' : hasRoom ? 'ready' : 'needed';
@@ -105,25 +173,21 @@ export default function ShowSetupPanel({
   const identityFilled = Boolean(identity.venue.trim() || identity.event.trim());
 
   const setField = (key: keyof PlanIdentityFields, value: string) => {
+    identityDirtyRef.current = true;
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
-  const save = () => void onSaveIdentity(draft);
+  const save = () => {
+    identityDirtyRef.current = false;
+    void onSaveIdentity(draft);
+  };
 
-  const nextStep = !hasRoom
-    ? 'room'
-    : !completed.stage
-      ? 'stage'
-      : !completed.seating
-        ? 'seating'
-        : !completed.print
-          ? 'print'
-          : 'done';
+  const nextStep = !hasRoom ? 'room' : !layoutDone ? 'layout' : !completed.print ? 'print' : 'done';
 
   return (
     <div className="section show-setup-section">
       <div className="section-title">
-        <span>Show setup</span>
+        <span>Setup</span>
         <span className={`show-setup-chip is-${roomStatus}`}>
           {roomStatus === 'ready' ? 'Room ready' : roomStatus === 'drawing' ? 'Drawing room' : 'Room needed'}
         </span>
@@ -134,16 +198,12 @@ export default function ShowSetupPanel({
           <span>1</span>
           Room
         </li>
-        <li className={completed.stage ? 'is-done' : nextStep === 'stage' ? 'is-current' : undefined}>
+        <li className={layoutDone ? 'is-done' : hasRoom ? 'is-current' : undefined}>
           <span>2</span>
-          Stage
+          Layout
         </li>
-        <li className={completed.seating ? 'is-done' : nextStep === 'seating' ? 'is-current' : undefined}>
+        <li className={completed.print ? 'is-done' : layoutDone ? 'is-current' : undefined}>
           <span>3</span>
-          Seating
-        </li>
-        <li className={completed.print ? 'is-done' : nextStep === 'print' ? 'is-current' : undefined}>
-          <span>4</span>
           Print
         </li>
       </ol>
@@ -155,8 +215,12 @@ export default function ShowSetupPanel({
             <strong>Build the room</strong>
             <small>
               {hasRoom && !drawingRoomOutline
-                ? 'Boundary is in place.'
-                : 'Click corners on the plan, or finish as a rectangle.'}
+                ? roomSizeText
+                  ? `Boundary in place · ${roomSizeText}`
+                  : 'Boundary is in place.'
+                : hasBackground
+                  ? 'Site plan is under the plot — click corners to trace walls.'
+                  : 'Trace on a blank sheet, or add a site plan / CAD PDF first.'}
             </small>
           </div>
         </div>
@@ -164,13 +228,44 @@ export default function ShowSetupPanel({
           <div className="show-setup-ready">
             <div className="show-setup-actions">
               <button type="button" className="link-btn" onClick={onOpenRoom}>
-                Open Room panel
+                Edit room
               </button>
+              {onOpenBackground && (
+                <button type="button" className="link-btn" onClick={onOpenBackground}>
+                  {hasBackground ? 'Edit site plan' : 'Add site plan'}
+                </button>
+              )}
+              {onPlaceDoor && (
+                <button type="button" className="link-btn" disabled={!editable} onClick={onPlaceDoor}>
+                  Door
+                </button>
+              )}
+              {onPlaceOpening && (
+                <button type="button" className="link-btn" disabled={!editable} onClick={onPlaceOpening}>
+                  Opening
+                </button>
+              )}
             </div>
           </div>
         ) : (
           <div className="show-setup-actions">
-            <button type="button" className="btn-solid" disabled={!editable} onClick={onDrawRoomOutline}>
+            {onOpenBackground && (
+              <button
+                type="button"
+                className={hasBackground ? 'btn-outline' : 'btn-solid'}
+                disabled={!editable}
+                onClick={onOpenBackground}
+              >
+                <IconFile size={14} />
+                {hasBackground ? 'Edit site plan' : 'Add site plan / PDF'}
+              </button>
+            )}
+            <button
+              type="button"
+              className={hasBackground || !onOpenBackground ? 'btn-solid is-next' : 'btn-outline'}
+              disabled={!editable}
+              onClick={onDrawRoomOutline}
+            >
               <IconDrawPolygon size={14} />
               {drawingRoomOutline ? 'Cancel outline' : 'Draw room outline'}
             </button>
@@ -278,19 +373,169 @@ export default function ShowSetupPanel({
       </div>
 
       <div className={`show-setup-phase${hasRoom ? '' : ' is-gated'}`}>
+        <button
+          type="button"
+          className={`show-setup-collapse${kitsOpen ? ' is-open' : ''}`}
+          aria-expanded={kitsOpen}
+          onClick={() => setKitsOpen((open) => !open)}
+        >
+          <span className="show-setup-phase-index">{layoutDone ? '✓' : '2'}</span>
+          <span>
+            <strong>Start from a kit</strong>
+            <small>
+              {layoutDone
+                ? 'Layout applied — tweak on the plan or apply another kit'
+                : selected
+                  ? `Fast path — ${selected.name}${
+                      selected.id === suggestedKit ? ' · fits this room' : ' · will fit to this room'
+                    }`
+                  : 'Drop in a matching layout (fitted to this room), then tweak'}
+            </small>
+          </span>
+        </button>
+        {kitsOpen && (
+          <>
+            <div className="field">
+              <label htmlFor="show-kit-select">Kit</label>
+              <select
+                id="show-kit-select"
+                className="show-setup-kit-select"
+                value={selectedKit}
+                disabled={!editable || kitsBusy || !kits.length}
+                title={
+                  selected
+                    ? `${selected.name} · ${selected.chairs.toLocaleString()} chairs · ${selected.banks} banks${
+                        selected.id === suggestedKit ? ' — matches this room' : ''
+                      }`
+                    : undefined
+                }
+                onChange={(e) => setSelectedKit(e.target.value)}
+              >
+                {!kits.length ? <option value="">No kits yet</option> : null}
+                {kits.map((kit) => {
+                  const variantLabel = kit.capacityGuests
+                    ? ` · ${kit.capacityGuests.toLocaleString()} guests`
+                    : kit.variantOf
+                      ? ' · variant'
+                      : '';
+                  return (
+                    <option
+                      key={kit.id}
+                      value={kit.id}
+                      title={`${kit.name}${variantLabel} · ${kit.chairs.toLocaleString()} chairs · ${kit.banks} banks`}
+                    >
+                      {kit.name}
+                      {variantLabel}
+                      {kit.id === suggestedKit ? ' · fits room' : ''}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            {selected ? (
+              <p className="hint show-setup-kit-meta" style={{ marginBottom: 8 }}>
+                {selected.chairs.toLocaleString()} chairs · {selected.banks} banks
+                {selected.venue ? ` · ${selected.venue}` : ''}
+                {selected.gear ? ` · ${selected.gear} gear` : ''}
+                {` · ${selected.source}`}
+                {selected.id === suggestedKit ? ' · sized for this room' : ''}
+              </p>
+            ) : null}
+            <div className="show-setup-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <button
+                type="button"
+                className={`btn-solid${hasRoom && !layoutDone ? ' is-next' : ''}`}
+                disabled={!editable || !hasRoom || !selectedKit || kitsBusy}
+                onClick={() => selectedKit && onApplyKit?.(selectedKit)}
+              >
+                {kitsBusy ? 'Applying…' : 'Apply kit'}
+              </button>
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={!editable || !hasRoom || !selectedKit || kitsBusy}
+                onClick={() =>
+                  selectedKit &&
+                  onApplyKit?.(selectedKit, {
+                    includeStage: false,
+                    includeSeating: true,
+                    includeGear: false,
+                  })
+                }
+                title="Replace chairs and tables only — keep stage and gear"
+              >
+                Seating only
+              </button>
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={!editable || !hasRoom || !selectedKit || kitsBusy}
+                onClick={() =>
+                  selectedKit &&
+                  onApplyKit?.(selectedKit, {
+                    includeStage: true,
+                    includeSeating: false,
+                    includeGear: false,
+                  })
+                }
+                title="Add the kit stage without changing seating"
+              >
+                Stage only
+              </button>
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={!editable || !hasRoom || kitsBusy}
+                onClick={() => onSaveAsKit?.()}
+                title="Save this plan’s layout as a reusable kit"
+              >
+                Save kit…
+              </button>
+              <button type="button" className="btn-outline" disabled={kitsBusy} onClick={() => onImportKit?.()}>
+                Import…
+              </button>
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={!hasRoom || kitsBusy}
+                onClick={() => onExportRecipe?.()}
+              >
+                Export…
+              </button>
+              <button type="button" className="link-btn" disabled={kitsBusy} onClick={() => onRefreshKits?.()}>
+                Refresh
+              </button>
+            </div>
+            <div className="show-setup-actions" style={{ flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+              <button
+                type="button"
+                className="link-btn"
+                disabled={!editable || !hasRoom || kitsBusy}
+                onClick={() => onClearSeating?.()}
+              >
+                Clear seating
+              </button>
+              <button
+                type="button"
+                className="link-btn"
+                disabled={!editable || !hasRoom || kitsBusy}
+                onClick={() => onClearGear?.()}
+              >
+                Clear gear
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className={`show-setup-phase${hasRoom ? '' : ' is-gated'}`}>
         <div className="show-setup-phase-head">
-          <span className="show-setup-phase-index">2</span>
+          <span className="show-setup-phase-index">·</span>
           <div>
-            <strong>Set up the show</strong>
+            <strong>Or build it yourself</strong>
             <small>
               {hasRoom
-                ? nextStep === 'stage'
-                  ? 'Next: build the stage.'
-                  : nextStep === 'seating'
-                    ? 'Next: place seating.'
-                    : nextStep === 'print'
-                      ? 'Next: print setup.'
-                      : 'Build piece by piece — stage, objects, seating, then print.'
+                ? 'Stage, objects, and seating if you are not using a kit.'
                 : 'Finish the room outline first.'}
             </small>
           </div>
@@ -298,7 +543,7 @@ export default function ShowSetupPanel({
         <div className="create-flow-steps">
           <button
             type="button"
-            className={`create-flow-step${completed.stage ? ' is-done' : ''}${nextStep === 'stage' ? ' is-next' : ''}`}
+            className={`create-flow-step${completed.stage ? ' is-done' : ''}`}
             disabled={!editable || !hasRoom}
             onClick={onBuildStage}
           >
@@ -311,38 +556,17 @@ export default function ShowSetupPanel({
             disabled={!editable || !hasRoom}
             onClick={onInsert}
           >
-            <strong>Insert objects</strong>
-            <span>Screens, tables, chairs — then Done placing</span>
+            <strong>Place objects</strong>
+            <span>Screens, tables, chairs from Place mode</span>
           </button>
           <button
             type="button"
-            className={`create-flow-step${completed.repeat ? ' is-done' : ''}`}
-            disabled={!editable || !hasRoom || selectedCount !== 1}
-            onClick={onRepeat}
-            title={selectedCount === 1 ? 'Open Properties to Repeat' : 'Select one item first'}
-          >
-            <strong>Repeat across</strong>
-            <span>Tile one deck or riser from Properties</span>
-          </button>
-          <button
-            type="button"
-            className={`create-flow-step${completed.seating ? ' is-done' : ''}${nextStep === 'seating' ? ' is-next' : ''}`}
+            className={`create-flow-step${completed.seating ? ' is-done' : ''}`}
             disabled={!editable || !hasRoom}
             onClick={onSeating}
           >
-            <strong>Seating</strong>
-            <span>Theatre, classroom, or banquet layout</span>
-          </button>
-          <button
-            type="button"
-            className={`create-flow-step${completed.print ? ' is-done' : ''}${nextStep === 'print' ? ' is-next' : ''}`}
-            disabled={!hasRoom}
-            onClick={onPrint}
-          >
-            <strong className="show-setup-print-label">
-              <IconPrint size={12} /> Print setup
-            </strong>
-            <span>Scale, sheet, and PDF export</span>
+            <strong>Seating planner</strong>
+            <span>Refill the whole floor with aisles and a live count</span>
           </button>
         </div>
         {!hasRoom && (
@@ -353,69 +577,48 @@ export default function ShowSetupPanel({
       </div>
 
       <div className={`show-setup-phase${hasRoom ? '' : ' is-gated'}`}>
-        <button
-          type="button"
-          className={`show-setup-collapse${kitsOpen ? ' is-open' : ''}`}
-          aria-expanded={kitsOpen}
-          onClick={() => setKitsOpen((open) => !open)}
-        >
+        <div className="show-setup-phase-head">
           <span className="show-setup-phase-index">·</span>
-          <span>
-            <strong>Show kits</strong>
-            <small>Optional — boardroom (~20) through arena / Card Party recipes</small>
-          </span>
-        </button>
-        {kitsOpen && (
-          <>
-            <div className="field">
-              <label htmlFor="show-kit-select">Kit</label>
-              <select
-                id="show-kit-select"
-                value={selectedKit}
-                disabled={!editable || kitsBusy || !kits.length}
-                onChange={(e) => setSelectedKit(e.target.value)}
-              >
-                {!kits.length ? <option value="">No kits yet</option> : null}
-                {kits.map((kit) => (
-                  <option key={kit.id} value={kit.id}>
-                    {kit.name} · {kit.chairs.toLocaleString()} chairs · {kit.banks} banks
-                    {kit.source === 'bundled' ? ' (bundled)' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {selected ? (
-              <p className="hint" style={{ marginBottom: 8 }}>
-                {selected.venue ? `${selected.venue} · ` : ''}
-                {selected.gear} gear spots · {selected.source}
-              </p>
-            ) : null}
-            <div className="show-setup-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
-              <button
-                type="button"
-                className="btn-solid"
-                disabled={!editable || !hasRoom || !selectedKit || kitsBusy}
-                onClick={() => selectedKit && onApplyKit?.(selectedKit)}
-              >
-                {kitsBusy ? 'Applying…' : 'Apply kit'}
-              </button>
-              <button type="button" className="btn-outline" disabled={kitsBusy} onClick={() => onImportKit?.()}>
-                Import recipe…
-              </button>
-              <button
-                type="button"
-                className="btn-outline"
-                disabled={!hasRoom || kitsBusy}
-                onClick={() => onExportRecipe?.()}
-              >
-                Export recipe…
-              </button>
-              <button type="button" className="link-btn" disabled={kitsBusy} onClick={() => onRefreshKits?.()}>
-                Refresh
-              </button>
-            </div>
-          </>
-        )}
+          <div>
+            <strong>Counts &amp; reports</strong>
+            <small>
+              {hasRoom
+                ? `${chairCount.toLocaleString()} chairs · ${tableCount.toLocaleString()} tables${
+                    allocationSummary
+                      ? ` · ${allocationSummary.short} short · ${allocationSummary.untracked} untracked`
+                      : ''
+                  }`
+                : 'Available once the room and layout exist.'}
+            </small>
+          </div>
+        </div>
+        <div className="show-setup-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <button type="button" className="btn-outline" disabled={!hasRoom} onClick={() => onExportSchedule?.()}>
+            Export schedule…
+          </button>
+          <button type="button" className="btn-outline" disabled={!hasRoom} onClick={() => onExportPullSheet?.()}>
+            Export pull sheet…
+          </button>
+          <button type="button" className="btn-outline" disabled={!hasRoom} onClick={() => onExportReport?.()}>
+            Export report…
+          </button>
+        </div>
+      </div>
+
+      <div className={`show-setup-phase${hasRoom ? '' : ' is-gated'}`}>
+        <div className="create-flow-steps">
+          <button
+            type="button"
+            className={`create-flow-step${completed.print ? ' is-done' : ''}${layoutDone ? ' is-next' : ''}`}
+            disabled={!hasRoom}
+            onClick={onPrint}
+          >
+            <strong className="show-setup-print-label">
+              <IconPrint size={12} /> Print to PDF
+            </strong>
+            <span>Title block, multi-sheet at scale, export</span>
+          </button>
+        </div>
       </div>
     </div>
   );

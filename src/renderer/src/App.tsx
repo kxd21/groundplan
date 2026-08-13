@@ -11,6 +11,7 @@ import {
 import { createPortal } from 'react-dom';
 
 import { formatLength, parseLength } from '../../format/units.js';
+import { UNITS_PER_FOOT } from '../../format/rv.js';
 import { PlanCanvas } from './PlanCanvas.js';
 import { GearView, GearSummary } from './GearView.js';
 import { GearPalette } from './GearPalette.js';
@@ -24,6 +25,7 @@ import {
   HAND,
   MEASURE,
   SELECT,
+  avPairChoice,
   banner as toolBanner,
   drawChoice,
   escapeAlsoClearsSelection,
@@ -31,7 +33,9 @@ import {
   labelChoice,
   opensProperties,
   pointerSpec,
+  powerCableChoice,
   roomOutlineChoice,
+  signalCableChoice,
   type PendingEffect,
 } from './tool/machine.js';
 import { runEffect } from './tool/effects.js';
@@ -49,7 +53,6 @@ import {
   IconFolder,
   IconEye,
   IconChair,
-  IconCalculator,
   IconDirectSelect,
   IconLock,
   IconPlus,
@@ -62,7 +65,6 @@ import {
   IconPrint,
   IconSave,
   IconSearch,
-  IconSidebarLeft,
   IconSidebarRight,
   IconSun,
   IconTrash,
@@ -110,13 +112,27 @@ import CreateDialog from './CreateDialog.js';
 import InventoryItemEditor, { type EditableInventoryItem } from './InventoryItemEditor.js';
 import BackgroundLayerPanel from './BackgroundLayerPanel.js';
 import BackgroundImageDialog from './BackgroundImageDialog.js';
+import { scaleBackgroundToSegment } from './background-calibrate.js';
 import PlanFolderWorkspace from './PlanFolderWorkspace.js';
 import WelcomeHome from './WelcomeHome.js';
 import { flattenInsertLeaves, matchInsertItem, type InsertGroupId } from '../../inventory/insert-catalog.js';
-import { type PlanIdentityFields } from './ShowSetupPanel.js';
+import { type PlanIdentityFields, suggestKitForRoom } from './ShowSetupPanel.js';
 import NewPlanDialog from './NewPlanDialog.js';
 import OpenPlanChooser from './OpenPlanChooser.js';
 import { SnappySlider } from './SnappySlider.js';
+import { ScrubLabel } from './ScrubLabel.js';
+import { CommandPalette, type RunnableCommand } from './CommandPalette.js';
+import {
+  COMMAND_CATALOG,
+  SHELL_MODES,
+  deriveShellMode,
+  shortcutCheatSheet,
+  type CommandContext,
+  type CommandId,
+  type ShellMode,
+  isCommandId,
+  MENU_TO_COMMAND,
+} from './commands.js';
 import type { CustomRoomPrefs } from './custom-room.js';
 import type { GearList, GearTotals } from '../../gear/model.js';
 import type { GroundplanApi } from '../../preload/index.js';
@@ -263,6 +279,8 @@ interface Selection {
   heightUnits: number;
   x: number;
   y: number;
+  /** Absolute angle when the file stores one; null = rotate-by only. */
+  angleDegrees: number | null;
   textStyle?: {
     family: string;
     size: number;
@@ -297,7 +315,7 @@ type PlanFolderState = Awaited<ReturnType<GroundplanApi['planFoldersList']>>;
 type Workspace = 'plan' | 'gear' | 'inventory';
 type PlanRailSource = 'recent' | 'collections' | 'folder' | 'equipment';
 type EquipmentSource = 'inventory' | 'gear' | 'plan';
-type InspectorTab = 'properties' | 'room' | 'create' | 'layers';
+type InspectorTab = 'properties' | 'room' | 'layers';
 
 function placeMethodStatus(method?: string, name?: string): string {
   const item = name ? ` ${name}` : '';
@@ -425,12 +443,13 @@ export function App() {
   const [showTooltips, setShowTooltips] = useState(
     () => localStorage.getItem('groundplan:tooltips') !== 'false',
   );
-  const [railOpen, setRailOpen] = useState(() => localStorage.getItem('groundplan:rail-open') !== 'false');
+  /** Modes are exclusive — start with a quiet canvas; open Browse/Place/Inspect/Draw on demand. */
+  const [railOpen, setRailOpen] = useState(() => localStorage.getItem('groundplan:rail-open') === 'true');
   const [inspectorOpen, setInspectorOpen] = useState(
-    () => localStorage.getItem('groundplan:inspector-open') !== 'false',
+    () => localStorage.getItem('groundplan:inspector-open') === 'true',
   );
   const [toolDockOpen, setToolDockOpen] = useState(
-    () => localStorage.getItem('groundplan:tool-dock-open') !== 'false',
+    () => localStorage.getItem('groundplan:tool-dock-open') === 'true',
   );
   const [toolDockCompact, setToolDockCompact] = useState(
     () => localStorage.getItem('groundplan:tool-dock-compact') === 'true',
@@ -508,21 +527,165 @@ export function App() {
   const [textRotationDraft, setTextRotationDraft] = useState('0');
   const [sizeDraft, setSizeDraft] = useState({ width: '', height: '' });
   const [positionDraft, setPositionDraft] = useState({ x: '', y: '' });
+  const [angleAbsoluteDraft, setAngleAbsoluteDraft] = useState('');
+  /** Illustrator-style constrain width/height proportions. */
+  const [sizeAspectLocked, setSizeAspectLocked] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [planBackground, setPlanBackground] = useState<PlanBackground | null>(null);
   const [objectSnap, setObjectSnap] = useState(true);
   const [autoFitOnOpen, setAutoFitOnOpen] = useState(true);
   const [openPropertiesOnSelect, setOpenPropertiesOnSelect] = useState(true);
+  const [showStackPeek, setShowStackPeek] = useState(true);
+  const [showSightlineMarkers, setShowSightlineMarkers] = useState(false);
   const [nudgeStep, setNudgeStep] = useState(UNITS_PER_INCH);
   const [fineNudgeStep, setFineNudgeStep] = useState(1);
   const [bulkDeleteWarning, setBulkDeleteWarning] = useState(25);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [toolbarTooltip, setToolbarTooltip] = useState<{
+  const [hoverTip, setHoverTip] = useState<{
     text: string;
     left: number;
     top: number;
+    placement: 'below' | 'above';
   } | null>(null);
+  const tipSourceRef = useRef<HTMLElement | null>(null);
+
+  const clearHoverTip = useCallback(() => {
+    const source = tipSourceRef.current;
+    if (source) {
+      const native = source.getAttribute('data-native-title');
+      if (native != null) {
+        source.setAttribute('title', native);
+        source.removeAttribute('data-native-title');
+      }
+      tipSourceRef.current = null;
+    }
+    setHoverTip(null);
+  }, []);
+
+  /**
+   * Tips only for icon-only / unlabeled controls. Buttons that already show a
+   * word caption (New, Open, Setup, Bring to front…) skip the hover card.
+   */
+  const controlNeedsHoverTip = useCallback((control: HTMLElement): boolean => {
+    if (control.dataset.tooltipForce === 'true') return true;
+    if (control.hasAttribute('data-no-tooltip') || control.closest('[data-no-tooltip]')) return false;
+
+    const isWordy = (value: string) => {
+      const t = value.replace(/\s+/g, ' ').trim();
+      if (!t) return false;
+      // Single formatting glyphs (B / I / U) still need a tip.
+      if (/^[BIU]$/i.test(t)) return false;
+      // Real captions: New, Open, Inspector, Show all, Face 0°, …
+      return /[A-Za-z]{2,}/.test(t);
+    };
+
+    for (const child of Array.from(control.children)) {
+      if (!(child instanceof HTMLElement)) continue;
+      if (child.matches('svg, img, [aria-hidden="true"], .num, .badge, .dot, .plan-tab-dirty')) continue;
+      if (isWordy(child.textContent ?? '')) return false;
+    }
+
+    const directText = Array.from(control.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent ?? '')
+      .join(' ');
+    if (isWordy(directText)) return false;
+
+    return true;
+  }, []);
+
+  const showHoverTipFor = useCallback((target: EventTarget | null) => {
+    if (!showTooltips) {
+      clearHoverTip();
+      return;
+    }
+    const el = target instanceof Element ? target : null;
+    if (!el) {
+      clearHoverTip();
+      return;
+    }
+    const control = el.closest(
+      'button, [role="button"], [role="tab"], [role="menuitem"], [role="switch"], a.btn, .icon-btn, .text-action, [data-tooltip]',
+    ) as HTMLElement | null;
+    if (!control || !controlNeedsHoverTip(control)) {
+      clearHoverTip();
+      return;
+    }
+
+    const text =
+      control.getAttribute('data-tooltip')?.trim() ||
+      control.getAttribute('title')?.trim() ||
+      control.getAttribute('aria-label')?.trim() ||
+      control.getAttribute('data-native-title')?.trim() ||
+      '';
+    if (!text) {
+      clearHoverTip();
+      return;
+    }
+
+    if (tipSourceRef.current && tipSourceRef.current !== control) {
+      const prev = tipSourceRef.current;
+      const native = prev.getAttribute('data-native-title');
+      if (native != null) {
+        prev.setAttribute('title', native);
+        prev.removeAttribute('data-native-title');
+      }
+    }
+    tipSourceRef.current = control;
+    // Suppress the slow native title tooltip while ours is visible.
+    if (control.hasAttribute('title') && !control.hasAttribute('data-native-title')) {
+      control.setAttribute('data-native-title', control.getAttribute('title') ?? '');
+      control.removeAttribute('title');
+    }
+
+    const bounds = control.getBoundingClientRect();
+    const left = Math.max(12, Math.min(window.innerWidth - 12, bounds.left + bounds.width / 2));
+    const below = bounds.bottom + 10;
+    const placement: 'below' | 'above' =
+      below + 44 > window.innerHeight - 8 && bounds.top > 56 ? 'above' : 'below';
+    const top =
+      placement === 'below'
+        ? Math.min(window.innerHeight - 12, below)
+        : Math.max(12, bounds.top - 10);
+    setHoverTip({ text, left, top, placement });
+  }, [showTooltips, clearHoverTip, controlNeedsHoverTip]);
+
+  const handleAppPointerOver = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => showHoverTipFor(event.target),
+    [showHoverTipFor],
+  );
+
+  const handleAppPointerOut = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const from = event.target instanceof Element
+        ? event.target.closest('button, [role="button"], [role="tab"], [role="menuitem"], [role="switch"], a.btn, .icon-btn, .text-action, [data-tooltip]')
+        : null;
+      const to = event.relatedTarget instanceof Element
+        ? event.relatedTarget.closest('button, [role="button"], [role="tab"], [role="menuitem"], [role="switch"], a.btn, .icon-btn, .text-action, [data-tooltip]')
+        : null;
+      if (from === to) return;
+      if (to) showHoverTipFor(to);
+      else clearHoverTip();
+    },
+    [showHoverTipFor, clearHoverTip],
+  );
+
+  const handleAppFocus = useCallback(
+    (event: ReactFocusEvent<HTMLElement>) => showHoverTipFor(event.target),
+    [showHoverTipFor],
+  );
+
+  const handleAppBlur = useCallback(
+    (event: ReactFocusEvent<HTMLElement>) => {
+      const next = event.relatedTarget instanceof Element
+        ? event.relatedTarget.closest('button, [role="button"], [role="tab"], [role="menuitem"], [role="switch"], a.btn, .icon-btn, .text-action, [data-tooltip]')
+        : null;
+      if (next) showHoverTipFor(next);
+      else clearHoverTip();
+    },
+    [showHoverTipFor, clearHoverTip],
+  );
   const [insertOpen, setInsertOpen] = useState(false);
   const [insertGroup, setInsertGroup] = useState<InsertGroupId | null>(null);
   const [shapeWizardOpen, setShapeWizardOpen] = useState(false);
@@ -533,6 +696,9 @@ export function App() {
   const [roomWorkspaceFocus, setRoomWorkspaceFocus] = useState<'walls' | 'room'>('room');
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  /** Last structured action ID — shown in the status bar for agents and power users. */
+  const [lastCommandId, setLastCommandId] = useState<CommandId | null>(null);
   const [layoutKits, setLayoutKits] = useState<
     Array<{
       id: string;
@@ -560,6 +726,22 @@ export function App() {
   const createMenuRef = useRef<HTMLDivElement | null>(null);
   const createMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [backgroundOpen, setBackgroundOpen] = useState(false);
+  /** Two-point site-plan calibrate: collect plan points, then scale underlay. */
+  const [bgCalibratePoints, setBgCalibratePoints] = useState<Array<{ x: number; y: number }> | null>(
+    null,
+  );
+  const [allocationSummary, setAllocationSummary] = useState<{
+    short: number;
+    ok: number;
+    untracked: number;
+  } | null>(null);
+  const [roomSizeText, setRoomSizeText] = useState<string | null>(null);
+  const [roomCeilingHeight, setRoomCeilingHeight] = useState<number>(0);
+  const [elevationDraft, setElevationDraft] = useState('');
+  const [elevationKey, setElevationKey] = useState<string | null>(null);
+  const [sightlineMarkers, setSightlineMarkers] = useState<
+    Array<{ x: number; y: number; verdict: string }>
+  >([]);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [setupCompleted, setSetupCompleted] = useState({
     stage: false,
@@ -588,8 +770,24 @@ export function App() {
     }
   });
   const [rotationDraft, setRotationDraft] = useState('15');
-  const [arrayCountDraft, setArrayCountDraft] = useState('7');
+  const [facingDraft, setFacingDraft] = useState('15');
+  const [arrayColsDraft, setArrayColsDraft] = useState('7');
+  const [arrayRowsDraft, setArrayRowsDraft] = useState('1');
+  const [arrayGapXDraft, setArrayGapXDraft] = useState('');
+  const [arrayGapYDraft, setArrayGapYDraft] = useState('');
   const [arrayDirection, setArrayDirection] = useState<'right' | 'left' | 'down' | 'up'>('right');
+  const [wallSetbackDraft, setWallSetbackDraft] = useState("2'");
+  const [wallSetbackMode, setWallSetbackMode] = useState<'each' | 'group'>('each');
+  const [wallSetbackFace, setWallSetbackFace] = useState(true);
+  const [stackCandidates, setStackCandidates] = useState<
+    Array<{ id: number; name: string; elevation?: number }>
+  >([]);
+  /** Next place/insert stacks onto this parent (elevation + move-together). */
+  const [placeOnParentId, setPlaceOnParentId] = useState<number | null>(null);
+  const [placeOnParentName, setPlaceOnParentName] = useState<string | null>(null);
+  const [stackSet, setStackSet] = useState<
+    Array<{ id: number; name: string; elevation: number; kind: string }> | null
+  >(null);
   const [colorDraft, setColorDraft] = useState('#20252b');
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(0.05);
@@ -789,8 +987,8 @@ export function App() {
 
   useEffect(() => {
     localStorage.setItem('groundplan:tooltips', String(showTooltips));
-    if (!showTooltips) setToolbarTooltip(null);
-  }, [showTooltips]);
+    if (!showTooltips) clearHoverTip();
+  }, [showTooltips, clearHoverTip]);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -835,56 +1033,6 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('groundplan:open-layer-groups', JSON.stringify([...openLayerGroups]));
   }, [openLayerGroups]);
-
-  const showToolbarTooltipFor = useCallback((target: EventTarget | null) => {
-    if (!showTooltips) {
-      setToolbarTooltip(null);
-      return;
-    }
-    const control = target instanceof Element ? target.closest<HTMLElement>('[data-tooltip]') : null;
-    const text = control?.dataset.tooltip?.trim();
-    if (!control || !text) {
-      setToolbarTooltip(null);
-      return;
-    }
-    const bounds = control.getBoundingClientRect();
-    const toolbarBottom = control.closest('.toolbar')?.getBoundingClientRect().bottom ?? bounds.bottom;
-    setToolbarTooltip({
-      text,
-      left: Math.max(130, Math.min(window.innerWidth - 130, bounds.left + bounds.width / 2)),
-      top: Math.min(window.innerHeight - 46, toolbarBottom + 8),
-    });
-  }, [showTooltips]);
-
-  const handleToolbarPointerOver = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => showToolbarTooltipFor(event.target),
-    [showToolbarTooltipFor],
-  );
-
-  const handleToolbarPointerOut = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => {
-      const from = event.target instanceof Element ? event.target.closest('[data-tooltip]') : null;
-      const to = event.relatedTarget instanceof Element ? event.relatedTarget.closest('[data-tooltip]') : null;
-      if (from === to) return;
-      if (to) showToolbarTooltipFor(to);
-      else setToolbarTooltip(null);
-    },
-    [showToolbarTooltipFor],
-  );
-
-  const handleToolbarFocus = useCallback(
-    (event: ReactFocusEvent<HTMLElement>) => showToolbarTooltipFor(event.target),
-    [showToolbarTooltipFor],
-  );
-
-  const handleToolbarBlur = useCallback(
-    (event: ReactFocusEvent<HTMLElement>) => {
-      const next = event.relatedTarget instanceof Element ? event.relatedTarget.closest('[data-tooltip]') : null;
-      if (next) showToolbarTooltipFor(next);
-      else setToolbarTooltip(null);
-    },
-    [showToolbarTooltipFor],
-  );
 
   useEffect(() => {
     const active =
@@ -1017,6 +1165,9 @@ export function App() {
   );
 
   const loadGeneration = useRef(0);
+  const nativeDialogGeneration = useRef(0);
+  const NATIVE_DIALOG_BUSY_MS = 8_000;
+
   const load = useCallback(
     async (path: string): Promise<boolean> => {
       if (!(await commitTextEditingRef.current(false))) return false;
@@ -1050,13 +1201,20 @@ export function App() {
 
   const openFile = useCallback(async () => {
     if (!(await commitTextEditingRef.current(false))) return;
-    const generation = ++loadGeneration.current;
+    const generation = ++nativeDialogGeneration.current;
     setBusy(true);
     setBusyMessage('Opening…');
     setError(null);
+    const releaseBusy = window.setTimeout(() => {
+      if (generation !== nativeDialogGeneration.current) return;
+      setBusy(false);
+      setBusyMessage(null);
+      setStatus('File picker is still open — choose a plan or cancel in the system dialog.');
+      window.setTimeout(() => setStatus(null), 5000);
+    }, NATIVE_DIALOG_BUSY_MS);
     try {
       const result = await api.openFileDialog();
-      if (generation !== loadGeneration.current) return;
+      if (generation !== nativeDialogGeneration.current) return;
       if (result && 'scene' in result) {
         adopt(result as Doc);
         refreshRecent();
@@ -1064,15 +1222,49 @@ export function App() {
         setError(String((result as { reason?: string }).reason ?? 'Could not open that plan.'));
       }
     } catch (err) {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== nativeDialogGeneration.current) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      if (generation === loadGeneration.current) {
+      window.clearTimeout(releaseBusy);
+      if (generation === nativeDialogGeneration.current) {
         setBusy(false);
         setBusyMessage(null);
       }
     }
   }, [refreshRecent, adopt]);
+
+  const openFolder = useCallback(async () => {
+    const generation = ++nativeDialogGeneration.current;
+    setBusy(true);
+    setBusyMessage('Opening folder…');
+    setError(null);
+    const releaseBusy = window.setTimeout(() => {
+      if (generation !== nativeDialogGeneration.current) return;
+      setBusy(false);
+      setBusyMessage(null);
+      setStatus('Folder picker is still open — choose a folder or cancel in the system dialog.');
+      window.setTimeout(() => setStatus(null), 5000);
+    }, NATIVE_DIALOG_BUSY_MS);
+    try {
+      const dir = await api.openFolderDialog();
+      if (generation !== nativeDialogGeneration.current) return;
+      if (!dir) return;
+      setFolder(dir);
+      setEntries(await api.listDirectory(dir));
+      setPlanRailSource('folder');
+      setView('plan');
+      setRailOpen(true);
+    } catch (err) {
+      if (generation !== nativeDialogGeneration.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(releaseBusy);
+      if (generation === nativeDialogGeneration.current) {
+        setBusy(false);
+        setBusyMessage(null);
+      }
+    }
+  }, []);
 
   const openNewPlanDialog = useCallback(async () => {
     if (!(await commitTextEditingRef.current(false))) return;
@@ -1120,26 +1312,6 @@ export function App() {
     [dispatchTool, doc?.path, planTabs, switchPlanTab],
   );
 
-  const openFolder = useCallback(async () => {
-    setBusy(true);
-    setBusyMessage('Opening folder…');
-    setError(null);
-    try {
-      const dir = await api.openFolderDialog();
-      if (!dir) return;
-      setFolder(dir);
-      setEntries(await api.listDirectory(dir));
-      setPlanRailSource('folder');
-      setView('plan');
-      setRailOpen(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-      setBusyMessage(null);
-    }
-  }, []);
-
   const exportSvg = useCallback(async () => {
     if (!doc) return;
     const svg = toSvg(doc.scene, visible, printScale, planBackground);
@@ -1170,6 +1342,8 @@ export function App() {
             paperSheet?: boolean;
             autoFitOnOpen?: boolean;
             openPropertiesOnSelect?: boolean;
+            showStackPeek?: boolean;
+            showSightlineMarkers?: boolean;
             nudgeStep?: number;
             fineNudgeStep?: number;
           };
@@ -1188,6 +1362,8 @@ export function App() {
         setPaper(s.drawing.paperSheet !== false);
         setAutoFitOnOpen(s.drawing.autoFitOnOpen !== false);
         setOpenPropertiesOnSelect(s.drawing.openPropertiesOnSelect !== false);
+        setShowStackPeek(s.drawing.showStackPeek !== false);
+        setShowSightlineMarkers(s.drawing.showSightlineMarkers === true);
         setNudgeStep(
           Number.isFinite(s.drawing.nudgeStep) && Number(s.drawing.nudgeStep) > 0
             ? Number(s.drawing.nudgeStep)
@@ -1260,21 +1436,79 @@ export function App() {
     }, duration);
   }, []);
 
-  const toggleCreatePanel = useCallback(() => {
-    setCreateDialogOpen((open) => {
-      const next = !open;
-      if (next) {
-        setRefineRoomOpen(false);
-        setWallPickIndex(null);
-        setSeatingOpen(false);
-        setCalculatorOpen(false);
+  /** Exclusive shell modes: Browse | Place | Inspect | Setup | Draw */
+  const setShellMode = useCallback(
+    (mode: ShellMode | 'none') => {
+      if (view !== 'plan' || !doc) return;
+      if (mode === 'none') {
+        setRailOpen(false);
         setInspectorOpen(false);
-        setCreateMenuOpen(false);
-        showStatus('Create · show setup, text, and quick seating', 3500);
+        setCreateDialogOpen(false);
+        setToolDockOpen(false);
+        showStatus('Full canvas', 1800);
+        return;
       }
-      return next;
-    });
-  }, [showStatus]);
+      setRefineRoomOpen(false);
+      setSeatingOpen(false);
+      setCalculatorOpen(false);
+      setCreateMenuOpen(false);
+      if (mode === 'browse') {
+        setCreateDialogOpen(false);
+        setToolDockOpen(false);
+        setInspectorOpen(false);
+        setPlanRailSource((current) => (current === 'equipment' ? 'recent' : current));
+        setRailOpen(true);
+        showStatus('Browse · recent plans and folders', 2500);
+        return;
+      }
+      if (mode === 'place') {
+        setCreateDialogOpen(false);
+        setToolDockOpen(false);
+        setInspectorOpen(false);
+        setPlanRailSource('equipment');
+        setRailOpen(true);
+        showStatus('Place · stamp inventory and gear', 2500);
+        return;
+      }
+      if (mode === 'inspect') {
+        setCreateDialogOpen(false);
+        setToolDockOpen(false);
+        setRailOpen(false);
+        setInspectorOpen(true);
+        showStatus('Inspect · layers and properties', 2500);
+        return;
+      }
+      if (mode === 'setup') {
+        setToolDockOpen(false);
+        setRailOpen(false);
+        setInspectorOpen(false);
+        setCreateDialogOpen(true);
+        void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
+        void api.listBankPresets().then(setBankPresets).catch(() => undefined);
+        showStatus('Setup · room, kit, and print', 2500);
+        return;
+      }
+      // draw
+      setCreateDialogOpen(false);
+      setInspectorOpen(false);
+      setRailOpen(false);
+      setToolDockOpen(true);
+      showStatus('Draw · tools shelf', 2500);
+    },
+    [view, doc, showStatus],
+  );
+
+  const shellMode = useMemo(
+    () =>
+      deriveShellMode({
+        createDialogOpen,
+        toolDockOpen,
+        inspectorOpen,
+        railOpen,
+        planRailSource,
+      }),
+    [createDialogOpen, toolDockOpen, inspectorOpen, railOpen, planRailSource],
+  );
 
   const openCreateDialog = useCallback(() => {
     setRefineRoomOpen(false);
@@ -1282,6 +1516,7 @@ export function App() {
     setSeatingOpen(false);
     setCalculatorOpen(false);
     setInspectorOpen(false);
+    setToolDockOpen(false);
     setCreateMenuOpen(false);
     setCreateDialogOpen(true);
     void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
@@ -1367,6 +1602,8 @@ export function App() {
     setRefineRoomOpen(true);
     setSeatingOpen(false);
     setCalculatorOpen(false);
+    setCreateDialogOpen(false);
+    setToolDockOpen(false);
     setSelectedIds([]);
     // Create lives in the top toolbar now — leave the side inspector closed.
     setInspectorOpen(false);
@@ -1635,6 +1872,30 @@ export function App() {
     return {};
   }, [notify]);
 
+  const attachPlacedToParent = useCallback(
+    async (createdIds: number[] | undefined) => {
+      if (placeOnParentId == null || !createdIds?.length) return;
+      const childId = createdIds[0]!;
+      if (childId === placeOnParentId) return;
+      const reply = (await api.attachStack(placeOnParentId, childId)) as {
+        ok: boolean;
+        reason?: string;
+        text?: string;
+        doc?: Doc;
+      };
+      if (reply.ok) {
+        if (reply.doc) setDoc(reply.doc as Doc);
+        showStatus(reply.text ?? `Stacked on ${placeOnParentName ?? 'parent'}`, 3200);
+        void api.linkedSet([placeOnParentId, childId]).then((rows) => {
+          setStackSet(rows.length >= 2 ? rows : null);
+        });
+      } else if (reply.reason) {
+        notify(reply.reason);
+      }
+    },
+    [placeOnParentId, placeOnParentName, notify, showStatus],
+  );
+
   const applyToolEffect = useCallback(
     async (effect: PendingEffect | null, refusal?: string) => {
       if (refusal) {
@@ -1672,13 +1933,51 @@ export function App() {
         setCustomRoomPrefs(null);
         setAwaitingRoomOutline(false);
         openCreateDialog();
+        const roomDoc = (persisted.doc ?? result.doc) as Doc | undefined;
+        const extent = roomDoc?.scene?.roomExtent;
+        if (extent && layoutKits.length) {
+          const widthFt = (extent.maxX - extent.minX) / UNITS_PER_FOOT;
+          const depthFt = (extent.maxY - extent.minY) / UNITS_PER_FOOT;
+          const kitId = suggestKitForRoom(layoutKits, widthFt, depthFt);
+          if (kitId && !/card.?party/i.test(kitId)) {
+            showStatus('Room ready — applying matching kit…', 4200);
+            setKitsBusy(true);
+            void api
+              .applyLayoutRecipe(kitId, {
+                replaceExistingSeating: true,
+                fitToExistingRoom: true,
+              })
+              .then((reply) => {
+                if (reply.ok && reply.doc) {
+                  setDoc(reply.doc as Doc);
+                  setSetupCompleted((current) => ({
+                    ...current,
+                    stage: true,
+                    seating: true,
+                    insert: true,
+                  }));
+                  showStatus(reply.text ?? 'Show kit applied', 5000);
+                  setFitToken((t) => t + 1);
+                } else if (reply.reason) {
+                  notify(reply.reason);
+                }
+              })
+              .catch((err) => notify(err instanceof Error ? err.message : String(err)))
+              .finally(() => setKitsBusy(false));
+          } else {
+            showStatus('Room ready — apply a kit or build the layout', 5200);
+          }
+        }
       }
-      if (result.ok && result.doc) {
+        if (result.ok && result.doc) {
         setDoc(result.doc as Doc);
         setError(null);
         if (result.created?.length) {
           setSelectedIds(result.created);
           setSelection(null);
+          if (effect.do === 'placeInventory' || effect.do === 'placeGear') {
+            void attachPlacedToParent(result.created);
+          }
         }
         if (result.status) {
           const keepPlacing =
@@ -1701,7 +2000,7 @@ export function App() {
       }
       dispatchTool({ type: 'settled', epoch: effect.epoch, ok: result.ok });
     },
-    [dispatchTool, notify, openCreateDialog, persistNewRoomOutlineIfNeeded, showStatus, customRoomPrefs],
+    [dispatchTool, notify, openCreateDialog, persistNewRoomOutlineIfNeeded, showStatus, customRoomPrefs, layoutKits, attachPlacedToParent],
   );
 
   const finishRoomOutline = useCallback(() => {
@@ -1709,13 +2008,38 @@ export function App() {
     void applyToolEffect(effect, refusal);
   }, [applyToolEffect, dispatchTool]);
 
+  /** Single room-edit path: focused refine workspace (not Inspector Room tab). */
+  const openRoomEditWorkspace = useCallback(
+    (focus: 'walls' | 'room' = 'room') => {
+      if (!doc?.editable || !doc?.hasRoom) {
+        notify(doc?.hasRoom ? 'This plan is read-only' : 'Draw or finish the room first');
+        return;
+      }
+      beginRoomWorkspaceLayout();
+      setRoomWorkspaceFocus(focus);
+      setRefineRoomOpen(true);
+      setSeatingOpen(false);
+      setCalculatorOpen(false);
+      setInspectorOpen(false);
+      setCreateDialogOpen(false);
+      setToolDockOpen(false);
+      setRailOpen(false);
+      setSelectedIds([]);
+      dispatchTool({ type: 'pick', choice: SELECT });
+      setFitToken((t) => t + 1);
+      showStatus(
+        focus === 'walls'
+          ? 'Edit walls · click a wall, then Push / Curve / Length on the plan'
+          : 'Room layout workspace · resize, add/cut, then drag walls on the plan',
+        4500,
+      );
+    },
+    [doc?.editable, doc?.hasRoom, dispatchTool, notify, showStatus],
+  );
+
   const openRoomPanel = useCallback(() => {
-    setCreateDialogOpen(false);
-    setSeatingOpen(false);
-    setRefineRoomOpen(false);
-    setInspectorOpen(true);
-    setInspectorTab('room');
-  }, []);
+    openRoomEditWorkspace('room');
+  }, [openRoomEditWorkspace]);
 
   const finishPendingRoomAsRectangle = useCallback(async () => {
     if (!doc?.editable) return;
@@ -1924,6 +2248,12 @@ export function App() {
         notify('That Insert item is unknown');
         return;
       }
+      if (leaf.id === 'proj-combo') {
+        const { refusal } = dispatchTool({ type: 'pick', choice: avPairChoice });
+        if (refusal) notify(refusal);
+        else showStatus('Click where the screen should sit — projector and throw follow', 5000);
+        return;
+      }
       const match = matchInsertItem(leaf, inventoryRows);
       if (match) {
         armInventory(match.id, match.name);
@@ -1936,7 +2266,7 @@ export function App() {
       }
       armGear(stock);
     },
-    [armGear, armInventory, inventoryRows, notify],
+    [armGear, armInventory, dispatchTool, inventoryRows, notify, showStatus],
   );
 
   const armLabelText = useCallback(
@@ -2290,12 +2620,19 @@ export function App() {
         title: doc.scene.title ?? doc.name.replace(/\.[^.]+$/, ''),
         subtitle: gear?.lists[gearIndex]?.jobNumber
           ? `Job ${gear.lists[gearIndex].jobNumber}`
-          : printSubtitle || undefined,
+          : [planIdentityFields.venue, planIdentityFields.event].filter(Boolean).join(' · ') ||
+            printSubtitle ||
+            undefined,
+        venue: planIdentityFields.venue || undefined,
+        event: planIdentityFields.event || undefined,
+        contact: planIdentityFields.contact || undefined,
         roomWidth: extent ? extent.maxX - extent.minX : undefined,
         roomHeight: extent ? extent.maxY - extent.minY : undefined,
+        ceilingHeight: roomCeilingHeight > 0 ? roomCeilingHeight : undefined,
         scale: printScale,
         paper: printPaper,
         landscape: printLandscape,
+        tilePages: true,
         suggestedName: doc.name.replace(/\.[^.]+$/, '') + '.pdf',
       });
       if (reply.cancelled) return;
@@ -2311,7 +2648,10 @@ export function App() {
           },
         });
         const name = reply.path?.split(/[\\/]/).pop();
-        if (reply.fits === false) {
+        const pages = (reply as { pages?: number }).pages;
+        if (pages && pages > 1) {
+          showStatus(`Saved ${name} · ${pages} sheets at scale`);
+        } else if (reply.fits === false) {
           // Better to be told the sheet crops than to find out at the venue.
           notify(
             `Saved ${name}, but the drawing is ${Math.round(((reply.overBy ?? 1) - 1) * 100)}% larger than ` +
@@ -2324,7 +2664,7 @@ export function App() {
     } finally {
       setPrintBusy(false);
     }
-  }, [doc, printBusy, visible, printScale, printPaper, printLandscape, printSubtitle, gear, gearIndex, notify, showStatus, planBackground]);
+  }, [doc, printBusy, visible, printScale, printPaper, printLandscape, printSubtitle, gear, gearIndex, notify, showStatus, planBackground, planIdentityFields, roomCeilingHeight]);
 
   /** Places a inventory item where it was dropped on the drawing. */
   const dropItem = useCallback(
@@ -2350,6 +2690,7 @@ export function App() {
         if (reply.created?.length) {
           setSelectedIds(reply.created);
           setSelection(null);
+          void attachPlacedToParent(reply.created);
         }
         setInspectorOpen(true);
         setInspectorTab('properties');
@@ -2365,7 +2706,7 @@ export function App() {
         notify(reply.reason ?? 'Could not place that item');
       }
     },
-    [dispatchTool, doc, inventoryRows, notify, recentInventory, rememberRecentInventory, showStatus],
+    [dispatchTool, doc, inventoryRows, notify, recentInventory, rememberRecentInventory, showStatus, attachPlacedToParent],
   );
 
   /** Places one gear-list line at the drop point without arming repeat placement. */
@@ -2387,6 +2728,7 @@ export function App() {
         if (reply.created?.length) {
           setSelectedIds(reply.created);
           setSelection(null);
+          void attachPlacedToParent(reply.created);
         }
         setInspectorOpen(true);
         setInspectorTab('properties');
@@ -2400,7 +2742,7 @@ export function App() {
         notify(reply.reason ?? `Could not place ${description}`);
       }
     },
-    [dispatchTool, doc, notify, showStatus],
+    [dispatchTool, doc, notify, showStatus, attachPlacedToParent],
   );
 
   const moveSelection = useCallback(
@@ -2492,27 +2834,65 @@ export function App() {
     showStatus(reply.text ?? 'Ungrouped');
   }, [doc?.editable, notify, selectedIds, showStatus]);
 
-  /** Places N copies of the selection in a row — one undo step. */
-  const arraySelectionAcross = useCallback(async () => {
+  /** Rectangular array — columns × rows with optional centre-to-centre gaps. */
+  const arraySelectionGrid = useCallback(async () => {
     if (selectedIds.length !== 1 || !selection) {
-      notify('Select one item to repeat across');
+      notify('Select one item to array');
       return;
     }
     if (selection.nodeId !== selectedIds[0]) return;
-    const count = Math.floor(Number(arrayCountDraft));
-    if (!(count >= 2 && count <= 40)) {
-      notify('Enter a repeat count between 2 and 40');
+    const columns = Math.floor(Number(arrayColsDraft));
+    const rows = Math.floor(Number(arrayRowsDraft));
+    if (!(columns >= 1 && rows >= 1) || columns * rows < 2) {
+      notify('Enter columns and rows whose product is at least 2');
       return;
     }
-    const spacing =
-      arrayDirection === 'right' || arrayDirection === 'left'
-        ? selection.widthUnits
-        : selection.heightUnits;
-    if (!(spacing > 0)) {
-      notify('That item has no size to space copies by');
+    if (columns * rows > 200) {
+      notify('Array is capped at 200 — use the seating planner for full-room fills');
       return;
     }
-    const reply = (await api.repeatAcross(selection.nodeId, count, arrayDirection)) as {
+    const gapX = arrayGapXDraft.trim() ? parseLength(arrayGapXDraft, unitSystem) : null;
+    const gapY = arrayGapYDraft.trim() ? parseLength(arrayGapYDraft, unitSystem) : null;
+    if (arrayGapXDraft.trim() && !(gapX != null && gapX > 0)) {
+      notify('Enter a valid gap X');
+      return;
+    }
+    if (arrayGapYDraft.trim() && !(gapY != null && gapY > 0)) {
+      notify('Enter a valid gap Y');
+      return;
+    }
+    // 1-row / 1-col with a direction uses the legacy 1D repeat when gaps are default.
+    if (
+      (rows === 1 || columns === 1) &&
+      !arrayGapXDraft.trim() &&
+      !arrayGapYDraft.trim() &&
+      (arrayDirection === 'left' || arrayDirection === 'up')
+    ) {
+      const count = rows === 1 ? columns : rows;
+      const reply = (await api.repeatAcross(selection.nodeId, count, arrayDirection)) as {
+        ok: boolean;
+        reason?: string;
+        doc?: Doc;
+        created?: number[];
+      };
+      applied(reply);
+      if (reply.ok) {
+        setInspectorOpen(true);
+        setInspectorTab('properties');
+        setSetupCompleted((current) => ({ ...current, repeat: true }));
+        const n = reply.created?.length ?? count;
+        setSelectedIds(reply.created ?? selectedIds);
+        showStatus(`Arrayed ${arrayDirection} ×${count} · ${n} selected`);
+      }
+      return;
+    }
+    const reply = (await api.arrayGrid(
+      selection.nodeId,
+      columns,
+      rows,
+      gapX,
+      gapY,
+    )) as {
       ok: boolean;
       reason?: string;
       doc?: Doc;
@@ -2523,10 +2903,58 @@ export function App() {
       setInspectorOpen(true);
       setInspectorTab('properties');
       setSetupCompleted((current) => ({ ...current, repeat: true }));
-      const n = reply.created?.length ?? count;
-      showStatus(`Repeated ${arrayDirection} ×${count} · ${n} selected`);
+      const n = reply.created?.length ?? columns * rows;
+      setSelectedIds(reply.created ?? selectedIds);
+      showStatus(`Arrayed ${columns} × ${rows} · ${n} selected`);
     }
-  }, [selectedIds, selection, arrayCountDraft, arrayDirection, applied, notify, showStatus]);
+  }, [
+    selectedIds,
+    selection,
+    arrayColsDraft,
+    arrayRowsDraft,
+    arrayGapXDraft,
+    arrayGapYDraft,
+    arrayDirection,
+    unitSystem,
+    applied,
+    notify,
+    showStatus,
+  ]);
+
+  const applyWallSetback = useCallback(async () => {
+    if (!selectedIds.length || !doc?.editable) {
+      notify('Select items to space from a wall');
+      return;
+    }
+    const distance = parseLength(wallSetbackDraft, unitSystem);
+    if (!(distance != null && distance >= 0)) {
+      notify(unitSystem === 'metric' ? 'Enter a distance (for example 0.6m)' : "Enter a distance (for example 2')");
+      return;
+    }
+    const reply = (await api.setbackFromWall(selectedIds, distance, {
+      mode: wallSetbackMode,
+      faceWall: wallSetbackFace && selectedIds.length === 1,
+    })) as { ok: boolean; reason?: string; doc?: Doc };
+    applied(reply);
+    if (reply.ok) {
+      showStatus(
+        wallSetbackMode === 'group'
+          ? `Moved group ${formatLength(distance, unitSystem)} from wall`
+          : `Set ${selectedIds.length} item${selectedIds.length === 1 ? '' : 's'} ${formatLength(distance, unitSystem)} from wall`,
+        3500,
+      );
+    }
+  }, [
+    selectedIds,
+    doc?.editable,
+    wallSetbackDraft,
+    wallSetbackMode,
+    wallSetbackFace,
+    unitSystem,
+    applied,
+    notify,
+    showStatus,
+  ]);
 
   const reorderSelection = useCallback(
     async (to: 'bring-to-front' | 'send-to-back') => {
@@ -2544,14 +2972,69 @@ export function App() {
     [selectedIds, applied],
   );
 
-  const rotateByDraft = useCallback(() => {
-    const degrees = Number(rotationDraft);
-    if (!Number.isFinite(degrees) || degrees === 0 || Math.abs(degrees) > 3600) {
-      notify('Enter a rotation between −3600° and 3600°, excluding zero.');
-      return;
-    }
-    void rotateSelection(degrees);
-  }, [rotationDraft, rotateSelection, notify]);
+  const rotateEachSelection = useCallback(
+    async (degrees: number) => {
+      if (!selectedIds.length) return;
+      const reply = (await api.batch('rotate-each', selectedIds, degrees)) as {
+        ok: boolean;
+        reason?: string;
+        doc?: Doc;
+      };
+      applied(reply);
+      if (reply.ok) {
+        showStatus(
+          `Rotated ${selectedIds.length.toLocaleString()} piece${selectedIds.length === 1 ? '' : 's'} in place by ${degrees}°`,
+          2800,
+        );
+      }
+    },
+    [selectedIds, applied, showStatus],
+  );
+
+  const orientSelection = useCallback(
+    async (degrees: number) => {
+      if (!selectedIds.length) return;
+      const reply = (await api.batch('orient', selectedIds, degrees)) as {
+        ok: boolean;
+        reason?: string;
+        doc?: Doc;
+      };
+      applied(reply);
+      if (reply.ok) {
+        showStatus(
+          `Set facing of ${selectedIds.length.toLocaleString()} piece${selectedIds.length === 1 ? '' : 's'} to ${degrees}°`,
+          2800,
+        );
+      }
+    },
+    [selectedIds, applied, showStatus],
+  );
+
+  const rotateByDraft = useCallback(
+    (raw?: number) => {
+      const degrees = Number(raw ?? rotationDraft);
+      if (!Number.isFinite(degrees) || Math.abs(degrees) > 3600) {
+        notify('Enter a rotation between −3600° and 3600°.');
+        return;
+      }
+      if (degrees === 0) return;
+      void rotateSelection(degrees);
+    },
+    [rotationDraft, rotateSelection, notify],
+  );
+
+  const rotateEachByDraft = useCallback(
+    (raw?: number) => {
+      const degrees = Number(raw ?? facingDraft);
+      if (!Number.isFinite(degrees) || Math.abs(degrees) > 3600) {
+        notify('Enter a rotation between −3600° and 3600°.');
+        return;
+      }
+      if (degrees === 0) return;
+      void rotateEachSelection(degrees);
+    },
+    [facingDraft, rotateEachSelection, notify],
+  );
 
   const flipSelection = useCallback(
     async (axis: 'horizontal' | 'vertical') => {
@@ -2645,13 +3128,35 @@ export function App() {
   );
 
   useEffect(() => {
+    if (!doc || !selectedIds.length) {
+      setStackSet(null);
+      return;
+    }
+    // Huge multi-selects are almost never a digital stack — skip the IPC.
+    if (selectedIds.length > 24) {
+      setStackSet(null);
+      return;
+    }
+    let live = true;
+    void api.linkedSet(selectedIds).then((rows) => {
+      if (!live) return;
+      setStackSet(rows.length >= 2 ? rows : null);
+    });
+    return () => {
+      live = false;
+    };
+  }, [doc, doc?.revision, selectedIds]);
+
+  /** True while Transform scrub labels are dragging — don't clobber drafts from selectionInfo. */
+  const transformScrubbingRef = useRef(false);
+  /** True while a Properties text/number field is focused — keep mid-edit drafts. */
+  const propertiesEditingRef = useRef(false);
+
+  useEffect(() => {
     if (selectedId == null) {
       setSelection(null);
       return;
     }
-    // Clear immediately so size/label commits cannot hit the previous node
-    // while selectionInfo is still in flight.
-    setSelection(null);
     let live = true;
     const wanted = selectedId;
     api
@@ -2659,6 +3164,9 @@ export function App() {
       .then((info) => {
         if (!live || wanted !== selectedId) return;
         setSelection(info as Selection | null);
+        // While scrubbing Transform fields or typing in Properties, keep live drafts.
+        // selection still updates so the canvas can reflect commits.
+        if (transformScrubbingRef.current || propertiesEditingRef.current) return;
         // Typography changes refresh the document while the inline editor may
         // still hold uncommitted wording. Never replace that live draft with
         // the last saved text just because Bold/Size/Color was clicked.
@@ -2679,6 +3187,37 @@ export function App() {
               }
             : { x: '', y: '' },
         );
+        setAngleAbsoluteDraft(
+          info?.angleDegrees != null && Number.isFinite(info.angleDegrees)
+            ? String(info.angleDegrees)
+            : '',
+        );
+        if (info && /shape/i.test(info.cls) && info.name) {
+          void api.selectionElevation(info.nodeId).then((elev) => {
+            if (
+              !live ||
+              wanted !== selectedId ||
+              transformScrubbingRef.current ||
+              propertiesEditingRef.current
+            ) {
+              return;
+            }
+            if (!elev) {
+              setElevationKey(null);
+              setElevationDraft('');
+              return;
+            }
+            setElevationKey(elev.key);
+            setElevationDraft(
+              elev.elevation != null && Number.isFinite(elev.elevation) && elev.elevation > 0
+                ? formatLength(elev.elevation, unitSystem)
+                : '',
+            );
+          });
+        } else {
+          setElevationKey(null);
+          setElevationDraft('');
+        }
         if (info?.color != null) setColorDraft(colorRefToHex(info.color));
         if (info?.textStyle) {
           setTextStyleDraft(info.textStyle);
@@ -2722,22 +3261,97 @@ export function App() {
     }
   }, [selectedIds, textEditingId]);
 
+  /** Keep draft refs current so scrub commits see the latest typed/scrubbed values. */
+  const positionDraftRef = useRef(positionDraft);
+  positionDraftRef.current = positionDraft;
+  const sizeDraftRef = useRef(sizeDraft);
+  sizeDraftRef.current = sizeDraft;
+  const angleAbsoluteDraftRef = useRef(angleAbsoluteDraft);
+  angleAbsoluteDraftRef.current = angleAbsoluteDraft;
+  const elevationDraftRef = useRef(elevationDraft);
+  elevationDraftRef.current = elevationDraft;
+
+  const scrubCommitRaf = useRef(0);
+  const scrubMovePending = useRef({ dx: 0, dy: 0 });
+  const scrubRotatePending = useRef(0);
+  const queueScrubCommit = useCallback((commit: () => void) => {
+    if (scrubCommitRaf.current) cancelAnimationFrame(scrubCommitRaf.current);
+    scrubCommitRaf.current = requestAnimationFrame(() => {
+      scrubCommitRaf.current = 0;
+      commit();
+    });
+  }, []);
+
+  const beginTransformScrub = useCallback(() => {
+    transformScrubbingRef.current = true;
+  }, []);
+
+  const endTransformScrub = useCallback((commit?: () => void) => {
+    transformScrubbingRef.current = false;
+    commit?.();
+  }, []);
+
+  const flushScrubMove = useCallback(() => {
+    const { dx, dy } = scrubMovePending.current;
+    if (Math.abs(dx) < 0.25 && Math.abs(dy) < 0.25) return;
+    scrubMovePending.current = { dx: 0, dy: 0 };
+    void moveSelection(dx, dy);
+  }, [moveSelection]);
+
+  const flushScrubRotate = useCallback(() => {
+    const degrees = scrubRotatePending.current;
+    if (Math.abs(degrees) < 0.05) return;
+    scrubRotatePending.current = 0;
+    void rotateSelection(degrees);
+  }, [rotateSelection]);
+
+  const commitElevation = useCallback(async () => {
+    if (!elevationKey || !doc?.editable) return;
+    const draft = elevationDraftRef.current;
+    const parsed = draft.trim() ? parseLength(draft, unitSystem) : null;
+    if (draft.trim() && !(parsed != null && parsed >= 0)) {
+      notify('Enter a valid height');
+      return;
+    }
+    const reply = await api.setElevation(elevationKey, parsed);
+    if (!reply.ok) notify(reply.reason ?? 'Could not set height');
+    else {
+      if (reply.doc) setDoc(reply.doc as Doc);
+      showStatus(reply.note ?? 'Height saved', 3000);
+    }
+  }, [elevationKey, doc?.editable, unitSystem, notify, showStatus]);
+
   const commitSelectionSize = useCallback(async () => {
     if (!selection || selectedId == null || selection.nodeId !== selectedId || !doc?.editable) return;
-    const width = parseLength(sizeDraft.width, unitSystem);
-    const height = parseLength(sizeDraft.height, unitSystem);
+    const draft = sizeDraftRef.current;
+    let width = parseLength(draft.width, unitSystem);
+    let height = parseLength(draft.height, unitSystem);
     if (width == null || height == null || width <= 0 || height <= 0) {
       notify(unitSystem === 'metric' ? 'Enter a positive width and height (for example 1.2m).' : 'Enter a positive width and height (for example 4\' or 4\' 6").');
       return;
     }
+    if (sizeAspectLocked && selection.widthUnits > 0 && selection.heightUnits > 0) {
+      const ratio = selection.widthUnits / selection.heightUnits;
+      const widthChanged = Math.abs(width - selection.widthUnits) >= 1;
+      const heightChanged = Math.abs(height - selection.heightUnits) >= 1;
+      if (widthChanged && !heightChanged) height = width / ratio;
+      else if (heightChanged && !widthChanged) width = height * ratio;
+      else if (widthChanged && heightChanged) {
+        const dw = Math.abs(width / selection.widthUnits - 1);
+        const dh = Math.abs(height / selection.heightUnits - 1);
+        if (dw >= dh) height = width / ratio;
+        else width = height * ratio;
+      }
+    }
     if (Math.abs(width - selection.widthUnits) < 1 && Math.abs(height - selection.heightUnits) < 1) return;
     applied((await api.resize(selection.nodeId, width, height)) as { ok: boolean; reason?: string; doc?: Doc });
-  }, [selection, selectedId, doc?.editable, sizeDraft, unitSystem, notify, applied]);
+  }, [selection, selectedId, doc?.editable, sizeAspectLocked, unitSystem, notify, applied]);
 
   const commitSelectionPosition = useCallback(async () => {
     if (!selection || selectedId == null || selection.nodeId !== selectedId || !doc?.editable) return;
-    const x = parseLength(positionDraft.x, unitSystem);
-    const y = parseLength(positionDraft.y, unitSystem);
+    const draft = positionDraftRef.current;
+    const x = parseLength(draft.x, unitSystem);
+    const y = parseLength(draft.y, unitSystem);
     if (x == null || y == null) {
       notify(unitSystem === 'metric' ? 'Enter X and Y as lengths (for example 3.6m).' : 'Enter X and Y as lengths (for example 12\' 6").');
       return;
@@ -2746,7 +3360,25 @@ export function App() {
     const dy = y - selection.y;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
     applied((await api.batch('move', [selection.nodeId], dx, dy)) as { ok: boolean; reason?: string; doc?: Doc });
-  }, [selection, selectedId, doc?.editable, positionDraft, unitSystem, notify, applied]);
+  }, [selection, selectedId, doc?.editable, unitSystem, notify, applied]);
+
+  const commitSelectionAngle = useCallback(async () => {
+    if (!selection || selectedId == null || selection.nodeId !== selectedId || !doc?.editable) return;
+    if (selection.angleDegrees == null) {
+      notify('This item only supports rotate-by — use the angle slider below');
+      return;
+    }
+    const target = Number(angleAbsoluteDraftRef.current);
+    if (!Number.isFinite(target) || Math.abs(target) > 3600) {
+      notify('Enter a rotation between −3600° and 3600°');
+      return;
+    }
+    let delta = target - selection.angleDegrees;
+    while (delta > 180) delta -= 360;
+    while (delta < -180) delta += 360;
+    if (Math.abs(delta) < 0.05) return;
+    applied((await api.batch('rotate', [selection.nodeId], delta)) as { ok: boolean; reason?: string; doc?: Doc });
+  }, [selection, selectedId, doc?.editable, notify, applied]);
 
   const moveSelectionPoint = useCallback(
     async (pathNodeId: number, pointIndex: number, x: number, y: number): Promise<boolean> => {
@@ -2818,61 +3450,16 @@ export function App() {
   );
 
   useEffect(() => {
-    return api.onMenu((command, arg) => {
-      // Settings first and unconditionally: it is the one command that must
-      // work whatever view is showing, including with no plan open.
-      if (command === 'menu:settings') setSettingsOpen(true);
-      else if (command === 'menu:new') void openNewPlanDialog();
-      else if (command === 'menu:open') void openFile();
-      else if (command === 'menu:open-folder') void openFolder();
-      else if (command === 'menu:fit' && view === 'plan') setFitToken((t) => t + 1);
-      else if (command === 'menu:export-svg' && view === 'plan') void exportSvg();
-      else if (command === 'menu:export-dxf' && view === 'plan') void exportDxf();
-      else if (command === 'menu:select-all' && view === 'plan') selectAll();
-      else if (command === 'menu:print' && view === 'plan' && doc) setPrintOpen(true);
-      else if (command === 'menu:undo' && view === 'plan') void undo();
-      else if (command === 'menu:redo' && view === 'plan') void redo();
-      else if (command === 'menu:open-path' && arg) void openAnyPath(arg);
-      else if (command === 'menu:save' && view === 'gear') void saveGear(false);
-      else if (command === 'menu:save' && view === 'plan') void save(false);
-      else if (command === 'menu:save-as' && view === 'gear') void saveGear(true);
-      else if (command === 'menu:save-as' && view === 'plan') void save(true);
-      else if (command === 'menu:insert') {
-        setInsertGroup(null);
-        setInsertOpen(true);
-      } else if (command === 'menu:insert-leaf' && arg) armInsertLeaf(arg);
-      else if (command === 'menu:shape-wizard') setShapeWizardOpen(true);
-      else if (command === 'menu:build-stage') setBuildStageOpen(true);
-      else if (command === 'menu:edit-walls' && view === 'plan') toggleEditWalls();
-      else if (command === 'menu:group' && view === 'plan') void groupPlanSelection();
-      else if (command === 'menu:ungroup' && view === 'plan') void ungroupPlanSelection();
-    });
-  }, [
-    openFile,
-    openFolder,
-    exportSvg,
-    exportDxf,
-    openAnyPath,
-    save,
-    saveGear,
-    view,
-    doc,
-    undo,
-    redo,
-    selectAll,
-    armInsertLeaf,
-    openNewPlanDialog,
-    toggleEditWalls,
-    groupPlanSelection,
-    ungroupPlanSelection,
-  ]);
-
-  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (shortcutsOpen) {
           e.preventDefault();
           setShortcutsOpen(false);
+          return;
+        }
+        if (printOpen) {
+          e.preventDefault();
+          setPrintOpen(false);
           return;
         }
         if (newPlanOpen) {
@@ -2940,10 +3527,16 @@ export function App() {
       }
       const mod = e.metaKey || e.ctrlKey;
 
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen((open) => !open);
+        return;
+      }
+
       if (mod && e.key.toLowerCase() === 'b') {
         e.preventDefault();
-        if (e.shiftKey) setInspectorOpen((open) => !open);
-        else setRailOpen((open) => !open);
+        if (e.shiftKey) setShellMode(shellMode === 'inspect' ? 'none' : 'inspect');
+        else setShellMode(shellMode === 'browse' || shellMode === 'place' ? 'none' : 'browse');
         return;
       }
       // Editing shortcuts apply only to the visible Plan workspace. This avoids
@@ -2957,6 +3550,11 @@ export function App() {
       if (mod && !e.shiftKey && e.key.toLowerCase() === 'd' && doc?.editable && selectedIds.length) {
         e.preventDefault();
         void duplicateSelection();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === 'g' && doc?.editable) {
+        e.preventDefault();
+        void (e.shiftKey ? ungroupPlanSelection() : groupPlanSelection());
         return;
       }
       if (e.key === 'Enter' && toolRef.current.tool.kind === 'path') {
@@ -2988,6 +3586,10 @@ export function App() {
       }
       if (e.key.toLowerCase() === 'g' && !mod && doc) {
         e.preventDefault();
+        if (selectedIds.length >= 2 && doc.editable) {
+          const groupChord = api.platform === 'darwin' ? '⌘G' : 'Ctrl+G';
+          showStatus(`${groupChord} groups · G toggles the grid`, 3500);
+        }
         void toggleGrid();
         return;
       }
@@ -3019,8 +3621,17 @@ export function App() {
         return;
       }
       if (e.key === 'Escape') {
-        if (printOpen) {
-          setPrintOpen(false);
+        if (bgCalibratePoints) {
+          e.preventDefault();
+          setBgCalibratePoints(null);
+          showStatus('Two-point scale cancelled', 2500);
+          return;
+        }
+        if (placeOnParentId != null && toolRef.current.tool.kind !== 'stamp') {
+          e.preventDefault();
+          setPlaceOnParentId(null);
+          setPlaceOnParentName(null);
+          showStatus('Place on cleared', 2000);
           return;
         }
         if (toolRef.current.tool.kind === 'stamp') {
@@ -3047,7 +3658,11 @@ export function App() {
       }
 
       const wallStep = e.shiftKey ? 1 : UNITS_PER_INCH;
-      const step = e.shiftKey ? fineNudgeStep : nudgeStep;
+      const step = e.altKey
+        ? UNITS_PER_INCH * 12
+        : e.shiftKey
+          ? fineNudgeStep
+          : nudgeStep;
       const delta: Record<string, [number, number]> = {
         ArrowLeft: [-step, 0],
         ArrowRight: [step, 0],
@@ -3153,9 +3768,13 @@ export function App() {
     deleteSelection,
     moveSelection,
     rotateSelection,
+    groupPlanSelection,
+    ungroupPlanSelection,
     printOpen,
     newPlanOpen,
     createDialogOpen,
+    shellMode,
+    setShellMode,
     newItemEditor,
     closeNewItemEditor,
     settingsOpen,
@@ -3188,6 +3807,9 @@ export function App() {
     wallEditGesture,
     showStatus,
     unitSystem,
+    selectedIds.length,
+    bgCalibratePoints,
+    placeOnParentId,
   ]);
 
   useEffect(() => {
@@ -3578,49 +4200,109 @@ export function App() {
   );
 
   const applyShowKit = useCallback(
-    async (kitId: string) => {
-      if (!doc?.editable) {
+    async (
+      kitId: string,
+      options?: {
+        quiet?: boolean;
+        assumeOpen?: boolean;
+        includeStage?: boolean;
+        includeSeating?: boolean;
+        includeGear?: boolean;
+      },
+    ) => {
+      if (!options?.assumeOpen && !doc?.editable) {
         notify('Open an editable plan to apply a kit');
-        return;
+        return false;
       }
-      const chairs = furnitureCounts.chairs;
+      const includeSeating = options?.includeSeating !== false;
+      const includeGear = options?.includeGear !== false;
+      const includeStage = options?.includeStage !== false;
+      const chairs = options?.assumeOpen && options?.quiet ? 0 : furnitureCounts.chairs;
       let replaceExistingSeating = false;
-      if (chairs > 0) {
+      let replaceExistingGear = false;
+      if (chairs > 0 && includeSeating && !options?.quiet) {
         const ok = await api.confirm({
           title: 'Apply show kit?',
           message: `This plan already has ${chairs.toLocaleString()} chairs.`,
           detail:
-            'Applying a kit adds the recipe layout. Prefer a blank or lightly filled plan. Continue only if you intend to stack or rebuild on top.',
-          confirmLabel: 'Apply kit',
+            'Existing seating will be cleared and replaced with the kit layout, fitted to this room.',
+          confirmLabel: 'Replace seating',
           danger: true,
         });
-        if (ok !== true) return;
+        if (ok !== true) return false;
         replaceExistingSeating = true;
+      } else if (chairs > 0 && includeSeating) {
+        replaceExistingSeating = true;
+      }
+      if (includeGear && !options?.quiet && furnitureCounts.chairs >= 0) {
+        // Full kit apply also refreshes gear when replacing seating.
+        replaceExistingGear = includeSeating && replaceExistingSeating;
+      } else if (includeGear && options?.quiet) {
+        replaceExistingGear = replaceExistingSeating;
       }
       setKitsBusy(true);
       try {
-        const reply = await api.applyLayoutRecipe(kitId, { replaceExistingSeating });
+        const reply = await api.applyLayoutRecipe(kitId, {
+          replaceExistingSeating,
+          replaceExistingGear,
+          fitToExistingRoom: true,
+          includeStage,
+          includeSeating,
+          includeGear,
+          includeAnnotations: includeSeating || includeGear,
+        });
         if (reply.ok && reply.doc) {
           setDoc(reply.doc as Doc);
           setSetupCompleted((current) => ({
             ...current,
-            stage: true,
-            seating: true,
-            insert: true,
+            stage: includeStage ? true : current.stage,
+            seating: includeSeating ? true : current.seating,
+            insert: includeGear || includeSeating ? true : current.insert,
           }));
           showStatus(reply.text ?? 'Show kit applied', 5000);
           setFitToken((t) => t + 1);
-        } else {
-          notify(reply.reason ?? 'Could not apply show kit');
+          return true;
         }
+        notify(reply.reason ?? 'Could not apply show kit');
+        return false;
       } catch (err) {
         notify(err instanceof Error ? err.message : String(err));
+        return false;
       } finally {
         setKitsBusy(false);
       }
     },
     [doc, furnitureCounts.chairs, notify, showStatus],
   );
+
+  useEffect(() => {
+    if (!doc) {
+      setAllocationSummary(null);
+      return;
+    }
+    let cancelled = false;
+    const owned = (catalogInventory?.items ?? [])
+      .filter((item) => typeof item.quantityOwned === 'number')
+      .map((item) => ({ name: item.name, quantity: item.quantityOwned as number }));
+    void api.allocation(owned).then((result) => {
+      if (cancelled || !result) return;
+      const ok = Math.max(
+        0,
+        result.summary.lines -
+          result.summary.shortLines -
+          result.summary.untrackedLines -
+          result.summary.conceptualLines,
+      );
+      setAllocationSummary({
+        short: result.summary.shortLines,
+        ok,
+        untracked: result.summary.untrackedLines,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, catalogInventory?.items, furnitureCounts.chairs, furnitureCounts.tables]);
 
   const [seatingClearances, setSeatingClearances] = useState<{
     front: number;
@@ -3633,6 +4315,8 @@ export function App() {
     if (!doc) {
       setSeatingClearances(null);
       setPlanBackground(null);
+      setRoomSizeText(null);
+      setRoomCeilingHeight(0);
       return;
     }
     if (view !== 'plan') {
@@ -3644,6 +4328,8 @@ export function App() {
       if (cancelled) return;
       const c = model?.seatingStatus?.clearances;
       setPlanBackground(model?.background ?? null);
+      setRoomSizeText(model?.room?.sizeText ?? null);
+      setRoomCeilingHeight(model?.room?.ceilingHeight ?? 0);
       setSeatingClearances(
         c
           ? {
@@ -3656,10 +4342,17 @@ export function App() {
           : null,
       );
     });
+    if (!showSightlineMarkers) {
+      setSightlineMarkers([]);
+    } else {
+      void api.sightlineMarkers().then((markers) => {
+        if (!cancelled) setSightlineMarkers(Array.isArray(markers) ? markers : []);
+      });
+    }
     return () => {
       cancelled = true;
     };
-  }, [doc?.revision, doc?.path, view]);
+  }, [doc?.revision, doc?.path, view, showSightlineMarkers]);
   const singleIsAnnotation = !!selection && /dimension|text|label/i.test(selection.cls);
   const canTransformSelection = selectedIds.length > 1 || (!!selection && !singleIsAnnotation);
   const canResizeSelection =
@@ -3687,6 +4380,244 @@ export function App() {
     api.platform === 'darwin' ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
   const welcomeMode = view === 'plan' && !doc;
 
+  const commandContext = useMemo<CommandContext>(
+    () => ({
+      hasDoc: !!doc,
+      editable: !!doc?.editable,
+      workspace: view,
+      welcome: welcomeMode,
+      shellMode,
+    }),
+    [doc, view, welcomeMode, shellMode],
+  );
+
+  const runCommand = useCallback(
+    (id: CommandId) => {
+      if (id !== 'palette.open') setLastCommandId(id);
+      switch (id) {
+        case 'palette.open':
+          setCommandPaletteOpen(true);
+          return;
+        case 'plan.new':
+          void openNewPlanDialog();
+          return;
+        case 'plan.open':
+          void openFile();
+          return;
+        case 'plan.open-folder':
+          void openFolder();
+          return;
+        case 'plan.save':
+          if (view === 'gear') void saveGear(false);
+          else void save(false);
+          return;
+        case 'plan.save-as':
+          if (view === 'gear') void saveGear(true);
+          else void save(true);
+          return;
+        case 'plan.print':
+          setPrintOpen(true);
+          return;
+        case 'plan.export-dxf':
+          if (view === 'plan') void exportDxf();
+          return;
+        case 'plan.export-svg':
+          if (view === 'plan') void exportSvg();
+          return;
+        case 'workspace.plan':
+          setPlanFolderWorkspaceOpen(false);
+          setView('plan');
+          return;
+        case 'workspace.gear':
+          setPlanFolderWorkspaceOpen(false);
+          setView('gear');
+          return;
+        case 'workspace.inventory':
+          setPlanFolderWorkspaceOpen(false);
+          setView('inventory');
+          return;
+        case 'mode.browse':
+          setShellMode('browse');
+          return;
+        case 'mode.place':
+          setShellMode('place');
+          return;
+        case 'mode.inspect':
+          setShellMode('inspect');
+          return;
+        case 'mode.setup':
+          setShellMode('setup');
+          return;
+        case 'mode.draw':
+          setShellMode('draw');
+          return;
+        case 'mode.none':
+          setShellMode('none');
+          return;
+        case 'view.fit':
+          setFitToken((t) => t + 1);
+          return;
+        case 'view.grid':
+          void toggleGrid();
+          return;
+        case 'view.stack': {
+          const next = !showStackPeek;
+          setShowStackPeek(next);
+          void api.settingsPatch({ drawing: { showStackPeek: next } }).catch(() => undefined);
+          return;
+        }
+        case 'view.sight': {
+          const next = !showSightlineMarkers;
+          setShowSightlineMarkers(next);
+          void api.settingsPatch({ drawing: { showSightlineMarkers: next } }).catch(() => undefined);
+          return;
+        }
+        case 'tool.select':
+          dispatchTool({ type: 'pick', choice: SELECT });
+          return;
+        case 'tool.hand':
+          dispatchTool({ type: 'toggle', choice: HAND });
+          return;
+        case 'tool.text':
+          activateTextTool();
+          return;
+        case 'tool.measure':
+          toggleMeasure();
+          return;
+        case 'tool.dimension':
+          toggleDimension();
+          return;
+        case 'room.edit':
+          openRoomEditWorkspace('room');
+          return;
+        case 'room.walls':
+          toggleEditWalls();
+          return;
+        case 'room.outline':
+          dispatchTool({ type: 'pick', choice: roomOutlineChoice });
+          return;
+        case 'seating.planner':
+          setSeatingOpen(true);
+          setCreateDialogOpen(false);
+          setCalculatorOpen(false);
+          setToolDockOpen(false);
+          return;
+        case 'stage.build':
+          setBuildStageOpen(true);
+          return;
+        case 'insert.open':
+          setShellMode('place');
+          setInsertGroup(null);
+          setInsertOpen(true);
+          return;
+        case 'shape.wizard':
+          setShapeWizardOpen(true);
+          return;
+        case 'calc.open':
+          setCalculatorOpen(true);
+          setSeatingOpen(false);
+          return;
+        case 'settings.open':
+          setSettingsOpen(true);
+          return;
+        case 'help.shortcuts':
+          setShortcutsOpen(true);
+          return;
+        case 'edit.undo':
+          void undo();
+          return;
+        case 'edit.redo':
+          void redo();
+          return;
+        case 'edit.select-all':
+          selectAll();
+          return;
+        case 'edit.duplicate':
+          void duplicateSelection();
+          return;
+        case 'edit.delete':
+          void deleteSelection();
+          return;
+        case 'edit.group':
+          void groupPlanSelection();
+          return;
+        case 'edit.ungroup':
+          void ungroupPlanSelection();
+          return;
+        default:
+          return;
+      }
+    },
+    [
+      openFile,
+      openFolder,
+      openNewPlanDialog,
+      save,
+      saveGear,
+      exportDxf,
+      exportSvg,
+      view,
+      setShellMode,
+      toggleGrid,
+      showStackPeek,
+      showSightlineMarkers,
+      dispatchTool,
+      activateTextTool,
+      toggleMeasure,
+      toggleDimension,
+      openRoomEditWorkspace,
+      toggleEditWalls,
+      selectAll,
+      undo,
+      redo,
+      duplicateSelection,
+      deleteSelection,
+      groupPlanSelection,
+      ungroupPlanSelection,
+    ],
+  );
+
+  const commandCatalog = useMemo<RunnableCommand[]>(
+    () =>
+      COMMAND_CATALOG.map((def) => ({
+        ...def,
+        run: () => runCommand(def.id),
+      })),
+    [runCommand],
+  );
+
+  useEffect(() => {
+    return api.onCommandRun(({ id, requestId }) => {
+      if (!isCommandId(id)) {
+        api.replyCommandRun({ requestId, ok: false, reason: `Unknown command: ${id}` });
+        return;
+      }
+      try {
+        runCommand(id);
+        api.replyCommandRun({ requestId, ok: true, id });
+      } catch (error) {
+        api.replyCommandRun({
+          requestId,
+          ok: false,
+          id,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }, [runCommand]);
+
+  useEffect(() => {
+    return api.onMenu((command, arg) => {
+      const mapped = MENU_TO_COMMAND[command];
+      if (mapped) {
+        runCommand(mapped);
+        return;
+      }
+      if (command === 'menu:open-path' && arg) void openAnyPath(arg);
+      else if (command === 'menu:insert-leaf' && arg) armInsertLeaf(arg);
+    });
+  }, [runCommand, openAnyPath, armInsertLeaf]);
+
   return (
     <div
       className="app"
@@ -3694,7 +4625,18 @@ export function App() {
       data-theme={darkMode ? 'dark' : 'light'}
       data-density={density}
       aria-busy={busy}
+      onPointerOver={handleAppPointerOver}
+      onPointerOut={handleAppPointerOut}
+      onFocusCapture={handleAppFocus}
+      onBlurCapture={handleAppBlur}
     >
+      <CommandPalette
+        open={commandPaletteOpen}
+        catalog={commandCatalog}
+        context={commandContext}
+        onClose={() => setCommandPaletteOpen(false)}
+        platform={api.platform}
+      />
       {newPlanOpen && (
         <NewPlanDialog
           units={unitSystem}
@@ -3708,7 +4650,15 @@ export function App() {
             setCustomRoomPrefs(options.customRoom ?? null);
             setStartNewRoomOutline(options.startRoomOutline);
             setAwaitingRoomOutline(options.startRoomOutline);
-            if (options.startRoomOutline) {
+            if (options.openBackground) {
+              setCreateDialogOpen(false);
+              setInspectorOpen(false);
+              setBackgroundOpen(true);
+              showStatus(
+                'Add your site plan or CAD PDF, set a known width, then click corners to trace the room',
+                7200,
+              );
+            } else if (options.startRoomOutline) {
               // Keep the canvas clear for tracing — open Show setup once the room exists.
               setCreateDialogOpen(false);
               setInspectorOpen(false);
@@ -3718,7 +4668,12 @@ export function App() {
               );
             } else {
               openCreateDialog();
-              showStatus('Room ready — next: build stage', 5200);
+              if (options.applyKitId) {
+                showStatus('Room ready — applying matching kit…', 4200);
+                void applyShowKit(options.applyKitId, { quiet: true, assumeOpen: true });
+              } else {
+                showStatus('Room ready — apply a kit or build the layout', 5200);
+              }
             }
             setFitToken((t) => t + 1);
             refreshRecent();
@@ -3863,8 +4818,7 @@ export function App() {
                 drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
                 onDrawRoomOutline={() => {
                   setSeatingOpen(false);
-                  setInspectorOpen(true);
-                  setInspectorTab('room');
+                  setShellMode('setup');
                   const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
                   if (refusal) notify(refusal);
                   else setSelectedIds([]);
@@ -3885,6 +4839,13 @@ export function App() {
                 onSelect={(ids) => {
                   setSelectedIds(ids);
                   setSelection(null);
+                }}
+                showSightlineMarkers={showSightlineMarkers}
+                onShowSightlineMarkersChange={(next) => {
+                  setShowSightlineMarkers(next);
+                  void api
+                    .settingsPatch({ drawing: { showSightlineMarkers: next } })
+                    .catch(() => undefined);
                 }}
               />
             </div>
@@ -3931,6 +4892,19 @@ export function App() {
           onCommit={(background, message) => void commitPlanBackground(background, message)}
           onError={notify}
           onClose={() => setBackgroundOpen(false)}
+          onStartTwoPointScale={() => {
+            if (!planBackground) {
+              notify('Add a site plan first');
+              return;
+            }
+            if (planBackground.locked) {
+              notify('Unlock the background placement first');
+              return;
+            }
+            setBackgroundOpen(false);
+            setBgCalibratePoints([]);
+            showStatus('Click two ends of a known wall on the site plan', 6000);
+          }}
         />
       )}
 
@@ -3960,194 +4934,23 @@ export function App() {
               Keyboard shortcuts
             </div>
             <div className="shortcuts-body">
-              <section>
-                <h3>File</h3>
-                <dl>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('N')}</kbd>
-                    </dt>
-                    <dd>New plan</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('O')}</kbd>
-                    </dt>
-                    <dd>Open plan</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('O', true)}</kbd>
-                    </dt>
-                    <dd>Open folder</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('S')}</kbd>
-                    </dt>
-                    <dd>Save</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('P')}</kbd>
-                    </dt>
-                    <dd>Print to PDF</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('E')}</kbd>
-                    </dt>
-                    <dd>Export SVG</dd>
-                  </div>
-                </dl>
-              </section>
-              <section>
-                <h3>Edit</h3>
-                <dl>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('Z')}</kbd>
-                    </dt>
-                    <dd>Undo</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('Z', true)}</kbd>
-                    </dt>
-                    <dd>Redo</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('D')}</kbd>
-                    </dt>
-                    <dd>Duplicate</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('C')}</kbd>
-                    </dt>
-                    <dd>Copy items between plan tabs</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('V')}</kbd>
-                    </dt>
-                    <dd>Paste copied plan items</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('G')}</kbd>
-                    </dt>
-                    <dd>Group selected items so they move together</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('G', true)}</kbd>
-                    </dt>
-                    <dd>Ungroup</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('A')}</kbd>
-                    </dt>
-                    <dd>Select all</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>Delete</kbd>
-                    </dt>
-                    <dd>Delete selection</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>[</kbd> <kbd>]</kbd>
-                    </dt>
-                    <dd>Rotate 90°</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>Arrow keys</kbd>
-                    </dt>
-                    <dd>Nudge selection</dd>
-                  </div>
-                </dl>
-              </section>
-              <section>
-                <h3>Drawing</h3>
-                <dl>
-                  <div>
-                    <dt>
-                      <kbd>S</kbd>
-                    </dt>
-                    <dd>Toggle snap</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>G</kbd>
-                    </dt>
-                    <dd>Toggle grid</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>M</kbd>
-                    </dt>
-                    <dd>Measure</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>D</kbd>
-                    </dt>
-                    <dd>Dimension</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>T</kbd>
-                    </dt>
-                    <dd>Place label</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>W</kbd>
-                    </dt>
-                    <dd>Edit walls</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>0</kbd>
-                    </dt>
-                    <dd>Zoom to fit</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>Esc</kbd>
-                    </dt>
-                    <dd>Cancel tool / clear</dd>
-                  </div>
-                </dl>
-              </section>
-              <section>
-                <h3>Layout</h3>
-                <dl>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('B')}</kbd>
-                    </dt>
-                    <dd>Toggle browser</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>{shortcut('B', true)}</kbd>
-                    </dt>
-                    <dd>Toggle inspector</dd>
-                  </div>
-                  <div>
-                    <dt>
-                      <kbd>?</kbd>
-                    </dt>
-                    <dd>This cheat sheet</dd>
-                  </div>
-                </dl>
-              </section>
+              {shortcutCheatSheet(api.platform).map((group) => (
+                <section key={group.section}>
+                  <h3>{group.section}</h3>
+                  <dl>
+                    {group.rows.map((row) => (
+                      <div key={`${group.section}-${row.title}-${row.keys.join('+')}`}>
+                        <dt>
+                          {row.keys.map((key) => (
+                            <kbd key={key}>{key}</kbd>
+                          ))}
+                        </dt>
+                        <dd>{row.title}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              ))}
             </div>
             <div className="sheet-actions">
               <button type="button" onClick={() => setShortcutsOpen(false)}>
@@ -4159,10 +4962,6 @@ export function App() {
       )}
       <header
         className={`toolbar${view === 'plan' ? ' is-plan-toolbar' : ''}${welcomeMode ? ' is-welcome-toolbar' : ''}${view === 'plan' && toolDockOpen ? ' is-tool-dock-open' : ''}`}
-        onPointerOver={handleToolbarPointerOver}
-        onPointerOut={handleToolbarPointerOut}
-        onFocusCapture={handleToolbarFocus}
-        onBlurCapture={handleToolbarBlur}
       >
         <div className="ribbon-titlebar">
           <div className="brand">
@@ -4203,6 +5002,15 @@ export function App() {
           </div>
 
           <div className="ribbon-title-actions">
+            <button
+              type="button"
+              className="icon-btn ribbon-action command-palette-trigger"
+              data-tooltip={`Command palette (${shortcut('K')})`}
+              aria-label="Open command palette"
+              onClick={() => setCommandPaletteOpen(true)}
+            >
+              <span className="command-palette-trigger-label">{shortcut('K')}</span>
+            </button>
             {view === 'gear' && gear && (
               <div className="doc-title">
                 {gear.dirty && <span className="dot" title="Unsaved changes" />}
@@ -4243,9 +5051,7 @@ export function App() {
           <div className="ribbon-create">
             <button
               ref={createMenuButtonRef}
-              className={`icon-btn ribbon-action${
-                createMenuOpen || createDialogOpen ? ' is-on' : ''
-              }`}
+              className={`icon-btn ribbon-action${createMenuOpen ? ' is-on' : ''}`}
               onClick={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect();
                 const nextOpen = !createMenuOpen;
@@ -4258,13 +5064,13 @@ export function App() {
                 setCreateMenuOpen(nextOpen);
               }}
               disabled={busy}
-              data-tooltip="Create a plan, shape, item, or open show setup"
-              aria-label="Create"
+              data-tooltip="New plan, shape, or inventory item"
+              aria-label="New"
               aria-haspopup="menu"
               aria-expanded={createMenuOpen}
             >
               <IconPlus />
-              <span>Create</span>
+              <span>New</span>
             </button>
             {createMenuOpen &&
               createMenuPos &&
@@ -4273,7 +5079,7 @@ export function App() {
                   ref={createMenuRef}
                   className="ribbon-create-menu"
                   role="menu"
-                  aria-label="Create"
+                  aria-label="New"
                   style={{ top: createMenuPos.top, left: createMenuPos.left }}
                 >
                   <button
@@ -4286,18 +5092,6 @@ export function App() {
                   >
                     <span>New plan…</span>
                     <kbd>{shortcut('N')}</kbd>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={!doc}
-                    onClick={() => {
-                      setCreateMenuOpen(false);
-                      toggleCreatePanel();
-                    }}
-                  >
-                    <span>Show setup</span>
-                    <small>Text, seating, stage</small>
                   </button>
                   <button
                     type="button"
@@ -4337,45 +5131,32 @@ export function App() {
             aria-label="Open plan folder"
           >
             <IconFolder />
-            <span>Browse</span>
+            <span>Folder</span>
           </button>
         </div>
 
-        <div className="seg ribbon-group panel-toggles" aria-label="Panels">
-          <button
-            className={`icon-btn ribbon-action${toolDockOpen ? ' is-on' : ''}`}
-            onClick={() => setToolDockOpen((open) => !open)}
-            disabled={view !== 'plan'}
-            data-tooltip={`${toolDockOpen ? 'Hide' : 'Show'} plan tools`}
-            aria-pressed={toolDockOpen}
-            aria-label={`${toolDockOpen ? 'Hide' : 'Show'} plan tools`}
-          >
-            <IconPointer />
-            <span>Tools</span>
-          </button>
-          <button
-            className={`icon-btn ribbon-action${railOpen ? ' is-on' : ''}`}
-            onClick={() => setRailOpen((open) => !open)}
-            data-tooltip={`${railOpen ? 'Hide' : 'Show'} browser (${shortcut('B')})`}
-            aria-pressed={railOpen}
-            aria-label={`${railOpen ? 'Hide' : 'Show'} browser`}
-          >
-            <IconSidebarLeft />
-            <span>Browser</span>
-          </button>
-          <button
-            className={`icon-btn ribbon-action${inspectorOpen ? ' is-on' : ''}`}
-            onClick={() => setInspectorOpen((open) => !open)}
-            data-tooltip={`${inspectorOpen ? 'Hide' : 'Show'} inspector (${shortcut('B', true)})`}
-            aria-pressed={inspectorOpen}
-            aria-label={`${inspectorOpen ? 'Hide' : 'Show'} inspector`}
-          >
-            <IconSidebarRight />
-            <span>Inspector</span>
-          </button>
+        <div className="seg ribbon-group shell-mode-strip" role="toolbar" aria-label="Workspace modes">
+          {SHELL_MODES.map((mode) => {
+            const on = shellMode === mode.id;
+            const disabled = view !== 'plan' || !doc;
+            return (
+              <button
+                key={mode.id}
+                type="button"
+                className={`icon-btn ribbon-action${on ? ' is-on' : ''}`}
+                disabled={disabled}
+                aria-pressed={on}
+                data-tooltip={`${mode.label} — ${mode.hint}`}
+                aria-label={`${on ? 'Hide' : 'Show'} ${mode.label} mode`}
+                onClick={() => runCommand(on ? 'mode.none' : mode.commandId)}
+              >
+                <span>{mode.label}</span>
+              </button>
+            );
+          })}
         </div>
 
-        {view === 'plan' && (
+            {view === 'plan' && (
           <>
             <div className="seg ribbon-group history-controls" aria-label="Plan history">
               <button
@@ -4425,23 +5206,77 @@ export function App() {
                 className={`icon-btn ribbon-action${planBackground?.visible ? ' is-on' : ''}`}
                 onClick={() => setBackgroundOpen(true)}
                 disabled={!doc}
-                data-tooltip={planBackground ? 'Open Background Studio — align and style the image underlay' : 'Open Background Studio — upload an image under the plot'}
-                aria-label={planBackground ? 'Open Background Studio' : 'Upload and configure a background image'}
+                data-tooltip={planBackground ? 'Open Background Studio — align and scale the site plan' : 'Open Background Studio — site plan, CAD PDF, or image underlay'}
+                aria-label={planBackground ? 'Open Background Studio' : 'Upload a site plan or CAD drawing'}
                 aria-pressed={!!planBackground?.visible}
               >
                 <IconFile />
-                <span>Background</span>
+                <span>Site</span>
               </button>
               <button
                 className={`icon-btn ribbon-action${showGrid ? ' is-on' : ''}`}
                 onClick={() => void toggleGrid()}
                 disabled={!doc}
-                data-tooltip={showGrid ? 'Hide grid (G)' : 'Show grid (G)'}
+                data-tooltip={
+                  showGrid
+                    ? `Hide grid (G) · ${shortcut('G')} groups`
+                    : `Show grid (G) · ${shortcut('G')} groups`
+                }
                 aria-label={showGrid ? 'Hide grid' : 'Show grid'}
                 aria-pressed={showGrid}
               >
                 <IconGrid />
                 <span>Grid</span>
+              </button>
+              <button
+                className={`icon-btn ribbon-action${showStackPeek ? ' is-on' : ''}`}
+                onClick={() => {
+                  const next = !showStackPeek;
+                  setShowStackPeek(next);
+                  void api
+                    .settingsPatch({ drawing: { showStackPeek: next } })
+                    .catch(() => undefined);
+                }}
+                disabled={!doc}
+                data-tooltip={
+                  showStackPeek
+                    ? 'Hide stack hover card and numbered markers'
+                    : 'Show stack hover card and numbered markers'
+                }
+                aria-label={
+                  showStackPeek
+                    ? 'Hide stack markers'
+                    : 'Show stack markers'
+                }
+                aria-pressed={showStackPeek}
+              >
+                <IconLayers />
+                <span>Stack</span>
+              </button>
+              <button
+                className={`icon-btn ribbon-action${showSightlineMarkers ? ' is-on' : ''}`}
+                onClick={() => {
+                  const next = !showSightlineMarkers;
+                  setShowSightlineMarkers(next);
+                  void api
+                    .settingsPatch({ drawing: { showSightlineMarkers: next } })
+                    .catch(() => undefined);
+                }}
+                disabled={!doc}
+                data-tooltip={
+                  showSightlineMarkers
+                    ? 'Hide A/V sightline grades on seats'
+                    : 'Show A/V sightline grades on seats'
+                }
+                aria-label={
+                  showSightlineMarkers
+                    ? 'Hide sightline grades'
+                    : 'Show sightline grades'
+                }
+                aria-pressed={showSightlineMarkers}
+              >
+                <IconEye />
+                <span>Sight</span>
               </button>
             </div>
 
@@ -4480,259 +5315,7 @@ export function App() {
               </select>
             </div>
 
-            {!(view === 'plan' && toolDockOpen) && (
-            <div className="seg ribbon-group event-layout-controls" aria-label="Event layout">
-              <button
-                className={`icon-btn ribbon-action${seatingOpen ? ' is-on' : ''}`}
-                onClick={() => {
-                  setSeatingOpen((open) => {
-                    const next = !open;
-                    if (next) {
-                      setRefineRoomOpen(false);
-                      setWallPickIndex(null);
-                      setCalculatorOpen(false);
-                    }
-                    return next;
-                  });
-                }}
-                disabled={!doc}
-                data-tooltip="Open the seating planner"
-                data-tool-id="seating"
-                aria-label="Open seating planner"
-                aria-pressed={seatingOpen}
-              >
-                <IconChair />
-                <span>Seating</span>
-              </button>
-              <button
-                className="icon-btn ribbon-action"
-                onClick={() => setBuildStageOpen(true)}
-                disabled={!doc?.editable}
-                data-tooltip="Build a stage from stock decks"
-                data-tool-id="stage"
-                aria-label="Build stage"
-              >
-                <IconPlus />
-                <span>Stage</span>
-              </button>
-              <button
-                className={`icon-btn ribbon-action${calculatorOpen ? ' is-on' : ''}`}
-                onClick={() =>
-                  setCalculatorOpen((open) => {
-                    const next = !open;
-                    if (next) {
-                      setRefineRoomOpen(false);
-                      setWallPickIndex(null);
-                    }
-                    return next;
-                  })
-                }
-                data-tooltip="Calculate room area, seating capacity, spacing, stages, and unit conversions"
-                data-tool-id="calculator"
-                aria-label="Open space calculator"
-                aria-pressed={calculatorOpen}
-              >
-                <IconCalculator />
-                <span>Calculate</span>
-              </button>
-            </div>
-            )}
-
-            {!(view === 'plan' && toolDockOpen) && (
-            <div className="seg ribbon-group plan-tool-controls" aria-label="Plan drawing tools">
-              <button
-                className={`tool-button add-text-tool${isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')) ? ' is-on' : ''}`}
-                onClick={activateTextTool}
-                disabled={!doc?.editable}
-                data-tooltip={
-                  doc?.editable
-                    ? 'Add text (T) — type the label, then click the plan to place it'
-                    : 'Open an editable plan to add text'
-                }
-                data-tool-id="add-text"
-                aria-label="Add text label"
-                aria-pressed={isPressed(tool, labelChoice(annotationDraft.trim() || 'Text'))}
-              >
-                <IconText />
-                <span>Add text</span>
-              </button>
-              <button
-                className={`tool-button${isPressed(tool, MEASURE) ? ' is-on' : ''}`}
-                onClick={toggleMeasure}
-                disabled={!doc}
-                data-tooltip="Measure a temporary distance (M)"
-                data-tool-id="measure"
-                aria-label="Measure"
-                aria-pressed={isPressed(tool, MEASURE)}
-              >
-                <IconRuler />
-                <span>Measure</span>
-              </button>
-              <button
-                className={`tool-button${isPressed(tool, DIMENSION) ? ' is-on' : ''}`}
-                onClick={toggleDimension}
-                disabled={!canCreateDimension}
-                data-tooltip={
-                  canCreateDimension
-                    ? 'Saved dimension (D). Draws a persistent annotation on the plan.'
-                    : doc
-                      ? 'This plan is read-only. Use Measure for a temporary distance.'
-                      : 'Open an editable plan to draw a saved dimension.'
-                }
-                data-tool-id="dimension"
-                aria-label="Dimension"
-                aria-pressed={isPressed(tool, DIMENSION)}
-              >
-                <IconRuler />
-                <span>Dimension</span>
-              </button>
-            </div>
-            )}
-
-            {!(view === 'plan' && toolDockOpen) && (
-            <div className="seg ribbon-group draw-tools" aria-label="Draw">
-              <button
-                className={`icon-btn ribbon-action${isPressed(tool, SELECT) ? ' is-on' : ''}`}
-                onClick={() => dispatchTool({ type: 'pick', choice: SELECT })}
-                disabled={!doc}
-                data-tooltip="Select and move shapes (Esc)"
-                data-tool-id="select"
-                aria-label="Select tool"
-                aria-pressed={isPressed(tool, SELECT)}
-              >
-                <IconPointer />
-                <span>Select</span>
-              </button>
-              <button
-                className={`icon-btn ribbon-action${isPressed(tool, DIRECT_SELECT) ? ' is-on' : ''}`}
-                onClick={() => {
-                  const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
-                  if (refusal) notify(refusal);
-                  setInspectorOpen(true);
-                  setInspectorTab('properties');
-                }}
-                disabled={!doc}
-                data-tooltip="Direct Selection / Edit Points — move anchors and Bézier handles"
-                data-tool-id="direct-select"
-                aria-label="Direct Selection and Edit Points tool"
-                aria-pressed={isPressed(tool, DIRECT_SELECT)}
-              >
-                <IconDirectSelect />
-                <span>Points</span>
-              </button>
-              {(
-                [
-                  ['line', 'Line', IconDrawLine],
-                  ['rect', 'Rectangle', IconDrawRect],
-                  ['ellipse', 'Ellipse', IconDrawEllipse],
-                ] as const
-              ).map(([shape, label, Icon]) => (
-                <button
-                  key={shape}
-                  className={`icon-btn ribbon-action${isPressed(tool, drawChoice(shape)) ? ' is-on' : ''}`}
-                  onClick={() => {
-                    const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
-                    if (refusal) notify(refusal);
-                  }}
-                  disabled={!doc?.editable}
-                  data-tooltip={
-                    doc?.editable
-                      ? `Draw a ${label.toLowerCase()} — click two corners, Esc to cancel`
-                      : 'Open an editable plan to draw'
-                  }
-                  data-tool-id={shape}
-                  aria-label={label}
-                  aria-pressed={isPressed(tool, drawChoice(shape))}
-                >
-                  <Icon />
-                  <span>{label}</span>
-                </button>
-              ))}
-              <button
-                className={`icon-btn ribbon-action${isPressed(tool, roomOutlineChoice) ? ' is-on' : ''}`}
-                onClick={() => {
-                  setInspectorOpen(true);
-                  setInspectorTab('room');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
-                  if (refusal) notify(refusal);
-                  else setSelectedIds([]);
-                }}
-                disabled={!doc?.editable}
-                data-tooltip={
-                  doc?.editable
-                    ? 'Draw a custom room — click each corner, then press Enter'
-                    : 'Open an editable plan to draw a room'
-                }
-                data-tool-id="room"
-                aria-label="Draw custom room outline"
-                aria-pressed={isPressed(tool, roomOutlineChoice)}
-              >
-                <IconDrawPolygon />
-                <span>Room</span>
-              </button>
-            </div>
-            )}
-
-            {!(view === 'plan' && toolDockOpen) && (
-            <div className="seg ribbon-group create-wall-controls" aria-label="Wall editing">
-              <button
-                className={`icon-btn ribbon-action${refineRoomOpen && roomWorkspaceFocus === 'walls' ? ' is-on' : ''}`}
-                onClick={() => toggleEditWalls()}
-                disabled={!doc?.editable || !doc?.hasRoom}
-                data-tooltip={
-                  doc?.editable && doc?.hasRoom
-                    ? refineRoomOpen && roomWorkspaceFocus === 'walls'
-                      ? `Close wall editing workspace (W)`
-                      : `Edit walls — push, curve, or stretch length on the plan (W)`
-                    : 'Open a plan with a room to edit walls'
-                }
-                data-tool-id="edit-walls"
-                aria-label="Edit walls mode"
-                aria-pressed={refineRoomOpen && roomWorkspaceFocus === 'walls'}
-              >
-                <IconEdit />
-                <span>Edit walls</span>
-              </button>
-              <button
-                className={`icon-btn ribbon-action${refineRoomOpen && roomWorkspaceFocus === 'room' ? ' is-on' : ''}`}
-                onClick={() => {
-                  if (refineRoomOpen && roomWorkspaceFocus === 'room') {
-                    closeRoomWorkspace();
-                    showStatus('Room layout workspace closed');
-                    return;
-                  }
-                  beginRoomWorkspaceLayout();
-                  setRoomWorkspaceFocus('room');
-                  setRefineRoomOpen(true);
-                  setSeatingOpen(false);
-                  setCalculatorOpen(false);
-                  setInspectorOpen(false);
-                  setSelectedIds([]);
-                  const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
-                  if (refusal) notify(refusal);
-                  showStatus(
-                    'Room layout workspace · resize, add/cut, then drag walls on the plan',
-                    4500,
-                  );
-                  setFitToken((t) => t + 1);
-                }}
-                disabled={!doc?.editable || !doc?.hasRoom}
-                data-tooltip={
-                  doc?.editable && doc?.hasRoom
-                    ? refineRoomOpen && roomWorkspaceFocus === 'room'
-                      ? 'Close room layout workspace'
-                      : 'Open room layout workspace — refine the whole room on the plan'
-                    : 'Open a plan with a room to refine its layout'
-                }
-                data-tool-id="refine-room"
-                aria-label="Refine room layout workspace"
-                aria-pressed={refineRoomOpen && roomWorkspaceFocus === 'room'}
-              >
-                <IconDrawRect />
-                <span>Refine room</span>
-              </button>
-            </div>
-            )}
+            {/* Event layout, drawing tools, and wall edit live in Setup / Draw / room.edit — not the ribbon. */}
 
             <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}${refineRoomOpen && textEditingId == null ? ' is-room-layout' : ''}`}>
             {textEditingId != null ? (
@@ -5178,7 +5761,7 @@ export function App() {
                 className="icon-btn"
                 onClick={() => void exportDxf()}
                 disabled={!doc}
-                data-tooltip="Export visible layers as DXF for CAD"
+                data-tooltip="Export as DXF for Vectorworks and other CAD"
                 aria-label="Export plan as DXF"
               >
                 <IconFile />
@@ -5256,7 +5839,7 @@ export function App() {
           </button>
           <button
             className="icon-btn ribbon-action"
-            onClick={() => setShortcutsOpen(true)}
+            onClick={() => void runCommand('help.shortcuts')}
             data-tooltip="Show keyboard shortcuts (?)"
             aria-label="Keyboard shortcuts"
           >
@@ -5266,16 +5849,17 @@ export function App() {
         </div>
 
         </div>
-        {toolbarTooltip && (
-          <div
-            className="toolbar-tooltip"
-            role="tooltip"
-            style={{ left: toolbarTooltip.left, top: toolbarTooltip.top }}
-          >
-            {toolbarTooltip.text}
-          </div>
-        )}
       </header>
+
+      {hoverTip && (
+        <div
+          className={`app-hover-tip is-${hoverTip.placement}`}
+          role="tooltip"
+          style={{ left: hoverTip.left, top: hoverTip.top }}
+        >
+          {hoverTip.text}
+        </div>
+      )}
 
       {view === 'plan' && planTabs.length > 0 && (
         <nav className="plan-document-tabs" aria-label="Open plans">
@@ -6079,10 +6663,6 @@ export function App() {
             `stage${view === 'plan' && doc?.recovered ? ' has-recovery' : ''}` +
             `${view === 'plan' && doc?.dimensionWarning ? ' has-dimension-warning' : ''}`
           }
-          onPointerOver={handleToolbarPointerOver}
-          onPointerOut={handleToolbarPointerOut}
-          onFocusCapture={handleToolbarFocus}
-          onBlurCapture={handleToolbarBlur}
         >
           {view === 'inventory' ? (
             <InventoryView
@@ -6180,7 +6760,10 @@ export function App() {
                         icon: <IconPointer />,
                         active: isPressed(tool, SELECT),
                         disabled: !doc,
-                        onClick: () => dispatchTool({ type: 'pick', choice: SELECT }),
+                        onClick: () => {
+                          setLastCommandId('tool.select');
+                          dispatchTool({ type: 'pick', choice: SELECT });
+                        },
                       },
                       {
                         id: 'direct-select',
@@ -6192,8 +6775,11 @@ export function App() {
                         onClick: () => {
                           const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
                           if (refusal) notify(refusal);
-                          setInspectorOpen(true);
-                          setInspectorTab('properties');
+                          else {
+                            setLastCommandId('mode.inspect');
+                            setShellMode('inspect');
+                            setInspectorTab('properties');
+                          }
                         },
                       },
                       {
@@ -6204,93 +6790,13 @@ export function App() {
                         active: isPressed(tool, HAND),
                         disabled: !doc,
                         onClick: () => {
+                          setLastCommandId('tool.hand');
                           const { refusal } = dispatchTool({ type: 'toggle', choice: HAND });
                           if (refusal) notify(refusal);
                         },
                       },
-                      {
-                        id: 'properties',
-                        label: 'Properties',
-                        icon: <IconEdit />,
-                        active: inspectorOpen && inspectorTab === 'properties',
-                        disabled: !doc,
-                        onClick: () => {
-                          setInspectorOpen(true);
-                          setInspectorTab('properties');
-                        },
-                      },
-                      {
-                        id: 'layers',
-                        label: 'Layers',
-                        icon: <IconLayers />,
-                        active: inspectorOpen && inspectorTab === 'layers',
-                        disabled: !doc,
-                        onClick: () => {
-                          setInspectorOpen(true);
-                          setInspectorTab('layers');
-                        },
-                      },
                     ],
                     [
-                      {
-                        id: 'room',
-                        label: 'Room outline',
-                        icon: <IconDrawPolygon />,
-                        active: isPressed(tool, roomOutlineChoice),
-                        disabled: !doc.editable,
-                        onClick: () => {
-                          setInspectorOpen(true);
-                          setInspectorTab('room');
-                          const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
-                          if (refusal) notify(refusal);
-                          else setSelectedIds([]);
-                        },
-                      },
-                      {
-                        id: 'edit-walls',
-                        label: 'Edit walls',
-                        shortcut: 'W',
-                        icon: <IconEdit />,
-                        active: refineRoomOpen && roomWorkspaceFocus === 'walls',
-                        disabled: !doc.editable || !doc.hasRoom,
-                        onClick: () => toggleEditWalls(),
-                      },
-                      {
-                        id: 'refine-room',
-                        label: 'Refine room',
-                        icon: <IconDrawRect />,
-                        active: refineRoomOpen && roomWorkspaceFocus === 'room',
-                        disabled: !doc.editable || !doc.hasRoom,
-                        onClick: () => {
-                          if (refineRoomOpen && roomWorkspaceFocus === 'room') {
-                            closeRoomWorkspace();
-                            showStatus('Room layout workspace closed');
-                            return;
-                          }
-                          beginRoomWorkspaceLayout();
-                          setRoomWorkspaceFocus('room');
-                          setRefineRoomOpen(true);
-                          setSeatingOpen(false);
-                          setCalculatorOpen(false);
-                          setInspectorOpen(false);
-                          setSelectedIds([]);
-                          const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
-                          if (refusal) notify(refusal);
-                          showStatus(
-                            'Room layout workspace · resize, add/cut, then drag walls on the plan',
-                            4500,
-                          );
-                          setFitToken((t) => t + 1);
-                        },
-                      },
-                      {
-                        id: 'create',
-                        label: 'Show setup',
-                        icon: <IconPlus />,
-                        active: createDialogOpen,
-                        disabled: !doc,
-                        onClick: () => toggleCreatePanel(),
-                      },
                       ...(
                         [
                           ['line', 'Line', IconDrawLine],
@@ -6308,6 +6814,46 @@ export function App() {
                           if (refusal) notify(refusal);
                         },
                       })),
+                      {
+                        id: 'power-cable',
+                        label: 'Power run',
+                        icon: <IconDrawLine />,
+                        active: isPressed(tool, powerCableChoice),
+                        disabled: !doc.editable,
+                        onClick: () => {
+                          const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
+                          if (refusal) notify(refusal);
+                          else showStatus('Click bends along the power run — Enter finishes', 4500);
+                        },
+                      },
+                      {
+                        id: 'signal-cable',
+                        label: 'Signal run',
+                        icon: <IconDrawPolygon />,
+                        active: isPressed(tool, signalCableChoice),
+                        disabled: !doc.editable,
+                        onClick: () => {
+                          const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
+                          if (refusal) notify(refusal);
+                          else showStatus('Click bends along the signal run — Enter finishes', 4500);
+                        },
+                      },
+                      {
+                        id: 'room',
+                        label: 'Room outline',
+                        icon: <IconDrawPolygon />,
+                        active: isPressed(tool, roomOutlineChoice),
+                        disabled: !doc.editable,
+                        onClick: () => {
+                          setLastCommandId('room.outline');
+                          const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+                          if (refusal) notify(refusal);
+                          else {
+                            setSelectedIds([]);
+                            showStatus('Click each room corner, then press Enter', 4500);
+                          }
+                        },
+                      },
                     ],
                     [
                       {
@@ -6317,7 +6863,10 @@ export function App() {
                         icon: <IconText />,
                         active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
                         disabled: !doc.editable,
-                        onClick: activateTextTool,
+                        onClick: () => {
+                          setLastCommandId('tool.text');
+                          activateTextTool();
+                        },
                       },
                       {
                         id: 'measure',
@@ -6326,7 +6875,10 @@ export function App() {
                         icon: <IconRuler />,
                         active: isPressed(tool, MEASURE),
                         disabled: !doc,
-                        onClick: toggleMeasure,
+                        onClick: () => {
+                          setLastCommandId('tool.measure');
+                          toggleMeasure();
+                        },
                       },
                       {
                         id: 'dimension',
@@ -6335,64 +6887,10 @@ export function App() {
                         icon: <IconRuler />,
                         active: isPressed(tool, DIMENSION),
                         disabled: !canCreateDimension,
-                        onClick: toggleDimension,
-                      },
-                      {
-                        id: 'seating',
-                        label: 'Seating planner',
-                        icon: <IconChair />,
-                        active: seatingOpen,
-                        disabled: !doc,
-                        onClick: () => setSeatingOpen((open) => !open),
-                      },
-                      {
-                        id: 'stage',
-                        label: 'Build stage',
-                        icon: <IconPlus />,
-                        disabled: !doc.editable,
-                        onClick: () => setBuildStageOpen(true),
-                      },
-                      {
-                        id: 'calculator',
-                        label: 'Space calculator',
-                        icon: <IconCalculator />,
-                        active: calculatorOpen,
-                        onClick: () => setCalculatorOpen((open) => !open),
-                      },
-                    ],
-                    [
-                      {
-                        id: 'fit',
-                        label: 'Zoom to fit',
-                        shortcut: '0',
-                        icon: <IconFit />,
-                        disabled: !doc,
-                        onClick: () => setFitToken((token) => token + 1),
-                      },
-                      {
-                        id: 'grid',
-                        label: showGrid ? 'Hide grid' : 'Show grid',
-                        shortcut: 'G',
-                        icon: <IconGrid />,
-                        active: showGrid,
-                        disabled: !doc,
-                        onClick: () => void toggleGrid(),
-                      },
-                      {
-                        id: 'snap',
-                        label: snapStep ? 'Snap on' : 'Snap off',
-                        shortcut: 'S',
-                        icon: <IconMagnet />,
-                        active: !!snapStep,
-                        disabled: !doc,
-                        onClick: toggleSnap,
-                      },
-                      {
-                        id: 'sheet',
-                        label: paper ? 'Dark sheet' : 'Paper sheet',
-                        icon: paper ? <IconMoon /> : <IconSun />,
-                        disabled: !doc,
-                        onClick: () => setPaper((current) => !current),
+                        onClick: () => {
+                          setLastCommandId('tool.dimension');
+                          toggleDimension();
+                        },
                       },
                     ],
                     [
@@ -6402,7 +6900,10 @@ export function App() {
                         shortcut: '⌘Z',
                         icon: <IconUndo />,
                         disabled: !doc.canUndo,
-                        onClick: undo,
+                        onClick: () => {
+                          setLastCommandId('edit.undo');
+                          void undo();
+                        },
                       },
                       {
                         id: 'redo',
@@ -6410,15 +6911,10 @@ export function App() {
                         shortcut: '⇧⌘Z',
                         icon: <IconRedo />,
                         disabled: !doc.canRedo,
-                        onClick: redo,
-                      },
-                      {
-                        id: 'select-all',
-                        label: 'Select all',
-                        shortcut: '⌘A',
-                        icon: <IconPointer />,
-                        disabled: !doc,
-                        onClick: selectAll,
+                        onClick: () => {
+                          setLastCommandId('edit.redo');
+                          void redo();
+                        },
                       },
                       {
                         id: 'duplicate',
@@ -6426,7 +6922,10 @@ export function App() {
                         shortcut: '⌘D',
                         icon: <IconDuplicate />,
                         disabled: !doc.editable || !selectedIds.length,
-                        onClick: duplicateSelection,
+                        onClick: () => {
+                          setLastCommandId('edit.duplicate');
+                          void duplicateSelection();
+                        },
                       },
                       {
                         id: 'delete',
@@ -6434,10 +6933,11 @@ export function App() {
                         shortcut: '⌫',
                         icon: <IconTrash />,
                         disabled: !doc.editable || !selectedIds.length,
-                        onClick: deleteSelection,
+                        onClick: () => {
+                          setLastCommandId('edit.delete');
+                          void deleteSelection();
+                        },
                       },
-                    ],
-                    [
                       {
                         id: 'rotate-left',
                         label: 'Rotate left',
@@ -6453,34 +6953,6 @@ export function App() {
                         icon: <IconRotateRight />,
                         disabled: !doc.editable || !selectedIds.length,
                         onClick: () => void rotateSelection(90),
-                      },
-                      {
-                        id: 'flip-horizontal',
-                        label: 'Flip across',
-                        icon: <IconFlipHorizontal />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => void flipSelection('horizontal'),
-                      },
-                      {
-                        id: 'flip-vertical',
-                        label: 'Flip down',
-                        icon: <IconFlipVertical />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => void flipSelection('vertical'),
-                      },
-                      {
-                        id: 'bring-front',
-                        label: 'Bring front',
-                        icon: <IconBringFront />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => void reorderSelection('bring-to-front'),
-                      },
-                      {
-                        id: 'send-back',
-                        label: 'Send back',
-                        icon: <IconSendBack />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => void reorderSelection('send-to-back'),
                       },
                     ],
                     [
@@ -6515,48 +6987,10 @@ export function App() {
                         onClick: () => void arrangeSelection('distribute-vertical'),
                       },
                     ],
-                    [
-                      {
-                        id: 'insert-object',
-                        label: 'Insert object',
-                        icon: <IconPlus />,
-                        disabled: !doc.editable,
-                        onClick: () => {
-                          setInsertGroup(null);
-                          setInsertOpen(true);
-                        },
-                      },
-                      {
-                        id: 'shape-builder',
-                        label: 'Shape builder',
-                        icon: <IconDrawPolygon />,
-                        disabled: !doc.editable,
-                        onClick: () => setShapeWizardOpen(true),
-                      },
-                      {
-                        id: 'equipment-browser',
-                        label: 'Equipment',
-                        icon: <IconLayers />,
-                        disabled: !doc,
-                        onClick: () => {
-                          setPlanRailSource('equipment');
-                          setEquipmentSource('inventory');
-                          setRailOpen(true);
-                        },
-                      },
-                      {
-                        id: 'print-plan',
-                        label: 'Print setup',
-                        shortcut: '⌘P',
-                        icon: <IconPrint />,
-                        disabled: !doc,
-                        onClick: () => setPrintOpen(true),
-                      },
-                    ],
                   ]}
                 />
               )}
-              {(!railOpen || planRailSource !== 'equipment') && (
+              {shellMode === 'place' && (!railOpen || planRailSource !== 'equipment') && (
                 <ObjectPalette
                   items={inventoryRows}
                   armedId={armedInventoryId}
@@ -6568,6 +7002,85 @@ export function App() {
                   }}
                 />
               )}
+              <div className="plan-canvas-host">
+              {placeOnParentId != null && (
+                <div className="place-on-banner" role="status">
+                  <div className="place-on-banner-visual" aria-hidden>
+                    <span className="place-on-layer is-base">Deck</span>
+                    <span className="place-on-layer is-next">Next</span>
+                  </div>
+                  <div className="place-on-banner-copy">
+                    <strong>Building on: {placeOnParentName ?? 'selected surface'}</strong>
+                    <span>
+                      Insert or drop the next piece — it inherits this height and moves with the base.
+                      Esc clears.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    onClick={() => {
+                      setPlaceOnParentId(null);
+                      setPlaceOnParentName(null);
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              {doc.editable && selectedIds.length === 1 && (
+                <div className="selection-repeat-hud" role="toolbar" aria-label="Array selection">
+                  <span className="selection-repeat-hud-label">Array</span>
+                  <div className="seg repeat-dirs" role="group" aria-label="1-row direction">
+                    {(
+                      [
+                        ['left', '←'],
+                        ['up', '↑'],
+                        ['down', '↓'],
+                        ['right', '→'],
+                      ] as const
+                    ).map(([dir, glyph]) => (
+                      <button
+                        key={dir}
+                        type="button"
+                        className={arrayDirection === dir ? 'is-on' : ''}
+                        aria-pressed={arrayDirection === dir}
+                        aria-label={dir}
+                        onClick={() => setArrayDirection(dir)}
+                      >
+                        {glyph}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="array-hud-field">
+                    <span>Cols</span>
+                    <input
+                      className="num"
+                      value={arrayColsDraft}
+                      onChange={(e) => setArrayColsDraft(e.target.value)}
+                      aria-label="Array columns"
+                    />
+                  </label>
+                  <span className="inv-x">×</span>
+                  <label className="array-hud-field">
+                    <span>Rows</span>
+                    <input
+                      className="num"
+                      value={arrayRowsDraft}
+                      onChange={(e) => setArrayRowsDraft(e.target.value)}
+                      aria-label="Array rows"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn-solid"
+                    onClick={() => void arraySelectionGrid()}
+                    title="Duplicate on a grid — leave gaps blank to use the item size"
+                  >
+                    {arrayColsDraft || '…'}×{arrayRowsDraft || '…'}
+                  </button>
+                </div>
+              )}
               <PlanCanvas
               scene={doc.scene}
               visibleLayers={visible}
@@ -6575,6 +7088,7 @@ export function App() {
               showGrid={showGrid}
               objectSnap={objectSnap}
               background={planBackground}
+              sightlineMarkers={sightlineMarkers}
               fitToken={fitToken}
               selection={selectedIds}
               onSelect={(ids) => {
@@ -6593,6 +7107,32 @@ export function App() {
                   );
                 }
               }}
+              onStackCandidates={(items) => {
+                setStackCandidates(items);
+                if (items.length < 2) return;
+                const ids = items.map((item) => item.id);
+                void api.selectionElevations(ids).then((rows) => {
+                  const byId = new Map(rows.map((row) => [row.id, row.elevation]));
+                  setStackCandidates((current) => {
+                    if (
+                      current.length !== items.length ||
+                      current.some((item, index) => item.id !== items[index]?.id)
+                    ) {
+                      return current;
+                    }
+                    return current.map((item) => ({
+                      ...item,
+                      elevation: byId.get(item.id) ?? item.elevation,
+                    }));
+                  });
+                });
+              }}
+              onStackCycle={(message) => showStatus(message, 2800)}
+              placeOnParentId={placeOnParentId}
+              placeOnLabel={placeOnParentName}
+              stackSet={stackSet}
+              showStackPeek={showStackPeek}
+              stackPeekItems={stackCandidates.length >= 2 ? stackCandidates : null}
               onMoveSelection={moveSelection}
               editable={doc.editable}
               onCursor={setCursor}
@@ -6694,6 +7234,38 @@ export function App() {
               }
               readout={tool.readout}
               onCanvasClick={(at) => {
+                if (bgCalibratePoints) {
+                  const next = [...bgCalibratePoints, at];
+                  if (next.length < 2) {
+                    setBgCalibratePoints(next);
+                    showStatus('Click the other end of that wall', 4500);
+                    return;
+                  }
+                  setBgCalibratePoints(null);
+                  if (!planBackground) {
+                    notify('No site plan to scale');
+                    return;
+                  }
+                  const knownText = window.prompt(
+                    unitSystem === 'metric'
+                      ? 'Real length of that wall (e.g. 12 m)'
+                      : "Real length of that wall (e.g. 40')",
+                    unitSystem === 'metric' ? '10 m' : "40'",
+                  );
+                  if (knownText == null) return;
+                  const known = parseLength(knownText, unitSystem);
+                  if (!(known && known > 0)) {
+                    notify('Enter a valid length');
+                    return;
+                  }
+                  const scaled = scaleBackgroundToSegment(planBackground, next[0]!, next[1]!, known);
+                  if ('error' in scaled) {
+                    notify(scaled.error);
+                    return;
+                  }
+                  void commitPlanBackground(scaled, 'Site plan scaled to measured wall');
+                  return;
+                }
                 const { effect, refusal } = dispatchTool({ type: 'click', at });
                 void applyToolEffect(effect, refusal);
               }}
@@ -6749,6 +7321,24 @@ export function App() {
                   </div>
                 </div>
               ) : null}
+              {bgCalibratePoints && (
+                <div className="room-outline-banner" role="status">
+                  <IconRuler size={16} />
+                  <span>
+                    <strong>
+                      {bgCalibratePoints.length === 0
+                        ? 'Two-point scale — click first end of a known wall'
+                        : 'Click the other end of that wall'}
+                    </strong>
+                    <small>Esc cancels · then enter the real length</small>
+                  </span>
+                  <div className="room-outline-banner-actions">
+                    <button type="button" className="link-btn is-danger" onClick={() => setBgCalibratePoints(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
               <WallEditHud
                 open={refineRoomOpen}
                 wallLabel={
@@ -6789,6 +7379,7 @@ export function App() {
                   setWallPickIndex(next.index);
                 }}
               />
+              </div>
             </div>
           ) : (
             <WelcomeHome
@@ -6798,12 +7389,28 @@ export function App() {
               onOpenPlan={() => void openFile()}
               onOpenFolder={() => void openFolder()}
               onOpenPath={(path) => void load(path)}
+              onDuplicatePath={(path) => {
+                void (async () => {
+                  const reply = await api.duplicatePlanPath(path);
+                  if (!reply.ok) {
+                    notify(reply.reason ?? 'Could not duplicate that plan');
+                    return;
+                  }
+                  if (reply.doc) {
+                    adopt(reply.doc as Doc);
+                    showStatus('Opened a copy — edit freely without touching the original', 4500);
+                    refreshRecent();
+                  }
+                })();
+              }}
               onOpenFolderWorkspace={(folderId) => {
                 if (folderId) setSelectedPlanFolderId(folderId);
                 setPlanFolderWorkspaceOpen(true);
               }}
-              onOpenShortcuts={() => setShortcutsOpen(true)}
-              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenShortcuts={() => void runCommand('help.shortcuts')}
+              onOpenSettings={() => void runCommand('settings.open')}
+              onOpenCommandPalette={() => void runCommand('palette.open')}
+              commandPaletteShortcut={shortcut('K')}
             />
           )}
           {view === 'plan' && doc?.recovered && (
@@ -7138,6 +7745,7 @@ export function App() {
           identity={planIdentityFields}
           selectedCount={selectedIds.length}
           identityBusy={identityBusy}
+          roomSizeText={roomSizeText}
           completed={setupCompleted}
           canCreateLabel={canCreateLabel}
           canCreateDimension={canCreateDimension}
@@ -7171,9 +7779,16 @@ export function App() {
             if (refusal) notify(refusal);
             else {
               setSelectedIds([]);
-              showStatus('Click each room corner on the plan, then press Enter', 4500);
+              showStatus(
+                planBackground
+                  ? 'Trace the room over the site plan — click each corner, then Enter'
+                  : 'Click each room corner on the plan, then press Enter',
+                4500,
+              );
             }
           }}
+          onOpenBackground={() => setBackgroundOpen(true)}
+          hasBackground={!!planBackground?.dataUrl}
           onFinishRoomAsRectangle={
             awaitingRoomOutline && !doc.hasRoom ? () => void finishPendingRoomAsRectangle() : undefined
           }
@@ -7184,8 +7799,8 @@ export function App() {
             setBuildStageOpen(true);
           }}
           onInsert={() => {
-            setInsertGroup(null);
-            setInsertOpen(true);
+            setShellMode('place');
+            showStatus('Place · stamp from inventory or gear', 2800);
           }}
           onRepeat={() => {
             if (selectedIds.length !== 1) {
@@ -7273,8 +7888,18 @@ export function App() {
           onNewItem={() => void openNewItemDialog()}
           kits={layoutKits}
           kitsBusy={kitsBusy}
+          roomWidthFt={
+            doc.scene.roomExtent
+              ? (doc.scene.roomExtent.maxX - doc.scene.roomExtent.minX) / UNITS_PER_FOOT
+              : undefined
+          }
+          roomDepthFt={
+            doc.scene.roomExtent
+              ? (doc.scene.roomExtent.maxY - doc.scene.roomExtent.minY) / UNITS_PER_FOOT
+              : undefined
+          }
           onRefreshKits={refreshLayoutKits}
-          onApplyKit={(kitId) => void applyShowKit(kitId)}
+          onApplyKit={(kitId, parts) => void applyShowKit(kitId, parts)}
           onImportKit={() => {
             void (async () => {
               const reply = await api.importLayoutKit();
@@ -7299,6 +7924,131 @@ export function App() {
               showStatus(`Exported recipe${reply.path ? ` · ${reply.path.split(/[\\/]/).pop()}` : ''}`, 4500);
             })();
           }}
+          onSaveAsKit={() => {
+            void (async () => {
+              const suggested =
+                planIdentityFields.event.trim() ||
+                planIdentityFields.venue.trim() ||
+                'My show kit';
+              const name = window.prompt('Name this kit', suggested);
+              if (name == null) return;
+              const trimmed = name.trim();
+              if (!trimmed) {
+                notify('Enter a kit name');
+                return;
+              }
+              const reply = await api.saveOpenPlanAsKit(trimmed);
+              if (!reply.ok) {
+                notify(reply.reason ?? 'Could not save kit');
+                return;
+              }
+              refreshLayoutKits();
+              showStatus(`Saved kit “${trimmed}”`, 4000);
+            })();
+          }}
+          onClearSeating={() => {
+            void (async () => {
+              if (!furnitureCounts.chairs && !furnitureCounts.tables) {
+                showStatus('No seating to clear');
+                return;
+              }
+              const ok = await api.confirm({
+                title: 'Clear seating?',
+                message: `Remove ${furnitureCounts.chairs.toLocaleString()} chairs and ${furnitureCounts.tables.toLocaleString()} tables from this plan?`,
+                detail: 'Stage and other gear stay. This can be undone.',
+                confirmLabel: 'Clear seating',
+                danger: true,
+              });
+              if (ok !== true) return;
+              const reply = await api.clearFurniture('seating');
+              if (reply.ok && reply.doc) {
+                setDoc(reply.doc as Doc);
+                setSelectedIds([]);
+                showStatus(reply.text ?? 'Seating cleared', 3500);
+              } else {
+                notify(reply.reason ?? 'Could not clear seating');
+              }
+            })();
+          }}
+          onClearGear={() => {
+            void (async () => {
+              const ok = await api.confirm({
+                title: 'Clear gear?',
+                message: 'Remove non-chair / non-table objects from the furniture layer?',
+                detail: 'Seating and walls stay. This can be undone.',
+                confirmLabel: 'Clear gear',
+                danger: true,
+              });
+              if (ok !== true) return;
+              const reply = await api.clearFurniture('gear');
+              if (reply.ok && reply.doc) {
+                setDoc(reply.doc as Doc);
+                setSelectedIds([]);
+                showStatus(reply.text ?? 'Gear cleared', 3500);
+              } else {
+                notify(reply.reason ?? 'Could not clear gear');
+              }
+            })();
+          }}
+          onPlaceDoor={() => {
+            const match =
+              inventoryRows.find((row) => /door.*single|single.*door/i.test(row.name)) ??
+              inventoryRows.find((row) => /\bdoor\b/i.test(row.name));
+            if (!match) {
+              notify('No door found in inventory — add one under Inventory');
+              return;
+            }
+            armInventory(match.id, match.name);
+            showStatus('Click a wall to place the door — it snaps to the perimeter', 4500);
+          }}
+          onPlaceOpening={() => {
+            const match = inventoryRows.find((row) => /\bopening\b/i.test(row.name));
+            if (!match) {
+              notify('No opening found in inventory — add an Opening item under Inventory');
+              return;
+            }
+            armInventory(match.id, match.name);
+            showStatus('Click a wall to place the opening', 4500);
+          }}
+          chairCount={furnitureCounts.chairs}
+          tableCount={furnitureCounts.tables}
+          onExportSchedule={() => {
+            void (async () => {
+              const saved = await api.scheduleExport(false);
+              if (saved) showStatus(`Exported schedule · ${saved.split(/[\\/]/).pop()}`, 4000);
+            })();
+          }}
+          onExportReport={() => {
+            void (async () => {
+              const owned = (catalogInventory?.items ?? [])
+                .filter((item) => typeof item.quantityOwned === 'number')
+                .map((item) => ({ name: item.name, quantity: item.quantityOwned as number }));
+              const reply = await api.reportExport({
+                units: unitSystem,
+                scale: printScale,
+                venue: planIdentityFields.venue || undefined,
+                event: planIdentityFields.event || undefined,
+                client: planIdentityFields.contact || undefined,
+                date: planIdentityFields.date || undefined,
+                owned,
+              });
+              if (reply.cancelled) return;
+              if (reply.ok) showStatus(`Exported report${reply.path ? ` · ${reply.path.split(/[\\/]/).pop()}` : ''}`, 4000);
+              else notify(reply.reason ?? 'Could not export report');
+            })();
+          }}
+          onExportPullSheet={() => {
+            void (async () => {
+              const owned = (catalogInventory?.items ?? [])
+                .filter((item) => typeof item.quantityOwned === 'number')
+                .map((item) => ({ name: item.name, quantity: item.quantityOwned as number }));
+              const reply = await api.pullSheetExport(owned);
+              if (reply.cancelled) return;
+              if (reply.ok) showStatus(`Exported pull sheet${reply.path ? ` · ${reply.path.split(/[\\/]/).pop()}` : ''}`, 4000);
+              else notify(reply.reason ?? 'Could not export pull sheet');
+            })();
+          }}
+          allocationSummary={allocationSummary}
           bankPresets={bankPresets as never}
           onSaveBankPreset={() => {
             void (async () => {
@@ -7500,7 +8250,13 @@ export function App() {
                     <button
                       key={id}
                       className={inspectorTab === id ? 'active' : ''}
-                      onClick={() => setInspectorTab(id)}
+                      onClick={() => {
+                        if (id === 'room') {
+                          setInspectorTab('room');
+                          return;
+                        }
+                        setInspectorTab(id);
+                      }}
                       aria-current={inspectorTab === id ? 'page' : undefined}
                     >
                       <span className="inspector-tab-icon" aria-hidden>
@@ -7581,13 +8337,249 @@ export function App() {
 
               {inspectorTab === 'properties' && (
                 <>
-              <div className={`section selected-item-section${selectedIds.length ? ' has-selection' : ''}`}>
+              <div
+                className={`section selected-item-section${selectedIds.length ? ' has-selection' : ''}`}
+                onFocusCapture={() => {
+                  propertiesEditingRef.current = true;
+                }}
+                onBlurCapture={(event) => {
+                  const next = event.relatedTarget;
+                  if (next instanceof Node && event.currentTarget.contains(next)) return;
+                  propertiesEditingRef.current = false;
+                }}
+              >
                 <div className="section-title">
                   <span>{selectedIds.length > 1 ? 'Selection' : 'Selected item'}</span>
                   {selectedIds.length > 0 && (
                     <span className="section-count">{selectedIds.length}</span>
                   )}
                 </div>
+
+                {stackCandidates.length >= 2 && (
+                  <div className="tool-group stack-pick-group stack-coach">
+                    <span className="tool-label">What you’re pointing at</span>
+                    <p className="hint">
+                      These pieces occupy the same spot on the plan. Top of the list is usually the
+                      smallest / nearest. Alt-click peels down the pile.
+                    </p>
+                    <ol className="stack-pick-list stack-pick-ordered stack-hover-style-list">
+                      {stackCandidates.map((item, index) => {
+                        const accent = ['#7c5cfc', '#4a9eff', '#e8b84a', '#4fb879'][index % 4];
+                        return (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            className={selectedIds.includes(item.id) ? 'is-on' : ''}
+                            style={{ ['--stack-accent' as string]: accent }}
+                            onClick={() => {
+                              setSelectedIds([item.id]);
+                              setSelectionScope(null);
+                              showStatus(`${index + 1} of ${stackCandidates.length} · ${item.name}`, 2500);
+                            }}
+                          >
+                            <span className="stack-hover-accent" aria-hidden />
+                            <span className="stack-hover-body">
+                              <span className="stack-hover-label">Layer {index + 1}</span>
+                              <strong className="stack-hover-name">{item.name}</strong>
+                              <span className="stack-hover-meta">
+                                {item.elevation != null && item.elevation > 0
+                                  ? formatLength(item.elevation, unitSystem)
+                                  : 'On the floor'}
+                              </span>
+                            </span>
+                          </button>
+                        </li>
+                        );
+                      })}
+                    </ol>
+                    <div className="text-action-row">
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={!doc.editable || !selectedIds.length}
+                        onClick={() => void reorderSelection('bring-to-front')}
+                      >
+                        Bring to front
+                      </button>
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={!doc.editable || !selectedIds.length}
+                        onClick={() => void reorderSelection('send-to-back')}
+                      >
+                        Send to back
+                      </button>
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={!doc.editable || selectedIds.length < 1}
+                        onClick={() => {
+                          void (async () => {
+                            const reply = (await api.detachStack(selectedIds)) as {
+                              ok: boolean;
+                              reason?: string;
+                              text?: string;
+                            };
+                            if (reply.ok) {
+                              showStatus(reply.text ?? 'Detached', 3000);
+                              setStackSet(null);
+                            } else notify(reply.reason ?? 'Could not detach');
+                          })();
+                        }}
+                      >
+                        Detach stack
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {stackSet && stackSet.length >= 2 && (
+                  <div className="tool-group stack-coach stack-set-coach">
+                    <span className="tool-label">Digital stack (moves as one)</span>
+                    <p className="hint">
+                      Green outline on the plan. Heights are above the floor — same idea as legs under
+                      a deck.
+                    </p>
+                    <ul className="stack-hierarchy">
+                      {[...stackSet]
+                        .sort((a, b) => a.elevation - b.elevation || a.name.localeCompare(b.name))
+                        .map((item, index) => (
+                          <li
+                            key={item.id}
+                            className={
+                              item.kind === 'focus' || selectedIds.includes(item.id) ? 'is-focus' : ''
+                            }
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedIds([item.id]);
+                                setSelectionScope(null);
+                              }}
+                            >
+                              <span className="stack-hierarchy-step">{index + 1}</span>
+                              <span className="stack-hierarchy-body">
+                                <strong>{item.name}</strong>
+                                <small>
+                                  {item.elevation > 0
+                                    ? `${formatLength(item.elevation, unitSystem)} above floor`
+                                    : 'On the floor'}
+                                  {item.kind === 'focus' ? ' · selected' : ''}
+                                </small>
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
+                )}
+
+                {selection && selectedIds.length === 1 && /shape/i.test(selection.cls) && (
+                  <div className="tool-group place-on-group stack-coach">
+                    <span className="tool-label">Build upward</span>
+                    <div className="place-on-steps" aria-hidden>
+                      <div className={`place-on-step${placeOnParentId === selection.nodeId ? ' is-active' : ''}`}>
+                        <b>1</b>
+                        <span>Select base</span>
+                      </div>
+                      <div className={`place-on-step${placeOnParentId === selection.nodeId ? ' is-active' : ''}`}>
+                        <b>2</b>
+                        <span>Arm place-on</span>
+                      </div>
+                      <div className="place-on-step">
+                        <b>3</b>
+                        <span>Insert next</span>
+                      </div>
+                    </div>
+                    <p className="hint">
+                      Example: rectangle deck → curve deck → podium → table → mic. Each piece sits on
+                      the one below digitally (height + move together).
+                    </p>
+                    <button
+                      type="button"
+                      className={`btn-outline${placeOnParentId === selection.nodeId ? ' is-on' : ''}`}
+                      disabled={!doc.editable}
+                      aria-pressed={placeOnParentId === selection.nodeId}
+                      onClick={() => {
+                        if (placeOnParentId === selection.nodeId) {
+                          setPlaceOnParentId(null);
+                          setPlaceOnParentName(null);
+                          showStatus('Place on cleared', 2000);
+                          return;
+                        }
+                        setPlaceOnParentId(selection.nodeId);
+                        setPlaceOnParentName(selection.name ?? selection.cls.replace(/^RV/, ''));
+                        showStatus(
+                          `Place on: ${selection.name ?? 'item'} — insert podium, table, mic…`,
+                          4500,
+                        );
+                      }}
+                    >
+                      {placeOnParentId === selection.nodeId
+                        ? 'Armed — insert the next piece'
+                        : 'Place next on this'}
+                    </button>
+                    {selectedIds.length === 1 && placeOnParentId != null && placeOnParentId !== selection.nodeId && (
+                      <button
+                        type="button"
+                        className="text-action"
+                        style={{ marginTop: 8 }}
+                        disabled={!doc.editable}
+                        onClick={() => {
+                          void (async () => {
+                            const reply = (await api.attachStack(placeOnParentId, selection.nodeId)) as {
+                              ok: boolean;
+                              reason?: string;
+                              text?: string;
+                              doc?: Doc;
+                            };
+                            if (reply.ok) {
+                              if (reply.doc) setDoc(reply.doc as Doc);
+                              showStatus(reply.text ?? 'Stacked', 3000);
+                              void api.linkedSet([placeOnParentId, selection.nodeId]).then((rows) => {
+                                setStackSet(rows.length >= 2 ? rows : null);
+                              });
+                            } else notify(reply.reason ?? 'Could not stack');
+                          })();
+                        }}
+                      >
+                        Attach selection to place-on parent
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {selectedIds.length === 2 && doc.editable && (
+                  <div className="tool-group stack-coach">
+                    <span className="tool-label">Stack two items</span>
+                    <p className="hint">First selected is the base (deck). Second sits on it.</p>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      onClick={() => {
+                        void (async () => {
+                          const parent = selectedIds[0]!;
+                          const child = selectedIds[1]!;
+                          const reply = (await api.attachStack(parent, child)) as {
+                            ok: boolean;
+                            reason?: string;
+                            text?: string;
+                            doc?: Doc;
+                          };
+                          if (reply.ok) {
+                            if (reply.doc) setDoc(reply.doc as Doc);
+                            showStatus(reply.text ?? 'Stacked', 3000);
+                            void api.linkedSet([parent, child]).then((rows) => {
+                              setStackSet(rows.length >= 2 ? rows : null);
+                            });
+                          } else notify(reply.reason ?? 'Could not stack');
+                        })();
+                      }}
+                    >
+                      Stack 2nd on 1st
+                    </button>
+                  </div>
+                )}
 
                 {selectionScopeMeta && selectedIds.length > 0 && (
                   <div className="layer-selection-scope-block">
@@ -7793,17 +8785,17 @@ export function App() {
                         <button type="button" onClick={() => void moveSelection(0, nudgeStep)} disabled={!doc.editable} aria-label="Move down">↓</button>
                         <span />
                       </div>
-                      <p className="hint">Arrow keys also nudge · Shift for fine step</p>
+                      <p className="hint">Arrow keys nudge · Shift fine · Alt 1′</p>
                     </div>
                     {canTransformSelection && (
                       <div className="tool-group">
                         <span className="tool-label">Rotate &amp; mirror</span>
                         <div className="text-action-row selection-rotate-row">
                           <button type="button" className="text-action" onClick={() => rotateSelection(-90)} disabled={!doc.editable}>
-                            Rotate left 90°
+                            Turn group −90°
                           </button>
                           <button type="button" className="text-action" onClick={() => rotateSelection(90)} disabled={!doc.editable}>
-                            Rotate right 90°
+                            Turn group +90°
                           </button>
                           <button type="button" className="text-action" onClick={() => flipSelection('horizontal')} disabled={!doc.editable}>
                             Flip horizontal
@@ -7813,7 +8805,7 @@ export function App() {
                           </button>
                         </div>
                         <SnappySlider
-                          label="Rotate by"
+                          label="Turn group by"
                           values={[-180, -90, -45, -30, -15, 15, 30, 45, 90, 180]}
                           defaultValue={15}
                           min={-180}
@@ -7822,17 +8814,126 @@ export function App() {
                           suffix="°"
                           compact
                           disabled={!doc.editable}
-                          value={Number(rotationDraft) || 15}
+                          value={Number.isFinite(Number(rotationDraft)) ? Number(rotationDraft) : 15}
                           onChange={(next) => setRotationDraft(String(next))}
-                          onChangeEnd={() => rotateByDraft()}
+                          onChangeEnd={(next) => rotateByDraft(next)}
                         />
-                        <p className="hint">Turns the whole selection about its centre — use ±30° for angled seating banks.</p>
+                        <p className="hint">
+                          Turns the whole bank about its centre (positions move). Use this for angled seating wings.
+                        </p>
+                        <span className="tool-label" style={{ marginTop: 10 }}>
+                          Chair facing
+                        </span>
+                        <p className="hint">
+                          Spins each selected piece on its own spot. Use this to straighten chairs —
+                          not “Turn group”, which swings the whole bank.
+                        </p>
+                        <div className="text-action-row selection-rotate-row">
+                          <button
+                            type="button"
+                            className="text-action"
+                            disabled={!doc.editable}
+                            onClick={() => void orientSelection(0)}
+                          >
+                            Straighten to 0°
+                          </button>
+                          <button
+                            type="button"
+                            className="text-action"
+                            disabled={!doc.editable}
+                            onClick={() => void rotateEachSelection(-15)}
+                          >
+                            Each −15°
+                          </button>
+                          <button
+                            type="button"
+                            className="text-action"
+                            disabled={!doc.editable}
+                            onClick={() => void rotateEachSelection(15)}
+                          >
+                            Each +15°
+                          </button>
+                        </div>
+                        <div className="text-angle-presets transform-angle-presets" style={{ marginTop: 6 }}>
+                          {[0, 15, 30, 45, 90, -15, -30, -45, -90].map((deg) => (
+                            <button
+                              key={deg}
+                              type="button"
+                              disabled={!doc.editable}
+                              aria-label={`Set chair facing to ${deg}°`}
+                              title={`Set chair facing to ${deg}°`}
+                              onClick={() => void orientSelection(deg)}
+                            >
+                              {deg}°
+                            </button>
+                          ))}
+                        </div>
+                        <SnappySlider
+                          label="Rotate each by"
+                          values={[-180, -90, -45, -30, -15, 15, 30, 45, 90, 180]}
+                          defaultValue={15}
+                          min={-180}
+                          max={180}
+                          step={1}
+                          suffix="°"
+                          compact
+                          disabled={!doc.editable}
+                          value={Number.isFinite(Number(facingDraft)) ? Number(facingDraft) : 15}
+                          onChange={(next) => setFacingDraft(String(next))}
+                          onChangeEnd={(next) => rotateEachByDraft(next)}
+                        />
                       </div>
                     )}
+                    <div className="tool-group">
+                      <span className="tool-label">Distance from wall</span>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="wall-setback-multi">Setback</label>
+                          <input
+                            id="wall-setback-multi"
+                            className="num"
+                            value={wallSetbackDraft}
+                            disabled={!doc.editable}
+                            onChange={(e) => setWallSetbackDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void applyWallSetback();
+                            }}
+                          />
+                        </div>
+                        <div className="field" style={{ justifyContent: 'flex-end' }}>
+                          <button
+                            type="button"
+                            className="btn-outline"
+                            disabled={!doc.editable}
+                            onClick={() => void applyWallSetback()}
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                      <div className="seg" role="group" aria-label="Setback mode" style={{ marginTop: 6 }}>
+                        <button
+                          type="button"
+                          className={wallSetbackMode === 'each' ? 'is-on' : ''}
+                          aria-pressed={wallSetbackMode === 'each'}
+                          onClick={() => setWallSetbackMode('each')}
+                        >
+                          Each
+                        </button>
+                        <button
+                          type="button"
+                          className={wallSetbackMode === 'group' ? 'is-on' : ''}
+                          aria-pressed={wallSetbackMode === 'group'}
+                          onClick={() => setWallSetbackMode('group')}
+                        >
+                          As group
+                        </button>
+                      </div>
+                    </div>
                     <div className="tool-group repeat-group">
-                      <span className="tool-label">Repeat</span>
+                      <span className="tool-label">Array</span>
                       <p className="hint selection-repeat-hint">
-                        Repeat works on one object. Keep the first selected item, then set count and direction.
+                        Array works on one object. Keep the first selected item, then set columns and rows.
                       </p>
                       <button
                         type="button"
@@ -7843,10 +8944,10 @@ export function App() {
                           if (first == null) return;
                           setSelectedIds([first]);
                           setSelectionScope(null);
-                          showStatus('One item kept — set Repeat count and direction');
+                          showStatus('One item kept — set Array columns and rows');
                         }}
                       >
-                        Keep first · enable Repeat
+                        Keep first · enable Array
                       </button>
                     </div>
                     <div className="tool-group">
@@ -7866,13 +8967,18 @@ export function App() {
                         <input
                           type="color"
                           value={/^#[0-9a-f]{6}$/i.test(colorDraft) ? colorDraft : '#000000'}
-                          onChange={(event) => setColorDraft(event.target.value)}
+                          onChange={(event) => {
+                            const hex = event.target.value;
+                            setColorDraft(hex);
+                            void applyColor(hex);
+                          }}
                           aria-label="Line colour"
                           disabled={!doc.editable}
                         />
                         <input
                           value={colorDraft}
                           onChange={(event) => setColorDraft(event.target.value)}
+                          onBlur={() => void applyColor()}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter') void applyColor();
                           }}
@@ -7912,6 +9018,12 @@ export function App() {
                           {formatLength(selection.x, unitSystem)}, {formatLength(selection.y, unitSystem)}
                         </dd>
                       </div>
+                      {selection.angleDegrees != null && (
+                        <div>
+                          <dt>Rotation</dt>
+                          <dd className="num">{selection.angleDegrees}°</dd>
+                        </div>
+                      )}
                     </dl>
 
                     {tool.tool.kind === 'direct-select' && (
@@ -8196,138 +9308,382 @@ export function App() {
                       </div>
                     )}
 
-                    {(canResizeSelection || canPositionSelection) && (
-                      <div className="field">
-                        <label htmlFor="drawing-units">Measurements</label>
-                        <select
-                          id="drawing-units"
-                          value={unitSystem}
-                          onChange={(e) => setDrawingUnits(e.target.value === 'metric' ? 'metric' : 'imperial')}
-                          title="How lengths are shown and how bare numbers are read."
-                        >
-                          <option value="imperial">Feet &amp; inches</option>
-                          <option value="metric">Metres &amp; centimetres</option>
-                        </select>
-                      </div>
-                    )}
+                    {(canResizeSelection || canPositionSelection || canTransformSelection || elevationKey) && (
+                      <div className="tool-group transform-panel">
+                        <span className="tool-label">Transform</span>
+                        <p className="hint transform-hint">
+                          Exact X, Y, W, H, and rotation — drag a label to scrub live on the plan.
+                        </p>
 
-                    {canResizeSelection && (
-                      <div className="field">
-                        <label htmlFor="size-w">
-                          Size ({unitSystem === 'metric' ? 'cm / m' : 'ft / in'})
-                        </label>
-                        <div className="size-row">
-                          <input
-                            id="size-w"
-                            className="num"
-                            value={sizeDraft.width}
-                            onChange={(event) => setSizeDraft((current) => ({ ...current, width: event.target.value }))}
-                            disabled={!doc.editable}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void commitSelectionSize();
-                            }}
-                            aria-label="Selection width"
-                            placeholder={unitSystem === 'metric' ? '120cm' : "4'"}
-                          />
-                          <span className="inv-x">×</span>
-                          <input
-                            className="num"
-                            value={sizeDraft.height}
-                            onChange={(event) => setSizeDraft((current) => ({ ...current, height: event.target.value }))}
-                            disabled={!doc.editable}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void commitSelectionSize();
-                            }}
-                            aria-label="Selection height"
-                            placeholder={unitSystem === 'metric' ? '80cm' : "3'"}
-                          />
-                          <button
-                            onClick={() => void commitSelectionSize()}
-                            disabled={!doc.editable}
-                            title="Apply width and height together"
-                          >
-                            Apply
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                        {(canResizeSelection || canPositionSelection) && (
+                          <div className="field">
+                            <label htmlFor="drawing-units">Units</label>
+                            <select
+                              id="drawing-units"
+                              value={unitSystem}
+                              onChange={(e) => setDrawingUnits(e.target.value === 'metric' ? 'metric' : 'imperial')}
+                              title="How lengths are shown and how bare numbers are read."
+                            >
+                              <option value="imperial">Feet &amp; inches</option>
+                              <option value="metric">Metres &amp; centimetres</option>
+                            </select>
+                          </div>
+                        )}
 
-                    {canPositionSelection && (
-                      <div className="field">
-                        <label htmlFor="pos-x">Position (centre)</label>
-                        <div className="size-row">
-                          <input
-                            id="pos-x"
-                            className="num"
-                            value={positionDraft.x}
-                            onChange={(event) =>
-                              setPositionDraft((current) => ({ ...current, x: event.target.value }))
-                            }
-                            disabled={!doc.editable}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void commitSelectionPosition();
-                            }}
-                            aria-label="Selection centre X"
-                            placeholder="X"
-                          />
-                          <span className="inv-x">,</span>
-                          <input
-                            className="num"
-                            value={positionDraft.y}
-                            onChange={(event) =>
-                              setPositionDraft((current) => ({ ...current, y: event.target.value }))
-                            }
-                            disabled={!doc.editable}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void commitSelectionPosition();
-                            }}
-                            aria-label="Selection centre Y"
-                            placeholder="Y"
-                          />
-                          <button
-                            onClick={() => void commitSelectionPosition()}
-                            disabled={!doc.editable}
-                            title="Move the selection centre to these coordinates"
-                          >
-                            Move
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                        {canPositionSelection && (
+                          <div className="field transform-row">
+                            <div className="transform-labels" aria-hidden="true">
+                              <ScrubLabel
+                                disabled={!doc.editable}
+                                pixelsPerUnit={2}
+                                onDelta={(d) => {
+                                  beginTransformScrub();
+                                  const delta = d * UNITS_PER_INCH;
+                                  setPositionDraft((c) => {
+                                    const base = parseLength(c.x, unitSystem);
+                                    if (base == null || !Number.isFinite(base)) return c;
+                                    const next = {
+                                      ...c,
+                                      x: formatLength(Math.max(UNITS_PER_INCH / 4, base + delta), unitSystem),
+                                    };
+                                    positionDraftRef.current = next;
+                                    return next;
+                                  });
+                                  scrubMovePending.current.dx += delta;
+                                  queueScrubCommit(flushScrubMove);
+                                }}
+                                onScrubEnd={() => endTransformScrub(() => void flushScrubMove())}
+                              >
+                                X
+                              </ScrubLabel>
+                              <ScrubLabel
+                                disabled={!doc.editable}
+                                pixelsPerUnit={2}
+                                onDelta={(d) => {
+                                  beginTransformScrub();
+                                  const delta = d * UNITS_PER_INCH;
+                                  setPositionDraft((c) => {
+                                    const base = parseLength(c.y, unitSystem);
+                                    if (base == null || !Number.isFinite(base)) return c;
+                                    const next = {
+                                      ...c,
+                                      y: formatLength(Math.max(UNITS_PER_INCH / 4, base + delta), unitSystem),
+                                    };
+                                    positionDraftRef.current = next;
+                                    return next;
+                                  });
+                                  scrubMovePending.current.dy += delta;
+                                  queueScrubCommit(flushScrubMove);
+                                }}
+                                onScrubEnd={() => endTransformScrub(() => void flushScrubMove())}
+                              >
+                                Y
+                              </ScrubLabel>
+                            </div>
+                            <div className="size-row">
+                              <input
+                                id="pos-x"
+                                className="num"
+                                value={positionDraft.x}
+                                onChange={(event) =>
+                                  setPositionDraft((current) => ({ ...current, x: event.target.value }))
+                                }
+                                disabled={!doc.editable}
+                                onBlur={() => void commitSelectionPosition()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void commitSelectionPosition();
+                                }}
+                                aria-label="Centre X"
+                                placeholder="X"
+                              />
+                              <input
+                                className="num"
+                                value={positionDraft.y}
+                                onChange={(event) =>
+                                  setPositionDraft((current) => ({ ...current, y: event.target.value }))
+                                }
+                                disabled={!doc.editable}
+                                onBlur={() => void commitSelectionPosition()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void commitSelectionPosition();
+                                }}
+                                aria-label="Centre Y"
+                                placeholder="Y"
+                              />
+                            </div>
+                          </div>
+                        )}
 
-                    {canTransformSelection && (
-                      <div className="tool-group">
-                        <span className="tool-label">Rotate &amp; mirror</span>
-                        <div className="text-action-row">
-                          <button type="button" className="text-action" onClick={() => rotateSelection(-90)} disabled={!doc.editable} title="Rotate left 90° ( [ )">
-                            Rotate left 90°
-                          </button>
-                          <button type="button" className="text-action" onClick={() => rotateSelection(90)} disabled={!doc.editable} title="Rotate right 90° ( ] )">
-                            Rotate right 90°
-                          </button>
-                        </div>
-                        <SnappySlider
-                          label="Rotate by"
-                          values={[-180, -90, -45, -30, -15, 15, 30, 45, 90, 180]}
-                          defaultValue={15}
-                          min={-180}
-                          max={180}
-                          step={1}
-                          suffix="°"
-                          compact
-                          disabled={!doc.editable}
-                          value={Number(rotationDraft) || 15}
-                          onChange={(next) => setRotationDraft(String(next))}
-                          onChangeEnd={() => rotateByDraft()}
-                        />
-                        <div className="text-action-row">
-                          <button type="button" className="text-action" onClick={() => flipSelection('horizontal')} disabled={!doc.editable} title="Mirror left to right">
-                            Flip horizontal
-                          </button>
-                          <button type="button" className="text-action" onClick={() => flipSelection('vertical')} disabled={!doc.editable} title="Mirror top to bottom">
-                            Flip vertical
-                          </button>
-                        </div>
+                        {canResizeSelection && (
+                          <div className="field transform-row">
+                            <div className="transform-labels">
+                              <ScrubLabel
+                                disabled={!doc.editable}
+                                pixelsPerUnit={2}
+                                onDelta={(d) => {
+                                  beginTransformScrub();
+                                  const delta = d * UNITS_PER_INCH;
+                                  setSizeDraft((c) => {
+                                    const base = parseLength(c.width, unitSystem);
+                                    if (base == null || !Number.isFinite(base)) return c;
+                                    const next = {
+                                      ...c,
+                                      width: formatLength(Math.max(UNITS_PER_INCH / 4, base + delta), unitSystem),
+                                    };
+                                    sizeDraftRef.current = next;
+                                    return next;
+                                  });
+                                }}
+                                onScrubEnd={() => endTransformScrub(() => void commitSelectionSize())}
+                              >
+                                W
+                              </ScrubLabel>
+                              <ScrubLabel
+                                disabled={!doc.editable}
+                                pixelsPerUnit={2}
+                                onDelta={(d) => {
+                                  beginTransformScrub();
+                                  const delta = d * UNITS_PER_INCH;
+                                  setSizeDraft((c) => {
+                                    const base = parseLength(c.height, unitSystem);
+                                    if (base == null || !Number.isFinite(base)) return c;
+                                    const next = {
+                                      ...c,
+                                      height: formatLength(Math.max(UNITS_PER_INCH / 4, base + delta), unitSystem),
+                                    };
+                                    sizeDraftRef.current = next;
+                                    return next;
+                                  });
+                                }}
+                                onScrubEnd={() => endTransformScrub(() => void commitSelectionSize())}
+                              >
+                                H
+                              </ScrubLabel>
+                              <button
+                                type="button"
+                                className={`transform-lock${sizeAspectLocked ? ' is-on' : ''}`}
+                                disabled={!doc.editable}
+                                aria-pressed={sizeAspectLocked}
+                                title={
+                                  sizeAspectLocked
+                                    ? 'Proportions locked — unlock to stretch freely'
+                                    : 'Lock proportions (keep aspect ratio)'
+                                }
+                                onClick={() => setSizeAspectLocked((on) => !on)}
+                              >
+                                {sizeAspectLocked ? 'Locked' : 'Free'}
+                              </button>
+                            </div>
+                            <div className="size-row">
+                              <input
+                                id="size-w"
+                                className="num"
+                                value={sizeDraft.width}
+                                onChange={(event) =>
+                                  setSizeDraft((current) => ({ ...current, width: event.target.value }))
+                                }
+                                disabled={!doc.editable}
+                                onBlur={() => void commitSelectionSize()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void commitSelectionSize();
+                                }}
+                                aria-label="Width"
+                                placeholder={unitSystem === 'metric' ? '120cm' : "4'"}
+                              />
+                              <input
+                                className="num"
+                                value={sizeDraft.height}
+                                onChange={(event) =>
+                                  setSizeDraft((current) => ({ ...current, height: event.target.value }))
+                                }
+                                disabled={!doc.editable}
+                                onBlur={() => void commitSelectionSize()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void commitSelectionSize();
+                                }}
+                                aria-label="Height"
+                                placeholder={unitSystem === 'metric' ? '80cm' : "3'"}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {canTransformSelection && selection.angleDegrees != null && (
+                          <div className="field transform-row">
+                            <div className="transform-labels">
+                              <ScrubLabel
+                                disabled={!doc.editable}
+                                pixelsPerUnit={3}
+                                onDelta={(d) => {
+                                  beginTransformScrub();
+                                  setAngleAbsoluteDraft((prev) => {
+                                    const base = Number(prev);
+                                    const start = Number.isFinite(base)
+                                      ? base
+                                      : selection.angleDegrees ?? 0;
+                                    const next = String(Math.round((start + d) * 10) / 10);
+                                    angleAbsoluteDraftRef.current = next;
+                                    return next;
+                                  });
+                                  scrubRotatePending.current += d;
+                                  queueScrubCommit(flushScrubRotate);
+                                }}
+                                onScrubEnd={() => endTransformScrub(() => void flushScrubRotate())}
+                              >
+                                Rotation
+                              </ScrubLabel>
+                            </div>
+                            <div className="size-row">
+                              <input
+                                id="item-rotation"
+                                className="num"
+                                value={angleAbsoluteDraft}
+                                onChange={(event) => setAngleAbsoluteDraft(event.target.value)}
+                                disabled={!doc.editable}
+                                onBlur={() => void commitSelectionAngle()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void commitSelectionAngle();
+                                }}
+                                aria-label="Rotation degrees"
+                                placeholder="0"
+                              />
+                              <span className="inv-x">°</span>
+                              <div className="text-angle-presets transform-angle-presets">
+                                {[0, 15, 30, 45, 90].map((deg) => (
+                                  <button
+                                    key={deg}
+                                    type="button"
+                                    disabled={!doc.editable}
+                                    aria-label={`Set rotation to ${deg}°`}
+                                    title={`Set rotation to ${deg}°`}
+                                    onClick={() => {
+                                      setAngleAbsoluteDraft(String(deg));
+                                      void (async () => {
+                                        if (selection.angleDegrees == null) return;
+                                        let delta = deg - selection.angleDegrees;
+                                        while (delta > 180) delta -= 360;
+                                        while (delta < -180) delta += 360;
+                                        if (Math.abs(delta) < 0.05) return;
+                                        applied(
+                                          (await api.batch('rotate', [selection.nodeId], delta)) as {
+                                            ok: boolean;
+                                            reason?: string;
+                                            doc?: Doc;
+                                          },
+                                        );
+                                      })();
+                                    }}
+                                  >
+                                    {deg}°
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {elevationKey && selection && /shape/i.test(selection.cls) && (
+                          <div className="field transform-row">
+                            <div className="transform-labels">
+                              <ScrubLabel
+                                disabled={!doc.editable}
+                                pixelsPerUnit={2}
+                                onDelta={(d) => {
+                                  beginTransformScrub();
+                                  setElevationDraft((prev) => {
+                                    const base = parseLength(prev || "0'", unitSystem);
+                                    if (base == null || !Number.isFinite(base)) return prev;
+                                    const next = formatLength(
+                                      Math.max(0, base + d * UNITS_PER_INCH),
+                                      unitSystem,
+                                    );
+                                    elevationDraftRef.current = next;
+                                    return next;
+                                  });
+                                  queueScrubCommit(() => void commitElevation());
+                                }}
+                                onScrubEnd={() => endTransformScrub(() => void commitElevation())}
+                              >
+                                Height
+                              </ScrubLabel>
+                            </div>
+                            <div className="size-row">
+                              <input
+                                id="elev-height"
+                                className="num"
+                                value={elevationDraft}
+                                onChange={(event) => setElevationDraft(event.target.value)}
+                                disabled={!doc.editable}
+                                placeholder={unitSystem === 'metric' ? '1.2m' : "3'"}
+                                title="Hang height above the floor"
+                                onBlur={() => void commitElevation()}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void commitElevation();
+                                }}
+                              />
+                            </div>
+                            <p className="hint" style={{ marginTop: 4 }}>
+                              Above floor — truss, screens, flown gear
+                            </p>
+                          </div>
+                        )}
+
+                        {canTransformSelection && (
+                          <>
+                            <div className="text-action-row" style={{ marginTop: 8 }}>
+                              <button
+                                type="button"
+                                className="text-action"
+                                onClick={() => rotateSelection(-90)}
+                                disabled={!doc.editable}
+                                title="Rotate left 90° ( [ )"
+                              >
+                                −90°
+                              </button>
+                              <button
+                                type="button"
+                                className="text-action"
+                                onClick={() => rotateSelection(90)}
+                                disabled={!doc.editable}
+                                title="Rotate right 90° ( ] )"
+                              >
+                                +90°
+                              </button>
+                              <button
+                                type="button"
+                                className="text-action"
+                                onClick={() => flipSelection('horizontal')}
+                                disabled={!doc.editable}
+                                title="Mirror left to right"
+                              >
+                                Flip H
+                              </button>
+                              <button
+                                type="button"
+                                className="text-action"
+                                onClick={() => flipSelection('vertical')}
+                                disabled={!doc.editable}
+                                title="Mirror top to bottom"
+                              >
+                                Flip V
+                              </button>
+                            </div>
+                            <SnappySlider
+                              label="Rotate by"
+                              values={[-180, -90, -45, -30, -15, 15, 30, 45, 90, 180]}
+                              defaultValue={15}
+                              min={-180}
+                              max={180}
+                              step={1}
+                              suffix="°"
+                              compact
+                              disabled={!doc.editable}
+                              value={Number.isFinite(Number(rotationDraft)) ? Number(rotationDraft) : 15}
+                              onChange={(next) => setRotationDraft(String(next))}
+                              onChangeEnd={(next) => rotateByDraft(next)}
+                            />
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -8337,13 +9693,18 @@ export function App() {
                         <input
                           type="color"
                           value={/^#[0-9a-f]{6}$/i.test(colorDraft) ? colorDraft : '#000000'}
-                          onChange={(event) => setColorDraft(event.target.value)}
+                          onChange={(event) => {
+                            const hex = event.target.value;
+                            setColorDraft(hex);
+                            void applyColor(hex);
+                          }}
                           aria-label="Line colour"
                           disabled={!doc.editable}
                         />
                         <input
                           value={colorDraft}
                           onChange={(event) => setColorDraft(event.target.value)}
+                          onBlur={() => void applyColor()}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter') void applyColor();
                           }}
@@ -8370,22 +9731,58 @@ export function App() {
                     </div>
 
                     <div className="tool-group repeat-group">
-                      <span className="tool-label">Repeat</span>
-                      <SnappySlider
-                        label="Count"
-                        values={[2, 4, 7, 10, 16, 24, 40]}
-                        defaultValue={7}
-                        min={2}
-                        max={40}
-                        step={1}
-                        prefix="×"
-                        compact
-                        disabled={!doc.editable || selectedIds.length !== 1}
-                        value={Math.max(2, Math.floor(Number(arrayCountDraft)) || 7)}
-                        onChange={(next) => setArrayCountDraft(String(next))}
-                      />
+                      <span className="tool-label">Array</span>
+                      <p className="hint">
+                        Fill a bank from one item (max 200). Full-room chairs → Seating planner.
+                      </p>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="array-cols">Columns</label>
+                          <input
+                            id="array-cols"
+                            className="num"
+                            value={arrayColsDraft}
+                            disabled={!doc.editable || selectedIds.length !== 1}
+                            onChange={(e) => setArrayColsDraft(e.target.value)}
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor="array-rows">Rows</label>
+                          <input
+                            id="array-rows"
+                            className="num"
+                            value={arrayRowsDraft}
+                            disabled={!doc.editable || selectedIds.length !== 1}
+                            onChange={(e) => setArrayRowsDraft(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="array-gap-x">Gap X</label>
+                          <input
+                            id="array-gap-x"
+                            className="num"
+                            value={arrayGapXDraft}
+                            placeholder={selection ? formatLength(selection.widthUnits, unitSystem) : 'auto'}
+                            disabled={!doc.editable || selectedIds.length !== 1}
+                            onChange={(e) => setArrayGapXDraft(e.target.value)}
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor="array-gap-y">Gap Y</label>
+                          <input
+                            id="array-gap-y"
+                            className="num"
+                            value={arrayGapYDraft}
+                            placeholder={selection ? formatLength(selection.heightUnits, unitSystem) : 'auto'}
+                            disabled={!doc.editable || selectedIds.length !== 1}
+                            onChange={(e) => setArrayGapYDraft(e.target.value)}
+                          />
+                        </div>
+                      </div>
                       <div className="repeat-row">
-                        <div className="seg repeat-dirs" role="group" aria-label="Repeat direction">
+                        <div className="seg repeat-dirs" role="group" aria-label="1-row direction">
                           {(
                             [
                               ['left', '←'],
@@ -8409,16 +9806,73 @@ export function App() {
                         </div>
                         <button
                           className="btn-solid repeat-go"
-                          onClick={() => void arraySelectionAcross()}
+                          onClick={() => void arraySelectionGrid()}
                           disabled={!doc.editable || selectedIds.length !== 1}
-                          title="Duplicate this item in a row, spaced by its size"
+                          title="Duplicate on a grid — blank gaps use the item size"
                         >
-                          ×{arrayCountDraft || '…'}
+                          {arrayColsDraft || '…'}×{arrayRowsDraft || '…'}
                         </button>
                       </div>
-                      <p className="hint">
-                        House riser: place one 6′×8′ deck, face right, then ×7.
-                      </p>
+                    </div>
+
+                    <div className="tool-group">
+                      <span className="tool-label">Distance from wall</span>
+                      <div className="field-row">
+                        <div className="field">
+                          <label htmlFor="wall-setback">Setback</label>
+                          <input
+                            id="wall-setback"
+                            className="num"
+                            value={wallSetbackDraft}
+                            disabled={!doc.editable}
+                            onChange={(e) => setWallSetbackDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void applyWallSetback();
+                            }}
+                            placeholder={unitSystem === 'metric' ? '0.6m' : "2'"}
+                          />
+                        </div>
+                        <div className="field" style={{ justifyContent: 'flex-end' }}>
+                          <button
+                            type="button"
+                            className="btn-outline"
+                            disabled={!doc.editable || !selectedIds.length}
+                            onClick={() => void applyWallSetback()}
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                      <div className="seg" role="group" aria-label="Setback mode" style={{ marginTop: 6 }}>
+                        <button
+                          type="button"
+                          className={wallSetbackMode === 'each' ? 'is-on' : ''}
+                          aria-pressed={wallSetbackMode === 'each'}
+                          disabled={!doc.editable}
+                          onClick={() => setWallSetbackMode('each')}
+                        >
+                          Each
+                        </button>
+                        <button
+                          type="button"
+                          className={wallSetbackMode === 'group' ? 'is-on' : ''}
+                          aria-pressed={wallSetbackMode === 'group'}
+                          disabled={!doc.editable}
+                          onClick={() => setWallSetbackMode('group')}
+                        >
+                          As group
+                        </button>
+                      </div>
+                      <label className="setting-check" style={{ marginTop: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={wallSetbackFace}
+                          disabled={!doc.editable || selectedIds.length !== 1}
+                          onChange={(e) => setWallSetbackFace(e.target.checked)}
+                        />
+                        <span>Face wall (single item)</span>
+                      </label>
+                      <p className="hint">Spaces gear a set distance inside from the nearest wall.</p>
                     </div>
 
                     <div className="text-action-row">
@@ -8435,7 +9889,7 @@ export function App() {
                         Delete
                       </button>
                     </div>
-                    <p className="hint">Drag to move. Arrows nudge a foot, Shift an inch.</p>
+                    <p className="hint">Drag to move. Arrows nudge · Shift fine · Alt 1′.</p>
                   </>
                 ) : null}
               </div>
@@ -8484,40 +9938,50 @@ export function App() {
               )}
 
               {inspectorTab === 'room' && (
-                <RoomPanel
-                  mode="room"
-                  doc={doc}
-                  onDoc={setDoc}
-                  onStatus={showStatus}
-                  onError={notify}
-                  drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
-                  onDrawRoomOutline={() => {
-                    const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
-                    if (refusal) notify(refusal);
-                    else setSelectedIds([]);
-                  }}
-                  onRoomAuthored={async () => {
-                    const persisted = await persistNewRoomOutlineIfNeeded();
-                    if (persisted.doc) {
-                      setDoc(persisted.doc);
-                      showStatus('Room saved');
-                    } else if (persisted.failed) {
-                      notify(persisted.failed);
-                    }
-                  }}
-                  onSeatingStatus={setSeatingClearances}
-                  onSeatingApplied={() =>
-                    setSetupCompleted((current) => ({ ...current, seating: true }))
-                  }
-                  onSelect={(ids) => {
-                    setSelectedIds(ids);
-                    setSelection(null);
-                  }}
-                  onWallEditChange={setWallEdit}
-                  wallPickIndex={wallPickIndex}
-                  preferredWallAction={undefined}
-                  onPreferredWallActionChange={setWallEditGesture}
-                />
+                <div className="section room-inspect-gate">
+                  <div className="section-title">
+                    <span>Room</span>
+                  </div>
+                  <p className="room-inspect-gate-lead">
+                    {roomSizeText
+                      ? `Current room · ${roomSizeText}`
+                      : 'Room size appears after the outline is finished.'}
+                  </p>
+                  <p className="room-inspect-gate-copy">
+                    Size and walls share one workspace on the plan — not a second editor here.
+                  </p>
+                  <div className="show-setup-actions room-inspect-gate-actions">
+                    <button
+                      type="button"
+                      className="btn-solid"
+                      disabled={!doc.editable || !doc.hasRoom}
+                      onClick={() => openRoomEditWorkspace('room')}
+                    >
+                      Open room layout
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      disabled={!doc.editable || !doc.hasRoom}
+                      onClick={() => openRoomEditWorkspace('walls')}
+                    >
+                      Edit walls
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      disabled={!doc.editable}
+                      onClick={() => {
+                        setShellMode('setup');
+                        const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+                        if (refusal) notify(refusal);
+                        else setSelectedIds([]);
+                      }}
+                    >
+                      {isPressed(tool, roomOutlineChoice) ? 'Cancel outline' : 'Draw room outline'}
+                    </button>
+                  </div>
+                </div>
               )}
 
               {inspectorTab === 'layers' && (
@@ -8850,7 +10314,26 @@ export function App() {
               : `${inventory?.total ?? 0} equipment items · saved automatically`}
         </span>
         <div className="spacer" />
-        {view === 'plan' && doc && (
+        {view === 'plan' && doc && shellMode !== 'none' && (
+          <>
+            <span className="num status-mode" title="Active shell mode">
+              {shellMode}
+            </span>
+            <span className="status-sep" />
+          </>
+        )}
+        {lastCommandId && (
+          <>
+            <span className="num status-command" title="Last command ID">
+              {lastCommandId}
+            </span>
+            <span className="status-sep" />
+          </>
+        )}
+        {view === 'plan' &&
+          doc &&
+          (shellMode === 'place' || shellMode === 'inspect' || shellMode === 'setup') &&
+          (furnitureCounts.chairs > 0 || furnitureCounts.tables > 0) && (
           <>
             <span className="num">
               Chairs: {furnitureCounts.chairs} · Tables: {furnitureCounts.tables}

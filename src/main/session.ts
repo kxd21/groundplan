@@ -71,12 +71,24 @@ export class Session {
    * document is back where it started. Both used to report "no unsaved
    * changes" over a file that did not match.
    */
+  private dirtyFlag: boolean | null = null;
+
+  /**
+   * True when the live archive differs from what was last opened or saved.
+   *
+   * After a successful edit we mark dirty without re-serializing the whole
+   * plan on every status-bar tick; undo/redo clear the flag so the next read
+   * compares bodies once.
+   */
   get dirty(): boolean {
-    return !this.body().equals(this.savedBody);
+    if (this.dirtyFlag != null) return this.dirtyFlag;
+    this.dirtyFlag = !this.body().equals(this.savedBody);
+    return this.dirtyFlag;
   }
 
   private adopt(loaded: LoadedFile): void {
     this.cachedBody = null;
+    this.dirtyFlag = null;
     this.loaded = loaded;
     this.index = indexDocument(loaded.document);
     this.scene = buildScene(loaded.document);
@@ -121,6 +133,7 @@ export class Session {
       this.redoBeforeCheckpoint = null;
     }
     this.cachedBody = null;
+    this.dirtyFlag = true;
     this.index = indexDocument(this.loaded.document);
     this.scene = buildScene(this.loaded.document);
     this.revision++;
@@ -132,6 +145,7 @@ export class Session {
       ? packFreshContainer(body)
       : packContainer(this.originalFile, body);
     this.adopt(loadBuffer(packed, this.path));
+    this.dirtyFlag = null;
   }
 
   canUndo(): boolean {
@@ -194,6 +208,7 @@ export class Session {
   markRecovered(expectedDiskDigest?: string): void {
     this.recovered = true;
     this.savedBody = Buffer.alloc(0);
+    this.dirtyFlag = true;
     this.savedFileDigest =
       expectedDiskDigest && /^[a-f0-9]{64}$/i.test(expectedDiskDigest)
         ? expectedDiskDigest.toLowerCase()
@@ -210,6 +225,7 @@ export class Session {
     this.savedBody = archiveBody;
     this.savedFileDigest = digest(completeFile);
     this.recovered = false;
+    this.dirtyFlag = false;
   }
 
   private trimHistory(): void {

@@ -54,6 +54,10 @@ export interface Settings {
     autoFitOnOpen: boolean;
     /** Switch the inspector to Properties after clicking an object. */
     openPropertiesOnSelect: boolean;
+    /** Numbered markers / hover card for overlapping pieces. */
+    showStackPeek: boolean;
+    /** Colour seat dots by A/V sightline grade (off by default — very busy). */
+    showSightlineMarkers: boolean;
     /** Arrow-key movement in logical units. */
     nudgeStep: number;
     /** Shift+arrow fine movement in logical units. */
@@ -93,6 +97,8 @@ export const DEFAULT_SETTINGS: Settings = {
     paperSheet: true,
     autoFitOnOpen: true,
     openPropertiesOnSelect: true,
+    showStackPeek: true,
+    showSightlineMarkers: false,
     nudgeStep: 10,
     fineNudgeStep: 1,
     bulkDeleteWarning: 25,

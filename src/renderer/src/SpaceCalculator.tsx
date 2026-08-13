@@ -98,14 +98,22 @@ export default function SpaceCalculator({ open, units, roomWidth, roomHeight, on
   const [width, setWidth] = useState(() => roomWidth ? formatLength(roomWidth, units) : units === 'metric' ? '20m' : "60'");
   const [depth, setDepth] = useState(() => roomHeight ? formatLength(roomHeight, units) : units === 'metric' ? '12m' : "40'");
   const [aislePercent, setAislePercent] = useState(20);
-  const [areaPerPerson, setAreaPerPerson] = useState(10);
+  const [areaPerPersonDraft, setAreaPerPersonDraft] = useState('10');
+  const areaPerPerson = (() => {
+    const n = Number(areaPerPersonDraft);
+    return Number.isFinite(n) && n > 0 ? n : 10;
+  })();
   const [seatWidth, setSeatWidth] = useState(units === 'metric' ? '50cm' : '20"');
   const [rowSpacing, setRowSpacing] = useState(units === 'metric' ? '90cm' : '3\'');
   const [sideAisle, setSideAisle] = useState(units === 'metric' ? '1.2m' : '4\'');
   const [centreAisle, setCentreAisle] = useState(units === 'metric' ? '1.2m' : '4\'');
   const [itemWidth, setItemWidth] = useState(units === 'metric' ? '1.8m' : '6\'');
   const [minimumGap, setMinimumGap] = useState(units === 'metric' ? '60cm' : '2\'');
-  const [spreadCount, setSpreadCount] = useState(8);
+  const [spreadCountDraft, setSpreadCountDraft] = useState('8');
+  const spreadCount = (() => {
+    const n = Number(spreadCountDraft);
+    return Number.isFinite(n) && n > 0 ? n : 8;
+  })();
   const [spreadMode, setSpreadMode] = useState<SpreadMode>('between');
   const [stageWidth, setStageWidth] = useState(units === 'metric' ? '9.6m' : '32\'');
   const [stageDepth, setStageDepth] = useState(units === 'metric' ? '4.8m' : '16\'');
@@ -317,7 +325,7 @@ export default function SpaceCalculator({ open, units, roomWidth, roomHeight, on
                   value={aislePercent}
                   onChange={setAislePercent}
                 />
-                <label className="calc-field"><span>Area per person</span><input type="number" min="1" value={areaPerPerson} onChange={(event) => setAreaPerPerson(Number(event.target.value))} /><em>ft²</em></label>
+                <label className="calc-field"><span>Area per person</span><input type="number" min="1" value={areaPerPersonDraft} onChange={(event) => setAreaPerPersonDraft(event.target.value)} onBlur={() => { const n = Number(areaPerPersonDraft); if (!Number.isFinite(n) || n < 1) setAreaPerPersonDraft('10'); }} /><em>ft²</em></label>
                 {lengthInput('Seat width', seatWidth, setSeatWidth)}
               </div>
               <div className="calc-fields three">{lengthInput('Row spacing', rowSpacing, setRowSpacing)}{lengthInput('Side aisles', sideAisle, setSideAisle)}{lengthInput('Centre aisle', centreAisle, setCentreAisle)}</div>
@@ -333,7 +341,7 @@ export default function SpaceCalculator({ open, units, roomWidth, roomHeight, on
             <>
               <div className="calc-fields two">{lengthInput('Available run', width, setWidth)}{lengthInput('Item width', itemWidth, setItemWidth)}</div>
               <div className="calc-fields two">
-                <label className="calc-field"><span>Items to spread</span><input type="number" min="1" step="1" value={spreadCount} onChange={(event) => setSpreadCount(Math.max(1, Number(event.target.value)))} /></label>
+                <label className="calc-field"><span>Items to spread</span><input type="number" min="1" step="1" value={spreadCountDraft} onChange={(event) => setSpreadCountDraft(event.target.value)} onBlur={() => { const n = Number(spreadCountDraft); if (!Number.isFinite(n) || n < 1) setSpreadCountDraft('8'); }} /></label>
                 {lengthInput('Minimum gap', minimumGap, setMinimumGap)}
               </div>
               <div className="calc-spread-mode" role="group" aria-label="Spread method">

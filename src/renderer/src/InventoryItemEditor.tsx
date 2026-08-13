@@ -108,8 +108,12 @@ export default function InventoryItemEditor({
   onStatus,
 }: Props) {
   const [name, setName] = useState(item.name);
-  const [wDraft, setWDraft] = useState(item.width ? formatLength(item.width, units) : '');
-  const [hDraft, setHDraft] = useState(item.height ? formatLength(item.height, units) : '');
+  const [wDraft, setWDraft] = useState(
+    item.width != null && Number.isFinite(item.width) ? formatLength(item.width, units) : '',
+  );
+  const [hDraft, setHDraft] = useState(
+    item.height != null && Number.isFinite(item.height) ? formatLength(item.height, units) : '',
+  );
   const [notes, setNotes] = useState(item.notes ?? '');
   const [ownedDraft, setOwnedDraft] = useState(
     item.quantityOwned != null && Number.isFinite(item.quantityOwned) ? String(item.quantityOwned) : '',
@@ -180,19 +184,22 @@ export default function InventoryItemEditor({
     }
     const width = parseLength(wDraft, units);
     const depth = parseLength(hDraft, units);
-    setTrace(
-      traceImage(
-        { data: image.data, width: image.width, height: image.height },
-        {
-          threshold,
-          invert,
-          useAlpha: true,
-          simplify: smoothing,
-          targetWidth: width ?? undefined,
-          targetDepth: depth ?? undefined,
-        },
-      ),
-    );
+    const handle = window.setTimeout(() => {
+      setTrace(
+        traceImage(
+          { data: image.data, width: image.width, height: image.height },
+          {
+            threshold,
+            invert,
+            useAlpha: true,
+            simplify: smoothing,
+            targetWidth: width ?? undefined,
+            targetDepth: depth ?? undefined,
+          },
+        ),
+      );
+    }, 80);
+    return () => window.clearTimeout(handle);
   }, [image, threshold, smoothing, invert, wDraft, hDraft, units]);
 
   useEffect(() => {

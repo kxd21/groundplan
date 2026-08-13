@@ -34,6 +34,7 @@ import { createHash } from 'node:crypto';
 import type { RVDocument } from './rv.js';
 import type { AspectRatio, InstanceOverride, ItemSpec, Obstruction } from './definition.js';
 import type { RoomModel, WallSegment } from './room.js';
+import type { StageBuild, StageLevel, Stair, StairEdge } from './stage.js';
 import type { UnitSystem } from './units.js';
 
 export const COMPANION_FORMAT = 'groundplan-companion';
@@ -82,6 +83,8 @@ export interface CompanionDocument {
   overrides: InstanceOverride[];
   /** Optional site plan, venue map, or photo shown below the editable plot. */
   background?: PlanBackground;
+  /** Authored stage build (deck heights / stairs) — survives reopen for pull lists and DXF Z. */
+  stage?: StageBuild;
   /** Keeps a traced room labelled as derived when a background alone creates a sidecar. */
   roomIsDerived?: boolean;
 }
@@ -136,6 +139,62 @@ export interface CompanionStatus {
   freshness: Freshness;
   /** Plain-language explanation, suitable for showing to the user. */
   reason?: string;
+}
+
+function parseStage(value: unknown): StageBuild | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || !value.id) return null;
+  if (typeof value.name !== 'string' || !value.name) return null;
+  if (!Array.isArray(value.levels) || !value.levels.length) return null;
+  const edges = new Set<StairEdge>(['front', 'back', 'left', 'right']);
+  const levels: StageLevel[] = [];
+  for (const raw of value.levels) {
+    if (!isRecord(raw)) continue;
+    const height = typeof raw.height === 'number' && raw.height > 0 ? raw.height : 0;
+    const x = typeof raw.x === 'number' ? raw.x : NaN;
+    const y = typeof raw.y === 'number' ? raw.y : NaN;
+    const width = typeof raw.width === 'number' && raw.width > 0 ? raw.width : 0;
+    const depth = typeof raw.depth === 'number' && raw.depth > 0 ? raw.depth : 0;
+    if (!(height > 0 && width > 0 && depth > 0 && Number.isFinite(x) && Number.isFinite(y))) continue;
+    levels.push({
+      height,
+      x,
+      y,
+      width,
+      depth,
+      ...(typeof raw.label === 'string' && raw.label ? { label: raw.label } : {}),
+    });
+  }
+  if (!levels.length) return null;
+  const stairs: Stair[] = [];
+  if (Array.isArray(value.stairs)) {
+    for (const raw of value.stairs) {
+      if (!isRecord(raw)) continue;
+      if (typeof raw.id !== 'string' || !raw.id) continue;
+      if (typeof raw.edge !== 'string' || !edges.has(raw.edge as StairEdge)) continue;
+      const level = typeof raw.level === 'number' && raw.level >= 0 ? Math.floor(raw.level) : 0;
+      const offset = typeof raw.offset === 'number' ? raw.offset : 0;
+      const width = typeof raw.width === 'number' && raw.width > 0 ? raw.width : 0;
+      const riserHeight = typeof raw.riserHeight === 'number' && raw.riserHeight > 0 ? raw.riserHeight : 0;
+      if (!(width > 0 && riserHeight > 0)) continue;
+      stairs.push({
+        id: raw.id,
+        level,
+        edge: raw.edge as StairEdge,
+        offset,
+        width,
+        riserHeight,
+        handrail: raw.handrail === true,
+      });
+    }
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    levels,
+    stairs,
+    skirted: value.skirted === true,
+  };
 }
 
 /**
@@ -363,6 +422,7 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
   if (!plan) return null;
 
   const background = parsePlanBackground(value.background);
+  const stage = parseStage(value.stage);
   return {
     format: COMPANION_FORMAT,
     version: COMPANION_VERSION,
@@ -378,6 +438,7 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
       ? value.overrides.map(parseOverride).filter((o): o is InstanceOverride => o != null)
       : [],
     ...(background ? { background } : {}),
+    ...(stage ? { stage } : {}),
     ...(value.roomIsDerived === true ? { roomIsDerived: true } : {}),
   };
 }

@@ -126,32 +126,35 @@ export function TraceDialog({
     }
     const width = parseLength(widthDraft, units);
     const depth = parseLength(depthDraft, units);
-    try {
-      setResult(
-        traceImage(
-          { data: image.data, width: image.width, height: image.height },
-          {
-            threshold,
-            invert,
-            useAlpha: true,
-            simplify: smoothing,
-            targetWidth: width ?? undefined,
-            targetDepth: depth ?? undefined,
-          },
-        ),
-      );
-    } catch (err) {
-      setResult({
-        ok: false,
-        paths: [],
-        width: 0,
-        height: 0,
-        rawPoints: 0,
-        points: 0,
-        coverage: 0,
-        reason: err instanceof Error ? err.message : 'Tracing failed',
-      });
-    }
+    const handle = window.setTimeout(() => {
+      try {
+        setResult(
+          traceImage(
+            { data: image.data, width: image.width, height: image.height },
+            {
+              threshold,
+              invert,
+              useAlpha: true,
+              simplify: smoothing,
+              targetWidth: width ?? undefined,
+              targetDepth: depth ?? undefined,
+            },
+          ),
+        );
+      } catch (err) {
+        setResult({
+          ok: false,
+          paths: [],
+          width: 0,
+          height: 0,
+          rawPoints: 0,
+          points: 0,
+          coverage: 0,
+          reason: err instanceof Error ? err.message : 'Tracing failed',
+        });
+      }
+    }, 80);
+    return () => window.clearTimeout(handle);
   }, [image, threshold, smoothing, invert, widthDraft, depthDraft, units]);
 
   useEffect(() => {
