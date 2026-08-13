@@ -148,7 +148,7 @@ console.log('\nlayers\n');
 
 {
   const layers = defaultLayers();
-  check('there is a layer per technical system', layers.length === 9, `${layers.length}`);
+  check('there is a layer per technical system', layers.length === 10, `${layers.length}`);
   check('architecture is locked by default', layers.find((l) => l.id === 'architecture')!.locked);
 
   check('a screen goes on video', suggestLayer('16ft Fast-Fold Screen') === 'video');

@@ -220,12 +220,14 @@ export class Session {
    *
    * An edit can arrive while an atomic write is in progress. Recording the
    * current body here would incorrectly call that newer, unwritten edit clean.
+   * Clear the dirty cache so the next read compares the live archive to the
+   * bytes that were actually written.
    */
   markSaved(completeFile = this.file(), archiveBody = this.body()): void {
     this.savedBody = archiveBody;
     this.savedFileDigest = digest(completeFile);
     this.recovered = false;
-    this.dirtyFlag = false;
+    this.dirtyFlag = null;
   }
 
   private trimHistory(): void {

@@ -5,33 +5,31 @@ Installers for first-time setup. After install, Groundplan can update itself
 
 ### What’s new in this release
 
-**Show scale: 20-person rooms through concert floors**
-- New Plan quick starts: Boardroom, Meeting, Ballroom, Concert floor, Draw custom
-- Bundled show kits: boardroom (~20), banquet 120, arena/concert sketch, plus Card Party
-- Banquet / classroom layout recipes (not only theatre banks)
-- Group / Ungroup so selected items move, rotate, duplicate, and delete together
+**Shell redesign**
+- Exclusive modes: Browse · Place · Inspect · Setup · Draw
+- Command palette (⌘K) with the same stable IDs as menus and agent IPC
+- Agent playbook: `docs/agent-commands.md` · `npm run test:commands`
 
-**Setup polish**
-- Room-first New Plan; venue/event details after the plan opens
-- Autosave into Documents/Groundplan so you see the room before a Save dialog
-- Custom-draw recovery banner (finish as rectangle or discard)
-- Seating scale chips (~20 / Banquet / Theatre / Arena)
+**Readable chrome**
+- Dark and light text contrast across Settings, Place, doc tabs, and Inspect Layers
+- Status bar shows mode + last command; Help shortcuts stay in sync with the catalog
 
 **Reliability**
-- Closed-terminal `write EPIPE` no longer shows a crash dialog
+- New Plan no longer hangs on a dirty open file (quiet autosave first)
+- Open folder / Open file busy toast releases if the system dialog stays open
+
+**Room edit**
+- One layout workspace for size and walls; Inspect → Room opens that path
 
 ### Also in 1.2.x
 
-**Edit walls**
-- Top-bar **Edit walls** mode with Push, Curve, and Length
+**Show scale: 20-person rooms through concert floors**
+- New Plan quick starts and bundled show kits
+- Group / Ungroup; banquet / classroom layout recipes
 
-**Safer saves**
-- Atomic Save / Save As with `.bak` backups and stronger recovery
-
-**Event Room Data (Room Viewer–style)**
-- Room tab with Seating | Spacing | A/V | Design Options
-- Clearances, Optimum/Crescent options, status-bar counts
-- Copy / paste, print preview, and scale drawing to a known dimension
+**Setup polish**
+- Room-first New Plan; autosave into Documents/Groundplan
+- Edit walls mode; atomic Save / Save As with `.bak` backups
 
 ### Download page
 
