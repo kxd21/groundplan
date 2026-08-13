@@ -7,12 +7,26 @@
  * draw list it turns into.
  */
 
+import { isBrokenPipe } from './ignore-epipe.js';
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, type MenuItemConstructorOptions } from 'electron';
 import { join, dirname, basename, extname } from 'node:path';
 import { readdir, readFile, stat, mkdir, unlink } from 'node:fs/promises';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+
+// Electron shows a modal for every main-process uncaughtException. EPIPE from a
+// closed stdout/stderr is harmless — hide that dialog if one still slips through.
+{
+  const showErrorBox = dialog.showErrorBox.bind(dialog);
+  dialog.showErrorBox = (title, content) => {
+    if (/\bEPIPE\b/.test(content) || /\bEPIPE\b/.test(title)) return;
+    showErrorBox(title, content);
+  };
+  process.on('uncaughtException', (err) => {
+    if (isBrokenPipe(err)) return;
+  });
+}
 
 import { buildScene, type Scene } from '../format/scene.js';
 import { symbolThumbnail, type Thumbnail } from '../format/thumbnail.js';
@@ -228,10 +242,12 @@ import {
 import {
   applyObjectLinkFile,
   loadObjectLinks,
+  objectLinkPairKey,
   objectLinksFromMap,
   objectLinksPath,
   saveObjectLinks,
   type ObjectLinkFile,
+  type ObjectLinkKind,
 } from './object-links.js';
 import { parseCompanion } from '../format/companion.js';
 import {
@@ -683,10 +699,15 @@ let session: Session | null = null;
  * discard/quit so that data is not silently lost.
  */
 let planSidecarPending = false;
-/** Stage↔stairs (and similar) pairs so move/delete/duplicate keep them together. */
+/** Stage↔stairs and grouped items so move/delete/duplicate keep them together. */
 const objectLinks = new Map<number, number[]>();
+const objectLinkKinds = new Map<string, ObjectLinkKind>();
 
-function linkObjects(a: number, b: number): void {
+function snapshotObjectLinks(): ObjectLinkFile {
+  return objectLinksFromMap(objectLinks, objectLinkKinds);
+}
+
+function linkObjects(a: number, b: number, kind: ObjectLinkKind = 'stage-stairs'): void {
   const add = (from: number, to: number) => {
     const list = objectLinks.get(from) ?? [];
     if (!list.includes(to)) list.push(to);
@@ -694,19 +715,44 @@ function linkObjects(a: number, b: number): void {
   };
   add(a, b);
   add(b, a);
+  const key = objectLinkPairKey(a, b);
+  const existing = objectLinkKinds.get(key);
+  // Stage↔stairs is the stronger bond; do not overwrite it with a furniture group.
+  if (existing !== 'stage-stairs') objectLinkKinds.set(key, kind);
   scheduleObjectLinkPersist();
+}
+
+function unlinkObjects(a: number, b: number, kind?: ObjectLinkKind): boolean {
+  const key = objectLinkPairKey(a, b);
+  if (kind && objectLinkKinds.get(key) !== kind) return false;
+  const drop = (from: number, to: number) => {
+    const list = (objectLinks.get(from) ?? []).filter((id) => id !== to);
+    if (list.length) objectLinks.set(from, list);
+    else objectLinks.delete(from);
+  };
+  drop(a, b);
+  drop(b, a);
+  objectLinkKinds.delete(key);
+  return true;
 }
 
 function expandLinkedIds(ids: number[]): number[] {
   const out = new Set(ids);
-  for (const id of ids) {
-    for (const partner of objectLinks.get(id) ?? []) out.add(partner);
+  const queue = [...ids];
+  while (queue.length) {
+    const id = queue.pop()!;
+    for (const partner of objectLinks.get(id) ?? []) {
+      if (out.has(partner)) continue;
+      out.add(partner);
+      queue.push(partner);
+    }
   }
   return [...out];
 }
 
 function clearObjectLinks(): void {
   objectLinks.clear();
+  objectLinkKinds.clear();
 }
 
 function pruneObjectLinks(removed: Iterable<number>): void {
@@ -714,6 +760,7 @@ function pruneObjectLinks(removed: Iterable<number>): void {
     const partners = objectLinks.get(id) ?? [];
     objectLinks.delete(id);
     for (const partner of partners) {
+      objectLinkKinds.delete(objectLinkPairKey(id, partner));
       const list = (objectLinks.get(partner) ?? []).filter((x) => x !== id);
       if (list.length) objectLinks.set(partner, list);
       else objectLinks.delete(partner);
@@ -727,7 +774,7 @@ let objectLinkWrite: Promise<void> = Promise.resolve();
 function scheduleObjectLinkPersist(): void {
   const s = session;
   if (!s) return;
-  const snapshot = objectLinksFromMap(objectLinks);
+  const snapshot = snapshotObjectLinks();
   objectLinkWrite = objectLinkWrite
     .catch(() => undefined)
     .then(async () => {
@@ -744,7 +791,7 @@ function scheduleObjectLinkPersist(): void {
 
 async function restoreObjectLinks(planPath: string): Promise<string | undefined> {
   const loaded = await loadObjectLinks(planPath);
-  applyObjectLinkFile(loaded.file, objectLinks);
+  applyObjectLinkFile(loaded.file, objectLinks, objectLinkKinds);
   // Drop pairs whose objects no longer exist in the open document.
   if (session) {
     const alive = new Set(session.index.byId.keys());
@@ -1055,7 +1102,7 @@ function schedulePlanRecovery(s: Session): void {
           await writePlanRecoverySidecars(recoveryRoot, id, {
             companion: companion ?? undefined,
             dimensions: cloneDimensionAssociations(),
-            links: objectLinksFromMap(objectLinks),
+            links: snapshotObjectLinks(),
           });
         }
         if (generation === planRecoveryGeneration) notifyRecoveryChanged();
@@ -1235,6 +1282,8 @@ const RESULT_CHANNELS = new Set([
   'edit:clipboard-copy',
   'edit:clipboard-paste',
   'edit:clipboard-status',
+  'edit:group',
+  'edit:ungroup',
   'edit:point-kind',
   'inventory:map-symbols',
   'inventory:absorb-gear',
@@ -1538,7 +1587,7 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
       }
     }
     const sourceLinks = objectLinksPath(source);
-    const linksAtSave = objectLinksFromMap(objectLinks);
+    const linksAtSave = snapshotObjectLinks();
     if (existsSync(sourceLinks) || linksAtSave.pairs.length > 0) {
       try {
         await objectLinkWrite;
@@ -1582,7 +1631,7 @@ async function savePlanDocumentCore(saveAs: boolean): Promise<SavePlanResult> {
   }
   try {
     await objectLinkWrite;
-    await saveObjectLinks(target, objectLinksFromMap(objectLinks));
+    await saveObjectLinks(target, snapshotObjectLinks());
     grantPath(objectLinksPath(target));
   } catch (error) {
     sidecarsOk = false;
@@ -2541,6 +2590,17 @@ function buildMenu(): void {
         { role: 'delete' },
         { type: 'separator' },
         {
+          label: 'Group',
+          accelerator: 'CmdOrCtrl+G',
+          click: () => mainWindow?.webContents.send('menu:group'),
+        },
+        {
+          label: 'Ungroup',
+          accelerator: 'CmdOrCtrl+Shift+G',
+          click: () => mainWindow?.webContents.send('menu:ungroup'),
+        },
+        { type: 'separator' },
+        {
           label: 'Select All',
           accelerator: 'CmdOrCtrl+A',
           click: () => mainWindow?.webContents.send('menu:select-all'),
@@ -2698,7 +2758,7 @@ app.whenReady().then(async () => {
         (journaledLinks as { format?: string }).format === 'groundplan-object-links'
       ) {
         clearObjectLinks();
-        applyObjectLinkFile(journaledLinks as ObjectLinkFile, objectLinks);
+        applyObjectLinkFile(journaledLinks as ObjectLinkFile, objectLinks, objectLinkKinds);
       }
       if (linkWarning && !dimensionAssociationWarning) {
         dimensionAssociationWarning = linkWarning;
@@ -3029,6 +3089,39 @@ app.whenReady().then(async () => {
     });
     if (!reply.ok) clipboard.pasteCount = Math.max(0, clipboard.pasteCount - 1);
     return reply;
+  });
+
+  handle('edit:group', (_event, ids: number[]) => {
+    const s = session;
+    if (!s) return { ok: false, reason: 'open a plan first' };
+    if (!s.editable) return { ok: false, reason: 'this plan is read-only' };
+    const requested = (Array.isArray(ids) ? ids : []).filter((id) => Number.isFinite(id) && s.index.byId.has(id));
+    const members = expandLinkedIds(requested).filter((id) => s.index.byId.has(id));
+    if (members.length < 2) return { ok: false, reason: 'select two or more items to group' };
+    const hub = [...members].sort((a, b) => a - b)[0]!;
+    for (const id of members) {
+      if (id === hub) continue;
+      linkObjects(hub, id, 'group');
+    }
+    return { ok: true, text: `Grouped ${members.length} items` };
+  });
+
+  handle('edit:ungroup', (_event, ids: number[]) => {
+    const s = session;
+    if (!s) return { ok: false, reason: 'open a plan first' };
+    if (!s.editable) return { ok: false, reason: 'this plan is read-only' };
+    const requested = (Array.isArray(ids) ? ids : []).filter((id) => Number.isFinite(id) && s.index.byId.has(id));
+    if (!requested.length) return { ok: false, reason: 'select a group to ungroup' };
+    const members = expandLinkedIds(requested);
+    let removed = 0;
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        if (unlinkObjects(members[i]!, members[j]!, 'group')) removed++;
+      }
+    }
+    if (!removed) return { ok: false, reason: 'those items are not grouped' };
+    scheduleObjectLinkPersist();
+    return { ok: true, text: `Ungrouped ${removed} link${removed === 1 ? '' : 's'}` };
   });
 
   handle('edit:move', (_event, nodeId: number, dx: number, dy: number) =>
@@ -4982,7 +5075,9 @@ app.whenReady().then(async () => {
           for (const pair of duplicatePairs) {
             const na = newByOld.get(pair.from);
             const nb = newByOld.get(pair.to);
-            if (na != null && nb != null) linkObjects(na, nb);
+            if (na != null && nb != null) {
+              linkObjects(na, nb, objectLinkKinds.get(objectLinkPairKey(pair.from, pair.to)) ?? 'stage-stairs');
+            }
           }
         }
 

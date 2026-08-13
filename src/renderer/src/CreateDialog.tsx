@@ -215,11 +215,15 @@ export default function CreateDialog({
         <header className="create-dialog-head">
           <div>
             <small>Create</small>
-            <h2 id="create-dialog-title">Show setup</h2>
+            <h2 id="create-dialog-title">
+              {!hasRoom || drawingRoomOutline ? 'Finish the room' : 'Show setup'}
+            </h2>
             <p>
-              {docked
-                ? 'Keep this panel open while you place — change seating and stamp again without restarting.'
-                : 'Set the show, add shapes or items, arm text or seating, then place on the plan.'}
+              {!hasRoom || drawingRoomOutline
+                ? 'Click corners on the plan to close the outline — then stage, seating, and print unlock here.'
+                : docked
+                  ? 'Next steps for this plan — stage, objects, seating, then print.'
+                  : 'Set up the show, add shapes or items, then place on the plan.'}
             </p>
           </div>
           <button type="button" className="create-dialog-close" onClick={onClose} aria-label="Close Create">
@@ -228,31 +232,6 @@ export default function CreateDialog({
         </header>
 
         <div className="create-dialog-body">
-          <div className="section create-library-section">
-            <div className="section-title">
-              <span>Library</span>
-            </div>
-            <p className="hint" style={{ marginBottom: 10 }}>
-              Build a custom shape or inventory item — each opens its own editor.
-            </p>
-            <div className="create-library-actions">
-              <button type="button" className="btn-outline create-library-action" onClick={onNewShape}>
-                <IconDrawPolygon size={16} />
-                <span>
-                  <strong>New shape</strong>
-                  <small>Draw or trace a custom outline</small>
-                </span>
-              </button>
-              <button type="button" className="btn-outline create-library-action" onClick={onNewItem}>
-                <IconPlus size={16} />
-                <span>
-                  <strong>New item</strong>
-                  <small>Name, size, and icon for inventory</small>
-                </span>
-              </button>
-            </div>
-          </div>
-
           <ShowSetupPanel
             editable={editable}
             hasRoom={hasRoom}
@@ -279,6 +258,35 @@ export default function CreateDialog({
             onExportRecipe={onExportRecipe}
           />
 
+          {hasRoom && !drawingRoomOutline && (
+          <div className="section create-library-section">
+            <div className="section-title">
+              <span>Library</span>
+            </div>
+            <p className="hint" style={{ marginBottom: 10 }}>
+              Build a custom shape or inventory item — each opens its own editor.
+            </p>
+            <div className="create-library-actions">
+              <button type="button" className="btn-outline create-library-action" onClick={onNewShape}>
+                <IconDrawPolygon size={16} />
+                <span>
+                  <strong>New shape</strong>
+                  <small>Draw or trace a custom outline</small>
+                </span>
+              </button>
+              <button type="button" className="btn-outline create-library-action" onClick={onNewItem}>
+                <IconPlus size={16} />
+                <span>
+                  <strong>New item</strong>
+                  <small>Name, size, and icon for inventory</small>
+                </span>
+              </button>
+            </div>
+          </div>
+          )}
+
+          {hasRoom && !drawingRoomOutline && (
+          <>
           <div className="section text-tool-section">
             <TextToolPanel
               active={textActive}
@@ -320,9 +328,75 @@ export default function CreateDialog({
               <span>Add seating</span>
             </div>
             <p className="hint" style={{ marginBottom: 10 }}>
-              Quick blocks placed where you click. For aisles, splay, and a live seat count, open the seating
-              planner.
+              Stamp quick blocks from a boardroom (~20) to a full house. For U-shape, conference, hollow
+              square, aisles, and live fill counts, open the seating planner.
             </p>
+            <div
+              className="seg tabs seat-scale"
+              role="group"
+              aria-label="Event scale defaults"
+              style={{ marginBottom: 12 }}
+            >
+              {(
+                [
+                  {
+                    id: 'intimate',
+                    label: '~20',
+                    title: 'Intimate / boardroom rows',
+                    apply: () => {
+                      onSeatKind('theatre');
+                      onSeatRows(3);
+                      onSeatPerRow(6);
+                      onSeatAngle(0);
+                      onSeatRowLengths('');
+                    },
+                  },
+                  {
+                    id: 'banquet',
+                    label: 'Banquet',
+                    title: 'Round banquet tables',
+                    apply: () => {
+                      onSeatKind('round');
+                      onSeatCount(10);
+                    },
+                  },
+                  {
+                    id: 'theatre',
+                    label: 'Theatre',
+                    title: 'Theatre banks',
+                    apply: () => {
+                      onSeatKind('theatre');
+                      onSeatRows(8);
+                      onSeatPerRow(12);
+                      onSeatAngle(0);
+                      onSeatRowLengths('');
+                    },
+                  },
+                  {
+                    id: 'arena',
+                    label: 'Arena',
+                    title: 'Large concert / arena banks',
+                    apply: () => {
+                      onSeatKind('theatre');
+                      onSeatRows(15);
+                      onSeatPerRow(24);
+                      onSeatAngle(0);
+                      onSeatRowLengths('');
+                    },
+                  },
+                ] as const
+              ).map((scale) => (
+                <button
+                  key={scale.id}
+                  type="button"
+                  title={scale.title}
+                  disabled={!editable}
+                  onClick={scale.apply}
+                >
+                  {scale.label}
+                </button>
+              ))}
+            </div>
             {seatKind === 'theatre' ? (
               <div className="bank-presets" style={{ marginBottom: 12 }}>
                 <div className="field">
@@ -388,7 +462,7 @@ export default function CreateDialog({
                   aria-pressed={seatKind === kind}
                   onClick={() => onSeatKind(kind)}
                 >
-                  {kind === 'round' ? 'Round' : kind === 'theatre' ? 'Theatre' : 'Classroom'}
+                  {kind === 'round' ? 'Banquet' : kind === 'theatre' ? 'Theatre' : 'Classroom'}
                 </button>
               ))}
             </div>
@@ -592,6 +666,8 @@ export default function CreateDialog({
                 : 'Rows centre on each click. Keep this panel open — adjust angle or row lengths, then click the plan again.'}
             </p>
           </div>
+          </>
+          )}
         </div>
       </div>
   );

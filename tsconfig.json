@@ -17,5 +17,28 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "tools/**/*.ts", "electron.vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tools/**/*.ts", "electron.vite.config.ts"],
+  "exclude": [
+    "tools/add-seating-blank-test.ts",
+    "tools/analyse-seat-angles.ts",
+    "tools/audit-card-party-original.ts",
+    "tools/build-card-party-accurate.ts",
+    "tools/build-card-party-from-scratch-v2.ts",
+    "tools/build-card-party-full.ts",
+    "tools/build-card-party-south-florida.ts",
+    "tools/compile-card-party-recipe.ts",
+    "tools/derive-card-party-row-lengths.ts",
+    "tools/dump-card-party-labels.ts",
+    "tools/dump-card-party-original-spots.ts",
+    "tools/enrich-card-party-scratch.ts",
+    "tools/extract-card-party-blocks.ts",
+    "tools/extract-card-party-gear.ts",
+    "tools/inspect-chair-angles2.ts",
+    "tools/inspect-chair-rotation.ts",
+    "tools/inspect-east-plan.ts",
+    "tools/make-card-party-recreation-blank.ts",
+    "tools/rebuild-scratch-with-symbols.ts",
+    "tools/rotate-about-test.ts",
+    "tools/write-blank-card-party.ts"
+  ]
 }

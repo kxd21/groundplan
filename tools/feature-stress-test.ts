@@ -401,6 +401,20 @@ async function main(): Promise<void> {
     applyObjectLinkFile(loaded.file, restored);
     check('link sidecar restores both directions', restored.get(10)?.includes(20) === true && restored.get(20)?.includes(10) === true);
     check('link sidecar has one pair', loaded.file.pairs.length === 1);
+
+    const grouped = new Map<number, number[]>([
+      [1, [2, 3]],
+      [2, [1]],
+      [3, [1]],
+    ]);
+    const kinds = new Map([
+      ['1:2', 'group' as const],
+      ['1:3', 'group' as const],
+    ]);
+    await saveObjectLinks(plan, objectLinksFromMap(grouped, kinds));
+    const groupedLoaded = await loadObjectLinks(plan);
+    check('group kind round-trips', groupedLoaded.file.pairs.every((p) => p.kind === 'group'));
+    check('group sidecar keeps both pairs', groupedLoaded.file.pairs.length === 2);
   }
 
   rmSync(root, { recursive: true, force: true });

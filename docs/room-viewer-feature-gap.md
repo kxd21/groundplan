@@ -142,11 +142,11 @@ with and without drape.
 | Rotate CW / CCW | ✅ |
 | Bring to front / Send to back | ✅ `reorderChild` |
 | Duplicate / Delete | ✅ |
-| **Cut / Copy / Paste** | ❌ No clipboard |
-| **Group / Ungroup** | ❌ |
+| **Cut / Copy / Paste** | ✅ | Internal plan clipboard; Copy / Paste on the toolbar |
+| **Group / Ungroup** | ✅ | Sidecar links; grouped items move/rotate/duplicate/delete together |
 | Fill, line style, line weight dropdowns | 🟡 Line colour only, in Properties |
 | Zoom in / out / fit in the toolbar | 🟡 In the floating zoom control instead |
-| Print preview | ❌ |
+| Print preview | ✅ | Print popover shows paper fit before PDF |
 | **Region** menu (whole top-level menu) | ❌ Contents not captured |
 | Left icon palette — tables, chairs, drape, dance floor, projector, screens, misc | ❌ |
 
@@ -175,7 +175,7 @@ with and without drape.
 | --- | --- |
 | Dimension **Length** entered numerically | ❌ |
 | Dimension **Angle** entered numerically | ❌ |
-| **Scale Drawing To Dimension** | ❌ | Type the true length of a known distance and the whole drawing rescales to match. This is how a traced or mis-scaled plan gets corrected |
+| **Scale Drawing To Dimension** | ✅ | Inspector field on a selected dimension |
 | **Font dialog** — face, style, size, colour, strikeout, underline | ❌ | Labels are synthesized with a borrowed or default font; nothing is choosable |
 | Per-dimension font | ❌ |
 

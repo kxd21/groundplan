@@ -36,10 +36,10 @@ export interface BankPreset {
 function kitRoot(): string {
   // Dist/dev: prefer package fixtures next to source.
   const fromSrc = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tools', 'fixtures');
-  if (existsSync(join(fromSrc, 'card-party-layout-recipe.json'))) return fromSrc;
+  if (existsSync(fromSrc)) return fromSrc;
   // Packaged: resources/fixtures
   const fromResources = join(process.resourcesPath || '', 'fixtures');
-  if (existsSync(join(fromResources, 'card-party-layout-recipe.json'))) return fromResources;
+  if (existsSync(fromResources)) return fromResources;
   return fromSrc;
 }
 
@@ -81,10 +81,16 @@ function describeKit(id: string, path: string, source: 'bundled' | 'user'): Layo
 
 export function listLayoutKits(userDataDir: string): LayoutKitInfo[] {
   const kits: LayoutKitInfo[] = [];
-  const bundled = join(bundledKitsDir(), 'card-party-layout-recipe.json');
-  if (existsSync(bundled)) {
-    const info = describeKit('bundled:card-party', bundled, 'bundled');
-    if (info) kits.push(info);
+  const bundledDir = bundledKitsDir();
+  if (existsSync(bundledDir)) {
+    for (const file of readdirSync(bundledDir)
+      .filter((f) => f.endsWith('-layout-recipe.json'))
+      .sort()) {
+      const path = join(bundledDir, file);
+      const idBase = basename(file, '.json').replace(/-layout-recipe$/, '');
+      const info = describeKit(`bundled:${idBase}`, path, 'bundled');
+      if (info) kits.push(info);
+    }
   }
 
   const userDir = userKitsDir(userDataDir);
@@ -95,7 +101,8 @@ export function listLayoutKits(userDataDir: string): LayoutKitInfo[] {
       if (info) kits.push(info);
     }
   }
-  return kits;
+  // Small events first, then mid-size, then arenas / large houses.
+  return kits.sort((a, b) => a.chairs - b.chairs || a.name.localeCompare(b.name));
 }
 
 export function loadLayoutKit(userDataDir: string, kitId: string): LayoutRecipe | null {

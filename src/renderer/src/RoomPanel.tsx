@@ -783,7 +783,7 @@ export default function RoomPanel({
               ['stadium', 'Stadium', 'Semicircle ends', IconDrawEllipse],
               ['l-shape', 'L-shaped', 'One recessed corner', IconDrawPolygon],
               ['u-shape', 'U-shaped', 'Centred recess', IconDrawPolygon],
-              ['custom', 'Freeform', 'Click every corner', IconDrawPolygon],
+              ['custom', 'Draw custom', 'Click every corner', IconDrawPolygon],
             ] as const
           ).map(([shape, label, description, Icon]) => (
             <button
@@ -848,7 +848,7 @@ export default function RoomPanel({
               title={drawingRoomOutline ? 'Cancel the custom room outline' : 'Click each corner on the plan'}
             >
               <IconDrawPolygon size={14} />
-              {drawingRoomOutline ? 'Cancel outline' : room ? 'Redraw freeform' : 'Draw freeform'}
+              {drawingRoomOutline ? 'Cancel outline' : room ? 'Redraw custom' : 'Draw custom'}
             </button>
           ) : (
             <button

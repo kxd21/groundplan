@@ -40,6 +40,8 @@ import {
   IconDuplicate,
   IconCopy,
   IconPaste,
+  IconGroup,
+  IconUngroup,
   IconEdit,
   IconExport,
   IconFile,
@@ -1420,15 +1422,13 @@ export function App() {
     [notify, showStatus],
   );
 
-  // A Custom room chosen in New Plan starts where that choice promises: on the
-  // plan, with the Room inspector open and the multi-point outline tool ready.
-  // Waiting for the adopted document to render also lets the tool machine see
-  // the new file's editable capability before it receives the pick.
+  // Custom New Plan: arm the outline tool without opening Create/inspector —
+  // the canvas banner is the guide until the room exists.
   useEffect(() => {
     if (!startNewRoomOutline || !doc?.editable) return;
     setStartNewRoomOutline(false);
-    setInspectorOpen(true);
-    setInspectorTab('room');
+    setCreateDialogOpen(false);
+    setInspectorOpen(false);
     setSelectedIds([]);
     saveNewRoomOutlineRef.current = true;
     setAwaitingRoomOutline(true);
@@ -2472,6 +2472,26 @@ export function App() {
     }
   }, [applied, doc?.editable, planClipboard, showStatus]);
 
+  const groupPlanSelection = useCallback(async () => {
+    if (!doc?.editable || selectedIds.length < 2) return;
+    const reply = await api.groupPlanObjects(selectedIds);
+    if (!reply.ok) {
+      if (reply.reason) notify(reply.reason);
+      return;
+    }
+    showStatus(reply.text ?? 'Grouped');
+  }, [doc?.editable, notify, selectedIds, showStatus]);
+
+  const ungroupPlanSelection = useCallback(async () => {
+    if (!doc?.editable || !selectedIds.length) return;
+    const reply = await api.ungroupPlanObjects(selectedIds);
+    if (!reply.ok) {
+      if (reply.reason) notify(reply.reason);
+      return;
+    }
+    showStatus(reply.text ?? 'Ungrouped');
+  }, [doc?.editable, notify, selectedIds, showStatus]);
+
   /** Places N copies of the selection in a row — one undo step. */
   const arraySelectionAcross = useCallback(async () => {
     if (selectedIds.length !== 1 || !selection) {
@@ -2824,6 +2844,8 @@ export function App() {
       else if (command === 'menu:shape-wizard') setShapeWizardOpen(true);
       else if (command === 'menu:build-stage') setBuildStageOpen(true);
       else if (command === 'menu:edit-walls' && view === 'plan') toggleEditWalls();
+      else if (command === 'menu:group' && view === 'plan') void groupPlanSelection();
+      else if (command === 'menu:ungroup' && view === 'plan') void ungroupPlanSelection();
     });
   }, [
     openFile,
@@ -2841,6 +2863,8 @@ export function App() {
     armInsertLeaf,
     openNewPlanDialog,
     toggleEditWalls,
+    groupPlanSelection,
+    ungroupPlanSelection,
   ]);
 
   useEffect(() => {
@@ -3684,16 +3708,17 @@ export function App() {
             setCustomRoomPrefs(options.customRoom ?? null);
             setStartNewRoomOutline(options.startRoomOutline);
             setAwaitingRoomOutline(options.startRoomOutline);
-            // One New plan flow: plan on screen + Show setup docked beside it.
-            openCreateDialog();
             if (options.startRoomOutline) {
+              // Keep the canvas clear for tracing — open Show setup once the room exists.
+              setCreateDialogOpen(false);
               setInspectorOpen(false);
               showStatus(
-                'Click corners to finish the room · Esc cancels · Finish as rectangle is available in Show setup',
+                'Click corners to finish the room · Enter closes · Esc cancels · Finish as rectangle on the banner',
                 6400,
               );
             } else {
-              showStatus('Room ready — next: build stage, then seating and objects', 5200);
+              openCreateDialog();
+              showStatus('Room ready — next: build stage', 5200);
             }
             setFitToken((t) => t + 1);
             refreshRecent();
@@ -4008,6 +4033,18 @@ export function App() {
                       <kbd>{shortcut('V')}</kbd>
                     </dt>
                     <dd>Paste copied plan items</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('G')}</kbd>
+                    </dt>
+                    <dd>Group selected items so they move together</dd>
+                  </div>
+                  <div>
+                    <dt>
+                      <kbd>{shortcut('G', true)}</kbd>
+                    </dt>
+                    <dd>Ungroup</dd>
                   </div>
                   <div>
                     <dt>
@@ -5079,6 +5116,24 @@ export function App() {
                 aria-label="Paste copied shapes"
               >
                 <IconPaste />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void groupPlanSelection()}
+                disabled={!doc?.editable || selectedIds.length < 2}
+                data-tooltip={`Group selected shapes (${shortcut('G')})`}
+                aria-label="Group selected shapes"
+              >
+                <IconGroup />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void ungroupPlanSelection()}
+                disabled={!doc?.editable || !selectedIds.length}
+                data-tooltip={`Ungroup selected shapes (${shortcut('G', true)})`}
+                aria-label="Ungroup selected shapes"
+              >
+                <IconUngroup />
               </button>
               <button
                 className="icon-btn"
@@ -7133,11 +7188,14 @@ export function App() {
             setInsertOpen(true);
           }}
           onRepeat={() => {
-            showStatus(
-              selectedIds.length === 1
-                ? 'Select the item, set direction and count in Properties, then Repeat'
-                : 'Select one item first, then Repeat',
-            );
+            if (selectedIds.length !== 1) {
+              showStatus('Select one item first, then Repeat');
+              return;
+            }
+            setCreateDialogOpen(false);
+            setInspectorOpen(true);
+            setInspectorTab('properties');
+            showStatus('Set direction and count in Properties, then Repeat', 4500);
           }}
           onSeating={() => {
             setSeatingOpen(true);
@@ -7682,6 +7740,24 @@ export function App() {
                         aria-label="Paste"
                       >
                         <IconPaste size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void groupPlanSelection()}
+                        disabled={!doc.editable || selectedIds.length < 2}
+                        title={`Group (${shortcut('G')})`}
+                        aria-label="Group"
+                      >
+                        <IconGroup size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void ungroupPlanSelection()}
+                        disabled={!doc.editable || !selectedIds.length}
+                        title={`Ungroup (${shortcut('G', true)})`}
+                        aria-label="Ungroup"
+                      >
+                        <IconUngroup size={15} />
                       </button>
                       <button
                         type="button"

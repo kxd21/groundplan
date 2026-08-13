@@ -130,6 +130,26 @@ export function IconCopy({ size = 16, className }: IconProps) {
   );
 }
 
+export function IconGroup({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2.25" y="2.25" width="5" height="5" rx="1" />
+      <rect x="8.75" y="8.75" width="5" height="5" rx="1" />
+      <path d="M7.25 4.75h2.2a2 2 0 0 1 2 2v2.2" />
+    </svg>
+  );
+}
+
+export function IconUngroup({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="1.75" y="2.25" width="5" height="5" rx="1" />
+      <rect x="9.25" y="8.75" width="5" height="5" rx="1" />
+      <path d="M7.5 5.25 9.1 6.85M9.1 5.25 7.5 6.85" />
+    </svg>
+  );
+}
+
 export function IconPaste({ size = 16, className }: IconProps) {
   return (
     <svg {...base(size)} className={className}>

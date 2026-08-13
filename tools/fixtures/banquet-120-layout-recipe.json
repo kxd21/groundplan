@@ -1,0 +1,48 @@
+{
+  "format": "groundplan-layout-recipe",
+  "version": 1,
+  "identity": {
+    "event": "Banquet for 120",
+    "venue": "Ballroom",
+    "roomLabel": "60' × 40'"
+  },
+  "room": {
+    "widthFt": 60,
+    "depthFt": 40
+  },
+  "stage": [
+    {
+      "xFt": 0,
+      "yFt": -16,
+      "widthFt": 24,
+      "depthFt": 8,
+      "heightIn": 24,
+      "stairs": ["left", "right"]
+    }
+  ],
+  "seating": [
+    { "kind": "round", "xFt": -18, "yFt": -6, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": -6, "yFt": -6, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": 6, "yFt": -6, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": 18, "yFt": -6, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": -18, "yFt": 4, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": -6, "yFt": 4, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": 6, "yFt": 4, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": 18, "yFt": 4, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": -18, "yFt": 14, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": -6, "yFt": 14, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": 6, "yFt": 14, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 },
+    { "kind": "round", "xFt": 18, "yFt": 14, "chair": "Chair 20.5W X 23.23D", "table": "Round 60\"", "seats": 10, "expectCount": 10 }
+  ],
+  "gear": [
+    { "name": "Podium/Lectern", "xFt": 0, "yFt": -14 }
+  ],
+  "labels": [
+    { "text": "BANQUET", "xFt": 0, "yFt": 18 }
+  ],
+  "dimensions": [],
+  "expectations": {
+    "chairs": 120,
+    "requireGearNames": ["Podium/Lectern", "Round 60\"", "Chair 20.5W X 23.23D"]
+  }
+}

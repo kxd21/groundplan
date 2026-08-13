@@ -49,9 +49,9 @@ const FEATURES = [
   },
   {
     eyebrow: 'Flexible rooms',
-    title: 'Draw rooms in any shape',
-    body: 'Trace custom outlines, add or remove corners, bow walls, and round one corner or the complete room.',
-    action: 'Create a custom plan, then use Room editing in the inspector.',
+    title: 'Start from the room',
+    body: 'New plan is room-first — pick a venue size or shape, then stage and seating unlock in Show setup.',
+    action: 'Choose New plan — Boardroom (~20), Concert floor, or Draw custom — then finish the show.',
     tone: 'orange',
     icon: <IconDrawPolygon size={25} />,
     companion: <IconEdit size={23} />,
@@ -199,10 +199,10 @@ export default function WelcomeHome({
               </button>
             ))}
             {!matchingRecent.length && (
-              <button className="welcome-empty-card" onClick={query ? () => setQuery('') : onOpenPlan}>
-                <IconFile size={24} />
-                <strong>{query ? 'No matching recent shows' : 'Open your first show'}</strong>
-                <small>{query ? 'Clear the search and try again.' : 'Choose an RV4, RS4, SE4, RSD, or shape library.'}</small>
+              <button className="welcome-empty-card" onClick={query ? () => setQuery('') : onNewPlan}>
+                <IconPlus size={24} />
+                <strong>{query ? 'No matching recent shows' : 'Create your first plan'}</strong>
+                <small>{query ? 'Clear the search and try again.' : 'New plan builds the room first — then stage, seating, and print.'}</small>
               </button>
             )}
           </div>

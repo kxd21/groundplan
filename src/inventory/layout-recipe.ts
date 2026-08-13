@@ -34,8 +34,17 @@ export interface LayoutRecipeSeatingBlock {
   xFt: number;
   yFt: number;
   angleDeg?: number;
+  /**
+   * Stamp kind. Defaults to theatre (row banks).
+   * Use `round` for banquet tables; `schoolroom` for classroom rows with tables.
+   */
+  kind?: 'theatre' | 'schoolroom' | 'round';
   /** Exact catalogue chair name. */
   chair: string;
+  /** Exact catalogue table name — required for round and schoolroom. */
+  table?: string;
+  /** Seats around a round table (kind: round). */
+  seats?: number;
   seatSpacingFt?: number;
   rowSpacingFt?: number;
   /** Prefer irregular lengths; falls back to rows×perRow. */
@@ -122,6 +131,24 @@ export function validateLayoutRecipe(
 ): { ok: true } | { ok: false; reason: string } {
   let seatSum = 0;
   for (const [i, block] of recipe.seating.entries()) {
+    const kind = block.kind ?? 'theatre';
+    if (kind === 'round' || kind === 'schoolroom') {
+      if (!block.table) {
+        return {
+          ok: false,
+          reason: `block ${i + 1}: ${kind} seating needs an exact table catalogue name`,
+        };
+      }
+      if (inventory) {
+        const resolved = resolveInventoryQuery(inventory, block.table, { requireExact: true });
+        if (resolved.status !== 'exact' && resolved.status !== 'unique') {
+          return {
+            ok: false,
+            reason: `block ${i + 1} table: ${resolveFailureMessage(resolved)}`,
+          };
+        }
+      }
+    }
     const request = seatingRequestFromBlock(block, 0, 0);
     const n = expectedSeatCount(request);
     if (n !== block.expectCount) {
@@ -171,14 +198,17 @@ export function seatingRequestFromBlock(
   x: number,
   y: number,
 ): SeatingRequest {
+  const kind = block.kind ?? 'theatre';
   return {
-    kind: 'theatre',
+    kind,
     x,
     y,
     chair: block.chair,
+    table: block.table,
+    seats: block.seats,
     angle: block.angleDeg,
     seatSpacing: (block.seatSpacingFt ?? 2) * UNITS_PER_FOOT,
-    rowSpacing: (block.rowSpacingFt ?? 3) * UNITS_PER_FOOT,
+    rowSpacing: (block.rowSpacingFt ?? (kind === 'schoolroom' ? 5 : 3)) * UNITS_PER_FOOT,
     rowLengths: block.rowLengths,
     rows: block.rows,
     perRow: block.perRow,
@@ -217,19 +247,20 @@ export function applyLayoutRecipeSeating(
         seating,
       };
     }
-    const placed = result.placed ?? 0;
-    if (placed !== block.expectCount) {
+    // `result.placed` can include tables (rounds / schoolroom); chair total is the contract.
+    const chairsThisBlock = expectedSeatCount(request);
+    if (chairsThisBlock !== block.expectCount) {
       return {
         ok: false,
-        reason: `block ${i + 1}: placed ${placed}, expected ${block.expectCount}`,
-        chairsPlaced: chairsPlaced + placed,
+        reason: `block ${i + 1}: placed ${chairsThisBlock} chairs, expected ${block.expectCount}`,
+        chairsPlaced: chairsPlaced + chairsThisBlock,
         gearPlaced: 0,
         labelsPlaced: 0,
         dimensionsPlaced: 0,
         seating,
       };
     }
-    chairsPlaced += placed;
+    chairsPlaced += chairsThisBlock;
     live = indexDocument(doc);
   }
 

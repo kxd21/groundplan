@@ -1,0 +1,40 @@
+{
+  "format": "groundplan-layout-recipe",
+  "version": 1,
+  "identity": {
+    "event": "Boardroom for 20",
+    "venue": "Small meeting suite",
+    "roomLabel": "20' × 16'"
+  },
+  "room": {
+    "widthFt": 20,
+    "depthFt": 16
+  },
+  "stage": [],
+  "seating": [
+    {
+      "xFt": 0,
+      "yFt": 1.5,
+      "angleDeg": 0,
+      "kind": "theatre",
+      "chair": "Chair 20.5W X 23.23D",
+      "seatSpacingFt": 1.85,
+      "rowSpacingFt": 3,
+      "rows": 3,
+      "perRow": 6,
+      "expectCount": 18
+    }
+  ],
+  "gear": [
+    { "name": "Podium/Lectern", "xFt": 0, "yFt": -5.5 },
+    { "name": "6' x 30\"", "xFt": 0, "yFt": -3.5 }
+  ],
+  "labels": [
+    { "text": "BOARDROOM", "xFt": 0, "yFt": 6.5 }
+  ],
+  "dimensions": [],
+  "expectations": {
+    "chairs": 18,
+    "requireGearNames": ["Podium/Lectern", "6' x 30\""]
+  }
+}

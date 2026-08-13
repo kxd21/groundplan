@@ -251,6 +251,8 @@ const api = {
     ipcRenderer.invoke('edit:clipboard-copy', ids),
   planClipboardStatus: (): Promise<PlanClipboardReply> => ipcRenderer.invoke('edit:clipboard-status'),
   pastePlanObjects: (): Promise<EditReply> => ipcRenderer.invoke('edit:clipboard-paste'),
+  groupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:group', ids),
+  ungroupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:ungroup', ids),
   undo: (): Promise<OpenResult | null> => ipcRenderer.invoke('edit:undo'),
   redo: (): Promise<OpenResult | null> => ipcRenderer.invoke('edit:redo'),
   selectionInfo: (nodeId: number): Promise<SelectionInfo | null> =>
@@ -691,6 +693,8 @@ const api = {
       'menu:shape-wizard',
       'menu:build-stage',
       'menu:edit-walls',
+      'menu:group',
+      'menu:ungroup',
     ];
     const listeners = channels.map((channel) => {
       const listener = (_event: IpcRendererEvent, arg?: string) => handler(channel, arg);

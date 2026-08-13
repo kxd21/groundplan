@@ -181,10 +181,13 @@ export function createBlankPlan(options: BlankPlanOptions = {}): BlankPlanResult
  */
 export const ROOM_PRESETS: Array<{ label: string; width: number; depth: number }> = [
   { label: 'Empty sheet', width: 0, depth: 0 },
+  { label: "Boardroom — 20' × 16'", width: 20, depth: 16 },
   { label: "Meeting room — 30' × 20'", width: 30, depth: 20 },
   { label: "Small ballroom — 40' × 30'", width: 40, depth: 30 },
   { label: "Ballroom — 60' × 40'", width: 60, depth: 40 },
   { label: "Large ballroom — 100' × 60'", width: 100, depth: 60 },
   { label: "General session — 150' × 80'", width: 150, depth: 80 },
+  { label: "Concert floor — 200' × 120'", width: 200, depth: 120 },
   { label: "Exhibit hall — 250' × 120'", width: 250, depth: 120 },
+  { label: "Arena floor — 300' × 200'", width: 300, depth: 200 },
 ];

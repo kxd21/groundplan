@@ -1,6 +1,6 @@
 {
   "name": "groundplan",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Cross-platform editor for legacy Room Viewer event floor plans — runs on Windows, macOS, and Linux",
   "main": "out/main/index.js",
   "author": "Prince Thompson",
@@ -34,6 +34,7 @@
     "test:synthesis": "tsx tools/synthesize-test.ts",
     "test:room": "tsx tools/room-test.ts",
     "test:ui-stress": "node tools/run-ui-stress.mjs",
+    "test:ui-stress-setup": "node tools/run-ui-stress-setup.mjs",
     "dev:e2e": "node tools/dev-e2e.mjs",
     "mcp": "tsx tools/groundplan-mcp.ts",
     "apply:recipe": "tsx tools/apply-layout-recipe.ts",

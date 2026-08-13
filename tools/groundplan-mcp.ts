@@ -177,7 +177,7 @@ async function handle(msg: JsonRpc): Promise<void> {
         result: {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'groundplan', version: '1.2.1' },
+          serverInfo: { name: 'groundplan', version: '1.2.2' },
         },
       });
       return;

@@ -1,5 +1,5 @@
 /**
- * Object pairs kept beside the plan (stage↔stairs, etc.).
+ * Object pairs kept beside the plan (stage↔stairs, grouped furniture, etc.).
  *
  * Room Viewer has no place for “these two objects move together”, so the link
  * lives next to the `.rv4` the same way dimension associations do.
@@ -10,10 +10,12 @@ import { readFile, unlink } from 'node:fs/promises';
 
 import { atomicWriteJson } from './storage.js';
 
+export type ObjectLinkKind = 'stage-stairs' | 'group';
+
 export interface ObjectLinkPair {
   a: number;
   b: number;
-  kind?: 'stage-stairs';
+  kind?: ObjectLinkKind;
 }
 
 export interface ObjectLinkFile {
@@ -23,6 +25,15 @@ export interface ObjectLinkFile {
 }
 
 const fileFor = (planPath: string): string => `${planPath}.groundplan-links.json`;
+
+export function objectLinkPairKey(a: number, b: number): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function parseKind(value: unknown): ObjectLinkKind | undefined {
+  if (value === 'group' || value === 'stage-stairs') return value;
+  return undefined;
+}
 
 function emptyFile(): ObjectLinkFile {
   return { format: 'groundplan-object-links', version: 1, pairs: [] };
@@ -62,7 +73,7 @@ export async function loadObjectLinks(
       pairs.push({
         a: entry.a,
         b: entry.b,
-        kind: entry.kind === 'stage-stairs' ? 'stage-stairs' : undefined,
+        kind: parseKind(entry.kind),
       });
     }
     return { file: { format: 'groundplan-object-links', version: 1, pairs } };
@@ -89,23 +100,31 @@ export async function saveObjectLinks(planPath: string, file: ObjectLinkFile): P
   });
 }
 
-export function objectLinksFromMap(links: Map<number, number[]>): ObjectLinkFile {
+export function objectLinksFromMap(
+  links: Map<number, number[]>,
+  kinds?: Map<string, ObjectLinkKind>,
+): ObjectLinkFile {
   const seen = new Set<string>();
   const pairs: ObjectLinkPair[] = [];
   for (const [a, partners] of links) {
     for (const b of partners) {
       if (a >= b) continue;
-      const key = `${a}:${b}`;
+      const key = objectLinkPairKey(a, b);
       if (seen.has(key)) continue;
       seen.add(key);
-      pairs.push({ a, b, kind: 'stage-stairs' });
+      pairs.push({ a, b, kind: kinds?.get(key) ?? 'stage-stairs' });
     }
   }
   return { format: 'groundplan-object-links', version: 1, pairs };
 }
 
-export function applyObjectLinkFile(file: ObjectLinkFile, into: Map<number, number[]>): void {
+export function applyObjectLinkFile(
+  file: ObjectLinkFile,
+  into: Map<number, number[]>,
+  kinds?: Map<string, ObjectLinkKind>,
+): void {
   into.clear();
+  kinds?.clear();
   for (const pair of file.pairs) {
     const add = (from: number, to: number) => {
       const list = into.get(from) ?? [];
@@ -114,5 +133,6 @@ export function applyObjectLinkFile(file: ObjectLinkFile, into: Map<number, numb
     };
     add(pair.a, pair.b);
     add(pair.b, pair.a);
+    if (pair.kind && kinds) kinds.set(objectLinkPairKey(pair.a, pair.b), pair.kind);
   }
 }

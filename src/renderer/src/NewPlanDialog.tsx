@@ -47,7 +47,7 @@ const FT = 120;
 type RoomChoice = NewRoomShape | 'custom';
 type WallTreatment = 'straight' | 'curve';
 
-/** One-click common rooms — create immediately (except Draw custom). */
+/** One-click common rooms — boardroom (~20) through concert floor. */
 const QUICK_START: Array<{
   id: string;
   label: string;
@@ -56,9 +56,10 @@ const QUICK_START: Array<{
   depth?: number;
   custom?: boolean;
 }> = [
-  { id: 'meeting', label: 'Meeting room', detail: "30' × 20'", width: 30, depth: 20 },
+  { id: 'boardroom', label: 'Boardroom', detail: "20' × 16' · ~20", width: 20, depth: 16 },
+  { id: 'meeting', label: 'Meeting', detail: "30' × 20'", width: 30, depth: 20 },
   { id: 'ballroom', label: 'Ballroom', detail: "60' × 40'", width: 60, depth: 40 },
-  { id: 'exhibit', label: 'Exhibit hall', detail: "100' × 80'", width: 100, depth: 80 },
+  { id: 'concert', label: 'Concert floor', detail: "200' × 120'", width: 200, depth: 120 },
   { id: 'custom', label: 'Draw custom', detail: 'Trace next', custom: true },
 ];
 
@@ -67,15 +68,19 @@ const SHAPES: Array<{
   label: string;
   detail: string;
   icon: 'rect' | 'ellipse' | 'polygon';
+  advanced?: boolean;
 }> = [
   { id: 'rectangle', label: 'Rectangle', detail: 'Exact width × depth', icon: 'rect' },
-  { id: 'rounded', label: 'Rounded', detail: 'True-radius corners', icon: 'rect' },
   { id: 'circle', label: 'Circle', detail: 'Exact curved boundary', icon: 'ellipse' },
-  { id: 'stadium', label: 'Stadium', detail: 'Two semicircular ends', icon: 'ellipse' },
-  { id: 'l-shape', label: 'L-shaped', detail: 'One recessed corner', icon: 'polygon' },
-  { id: 'u-shape', label: 'U-shaped', detail: 'Centred floor recess', icon: 'polygon' },
   { id: 'custom', label: 'Draw custom', detail: 'Trace any outline next', icon: 'polygon' },
+  { id: 'rounded', label: 'Rounded', detail: 'True-radius corners', icon: 'rect', advanced: true },
+  { id: 'stadium', label: 'Stadium', detail: 'Two semicircular ends', icon: 'ellipse', advanced: true },
+  { id: 'l-shape', label: 'L-shaped', detail: 'One recessed corner', icon: 'polygon', advanced: true },
+  { id: 'u-shape', label: 'U-shaped', detail: 'Centred floor recess', icon: 'polygon', advanced: true },
 ];
+
+const PRIMARY_SHAPES = SHAPES.filter((shape) => !shape.advanced);
+const ADVANCED_SHAPES = SHAPES.filter((shape) => shape.advanced);
 
 const CURVE_METHODS: Array<{ id: NewRoomCurveMethod; label: string; short: string; help: string }> = [
   { id: 'radius', label: 'Radius', short: 'Radius', help: 'Arc radius that meets both ends of the wall.' },
@@ -242,6 +247,8 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [customAngleLock, setCustomAngleLock] = useState<CustomRoomAngleLock>('ortho');
   const [customShowGuide, setCustomShowGuide] = useState(true);
   const [customAutoDimensions, setCustomAutoDimensions] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [customOptionsOpen, setCustomOptionsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -385,10 +392,16 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
 
   const quickStart = (item: (typeof QUICK_START)[number]) => {
     if (item.custom) {
-      setShape('custom');
-      setWallTreatment('straight');
-      setWidth(formatLength(60 * FT, units));
-      setDepth(formatLength(40 * FT, units));
+      // One click: empty sheet + outline tool, ortho guide at 60×40.
+      void create({
+        custom: {
+          guideWidth: 60 * FT,
+          guideDepth: 40 * FT,
+          angleLock: 'ortho',
+          showGuide: true,
+          autoDimensions: true,
+        },
+      });
       return;
     }
     if (!(item.width && item.depth)) return;
@@ -396,9 +409,9 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     setWallTreatment('straight');
     setWidth(formatLength(item.width * FT, units));
     setDepth(formatLength(item.depth * FT, units));
+    // Keep the plan file name; venue archetype is not the document identity.
     void create({
       room: { shape: 'rectangle', width: item.width * FT, depth: item.depth * FT },
-      name: item.label,
     });
   };
 
@@ -431,7 +444,10 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           <div>
             <span className="new-plan-eyebrow">New plan</span>
             <h2 id="new-plan-title">Build the room</h2>
-            <p>Start from a venue size or shape. Venue and event details come later in Show setup.</p>
+            <p>
+              From a 20-person boardroom to a full concert floor — pick a size or shape. Show details come
+              after the plan opens.
+            </p>
           </div>
           <span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>
         </div>
@@ -457,10 +473,10 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                 <section className="new-plan-builder-section">
                   <div className="new-plan-section-title">
                     <span>1</span>
-                    <div><strong>Choose the boundary</strong><small>Every option stays editable after creation.</small></div>
+                    <div><strong>Choose the boundary</strong><small>Or use a quick start above to skip this.</small></div>
                   </div>
-                  <div className="new-plan-shape-grid" role="radiogroup" aria-label="Starting room shape">
-                    {SHAPES.map((item) => (
+                  <div className="new-plan-shape-grid is-primary" role="radiogroup" aria-label="Starting room shape">
+                    {PRIMARY_SHAPES.map((item) => (
                       <button
                         key={item.id}
                         type="button"
@@ -477,6 +493,37 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                       </button>
                     ))}
                   </div>
+                  <button
+                    type="button"
+                    className={`new-plan-advanced-toggle${advancedOpen || ADVANCED_SHAPES.some((item) => item.id === shape) ? ' is-open' : ''}`}
+                    aria-expanded={advancedOpen || ADVANCED_SHAPES.some((item) => item.id === shape)}
+                    onClick={() => setAdvancedOpen((open) => !open)}
+                  >
+                    {advancedOpen || ADVANCED_SHAPES.some((item) => item.id === shape)
+                      ? 'Hide more shapes & curves'
+                      : 'More shapes & curves'}
+                  </button>
+                  {(advancedOpen || ADVANCED_SHAPES.some((item) => item.id === shape)) && (
+                    <div className="new-plan-shape-grid is-advanced" role="radiogroup" aria-label="Advanced room shapes">
+                      {ADVANCED_SHAPES.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={shape === item.id}
+                          className={shape === item.id ? 'active' : ''}
+                          onClick={() => {
+                            setShape(item.id);
+                            setAdvancedOpen(true);
+                            if (item.id !== 'rectangle' && item.id !== 'l-shape' && item.id !== 'u-shape') setWallTreatment('straight');
+                          }}
+                        >
+                          <IconForShape kind={item.icon} />
+                          <span><strong>{item.label}</strong><small>{item.detail}</small></span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </section>
 
                 {customRoom ? (
@@ -536,79 +583,79 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                       </div>
                     </section>
 
-                    <section className="new-plan-builder-section">
-                      <div className="new-plan-section-title">
-                        <span>3</span>
-                        <div>
-                          <strong>Corner constraints</strong>
-                          <small>Each click locks relative to the previous corner. Hold Shift for a temporary 90°.</small>
-                        </div>
-                      </div>
-                      <div className="seg tabs new-plan-angle-lock" role="radiogroup" aria-label="Corner angle lock">
-                        {ANGLE_LOCKS.map((lock) => (
-                          <button
-                            key={lock.id}
-                            type="button"
-                            role="radio"
-                            aria-checked={customAngleLock === lock.id}
-                            className={customAngleLock === lock.id ? 'active' : ''}
-                            onClick={() => setCustomAngleLock(lock.id)}
-                            title={lock.detail}
-                          >
-                            <strong>{lock.label}</strong>
-                            <small>{lock.detail}</small>
-                          </button>
-                        ))}
-                      </div>
-                      <label className="setting-check new-plan-custom-check">
-                        <input
-                          type="checkbox"
-                          checked={customShowGuide}
-                          onChange={(e) => setCustomShowGuide(e.target.checked)}
-                        />
-                        <span>
-                          <strong>Show size guide on the plan</strong>
-                          <small>Dashed {formatLength(parsed.width ?? 0, units)} × {formatLength(parsed.depth ?? 0, units)} rectangle while you draw.</small>
-                        </span>
-                      </label>
-                    </section>
+                    <div className="new-plan-custom-guide" role="status">
+                      <IconDrawPolygon size={22} />
+                      <span>
+                        <strong>Next: click corners on the plan</strong>
+                        <small>
+                          Click near the start or press Enter to finish · Esc cancels · Finish as rectangle stays available.
+                        </small>
+                      </span>
+                    </div>
 
-                    <section className="new-plan-builder-section">
-                      <div className="new-plan-section-title">
-                        <span>4</span>
-                        <div>
-                          <strong>Finish behaviour</strong>
-                          <small>What happens after you close the outline.</small>
-                        </div>
-                      </div>
-                      <label className="new-plan-dimension-option">
-                        <input
-                          type="checkbox"
-                          checked={customAutoDimensions}
-                          onChange={(e) => setCustomAutoDimensions(e.target.checked)}
-                        />
-                        <IconRuler size={17} />
-                        <span>
-                          <strong>Dimension walls when finished</strong>
-                          <small>Adds a length call-out on every wall after Enter / close.</small>
-                        </span>
-                      </label>
-                      <div className="new-plan-custom-guide" role="status">
-                        <IconDrawPolygon size={22} />
-                        <span>
-                          <strong>Trace on the plan next</strong>
-                          <small>
-                            Click corners in order · click near the start or press Enter to finish · then use Edit Outline or Direct Selection for curves and fine points.
-                          </small>
-                          <span className="new-plan-capability-list">
-                            <b>Angled</b>
-                            <b>Concave</b>
-                            <b>Curved later</b>
-                            <b>Unlimited points</b>
-                          </span>
-                        </span>
-                      </div>
-                    </section>
+                    <button
+                      type="button"
+                      className={`new-plan-advanced-toggle${customOptionsOpen ? ' is-open' : ''}`}
+                      aria-expanded={customOptionsOpen}
+                      onClick={() => setCustomOptionsOpen((open) => !open)}
+                    >
+                      {customOptionsOpen ? 'Hide drawing options' : 'Drawing options'}
+                    </button>
+                    {customOptionsOpen && (
+                      <>
+                        <section className="new-plan-builder-section">
+                          <div className="new-plan-section-title">
+                            <span>3</span>
+                            <div>
+                              <strong>Corner constraints</strong>
+                              <small>Each click locks relative to the previous corner. Hold Shift for a temporary 90°.</small>
+                            </div>
+                          </div>
+                          <div className="seg tabs new-plan-angle-lock" role="radiogroup" aria-label="Corner angle lock">
+                            {ANGLE_LOCKS.map((lock) => (
+                              <button
+                                key={lock.id}
+                                type="button"
+                                role="radio"
+                                aria-checked={customAngleLock === lock.id}
+                                className={customAngleLock === lock.id ? 'active' : ''}
+                                onClick={() => setCustomAngleLock(lock.id)}
+                                title={lock.detail}
+                              >
+                                <strong>{lock.label}</strong>
+                                <small>{lock.detail}</small>
+                              </button>
+                            ))}
+                          </div>
+                          <label className="setting-check new-plan-custom-check">
+                            <input
+                              type="checkbox"
+                              checked={customShowGuide}
+                              onChange={(e) => setCustomShowGuide(e.target.checked)}
+                            />
+                            <span>
+                              <strong>Show size guide on the plan</strong>
+                              <small>Dashed {formatLength(parsed.width ?? 0, units)} × {formatLength(parsed.depth ?? 0, units)} rectangle while you draw.</small>
+                            </span>
+                          </label>
+                        </section>
+
+                        <section className="new-plan-builder-section">
+                          <label className="new-plan-dimension-option">
+                            <input
+                              type="checkbox"
+                              checked={customAutoDimensions}
+                              onChange={(e) => setCustomAutoDimensions(e.target.checked)}
+                            />
+                            <IconRuler size={17} />
+                            <span>
+                              <strong>Dimension walls when finished</strong>
+                              <small>Adds a length call-out on every wall after Enter / close.</small>
+                            </span>
+                          </label>
+                        </section>
+                      </>
+                    )}
                   </>
                 ) : (
                   <>
@@ -670,7 +717,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                       )}
                     </section>
 
-                    {curveEligible && (
+                    {curveEligible && (advancedOpen || wallTreatment === 'curve') && (
                       <section className="new-plan-builder-section is-curve-section">
                         <div className="new-plan-section-title">
                           <span>3</span>

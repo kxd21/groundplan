@@ -17,6 +17,10 @@ files:
 extraResources:
   - from: resources/starter-inventory
     to: starter-inventory
+  - from: tools/fixtures
+    to: fixtures
+    filter:
+      - '*-layout-recipe.json'
 
 # The legacy Windows editor owned these extensions. Groundplan can open all of
 # them directly, so the desktop packages advertise the same complete set.
