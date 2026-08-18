@@ -214,7 +214,7 @@ export function companionStatus(companion: CompanionDocument | null, doc: RVDocu
   return {
     freshness: 'stale',
     reason:
-      'This plan has been changed since its Groundplan data was written — probably saved in Room Viewer. ' +
+      'This plan has been changed since its Groundplan data was written. Probably saved in Room Viewer. ' +
       'The room, seating and stage settings describe the earlier version.',
   };
 }

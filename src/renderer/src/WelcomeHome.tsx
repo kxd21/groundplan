@@ -13,6 +13,7 @@ import {
   IconPaste,
   IconPlus,
   IconSearch,
+  IconStar,
   Mark,
 } from './icons.js';
 
@@ -35,9 +36,8 @@ const FEATURES = [
   {
     eyebrow: 'Flexible rooms',
     title: 'Start from the room',
-    body: 'New plan is room-first — pick a venue size and the matching kit lands with it. Custom rooms get a fitted kit after you close the outline.',
-    action: 'Choose New plan — Boardroom, Ballroom, or Concert — then tweak or print.',
-    tone: 'orange',
+    body: 'New plan is room-first: pick a venue size and the matching kit lands with it. Custom rooms get a fitted kit after you close the outline.',
+    action: 'Choose New plan, pick Boardroom, Ballroom, or Concert, then tweak or print.',
     icon: <IconDrawPolygon size={25} />,
     companion: <IconEdit size={23} />,
   },
@@ -46,7 +46,6 @@ const FEATURES = [
     title: 'Work across multiple shows',
     body: 'Keep plans in tabs, copy exact items from one show, and paste them into another without rebuilding the layout.',
     action: 'Open a second plan with the + beside the document tabs.',
-    tone: 'blue',
     icon: <IconCopy size={24} />,
     companion: <IconPaste size={24} />,
   },
@@ -55,7 +54,6 @@ const FEATURES = [
     title: 'Build a real folder workflow',
     body: 'Nest client and venue folders, add review notes, track approval status, and batch-file several plans at once.',
     action: 'Choose Folder Workspace from Home or the left panel.',
-    tone: 'violet',
     icon: <IconFolder size={25} />,
     companion: <IconLayers size={23} />,
   },
@@ -63,8 +61,7 @@ const FEATURES = [
     eyebrow: 'Detailed layouts',
     title: 'Plan seating in a focused workspace',
     body: 'Compare layouts, tune clearances and aisles, place sections, and keep the drawing visible while you work.',
-    action: 'Open Seating planner from Setup — or stamp one bank under Stamp a seating bank.',
-    tone: 'green',
+    action: 'Open Seating planner from Setup, or stamp one bank under Stamp a seating bank.',
     icon: <IconChair size={25} />,
     companion: <IconLayers size={23} />,
   },
@@ -168,7 +165,7 @@ export default function WelcomeHome({
         </header>
 
         <section
-          className={`welcome-feature is-${feature.tone}`}
+          className="welcome-feature"
           aria-label="Groundplan feature tips"
           aria-live="polite"
           onPointerEnter={() => setPaused(true)}
@@ -223,14 +220,14 @@ export default function WelcomeHome({
               <button className="welcome-empty-card" onClick={query ? () => setQuery('') : onNewPlan}>
                 <IconPlus size={24} />
                 <strong>{query ? 'No matching recent shows' : 'Create your first plan'}</strong>
-                <small>{query ? 'Clear the search and try again.' : 'New plan builds the room first — then stage, seating, and print.'}</small>
+                <small>{query ? 'Clear the search and try again.' : 'New plan builds the room first, then stage, seating, and print.'}</small>
               </button>
             )}
           </div>
         </section>
 
         <section className="welcome-section welcome-folders">
-          <header><span><h2>Plan folders</h2><small>Virtual filing — files stay on disk; Groundplan only tracks membership</small></span><button onClick={() => onOpenFolderWorkspace()}>Open Folder Workspace</button></header>
+          <header><span><h2>Plan folders</h2><small>Virtual filing: files stay on disk, Groundplan only tracks membership</small></span><button onClick={() => onOpenFolderWorkspace()}>Open Folder Workspace</button></header>
           <div className="welcome-folder-grid">
             {featuredFolders.map((folder) => {
               const planCount = folders?.plans.filter((plan) => plan.folderId === folder.id).length ?? 0;
@@ -239,7 +236,7 @@ export default function WelcomeHome({
                 <button key={folder.id} onClick={() => onOpenFolderWorkspace(folder.id)} title={folderTrail(folders!.folders, folder)}>
                   <span className="welcome-folder-icon" style={{ '--folder-colour': folder.color ?? '#687789' } as CSSProperties}><IconFolder size={17} /></span>
                   <span><strong>{folder.name}</strong><small>{planCount} plan{planCount === 1 ? '' : 's'}{childCount ? ` · ${childCount} subfolder${childCount === 1 ? '' : 's'}` : ''}</small></span>
-                  {folder.favorite && <b title="Favorite">★</b>}
+                  {folder.favorite && <b title="Favorite"><IconStar size={12} filled /></b>}
                 </button>
               );
             })}

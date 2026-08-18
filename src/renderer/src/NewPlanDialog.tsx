@@ -169,7 +169,7 @@ const ADVANCED_SHAPES = SHAPES.filter((shape) => shape.advanced);
 const CURVE_METHODS: Array<{ id: NewRoomCurveMethod; label: string; short: string; help: string }> = [
   { id: 'radius', label: 'Radius', short: 'Radius', help: 'Arc radius that meets both ends of the wall.' },
   { id: 'sagitta', label: 'Bow depth', short: 'Bow', help: 'How far the wall bows off the straight chord.' },
-  { id: 'angle', label: 'Included angle', short: 'Angle', help: 'Degrees of turn — 90° is a quarter round.' },
+  { id: 'angle', label: 'Included angle', short: 'Angle', help: 'Degrees of turn: 90° is a quarter round.' },
   { id: 'arc-length', label: 'Arc length', short: 'Arc', help: 'Finished length along the curve (must exceed the chord).' },
 ];
 
@@ -480,7 +480,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
               resolve({
                 ok: false,
                 reason:
-                  'Creating the plan took too long — look for a Save or Discard dialog behind this window, then try again.',
+                  'Creating the plan took too long. Look for a Save or Discard dialog behind this window, then try again.',
               }),
             45_000,
           );
@@ -894,7 +894,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                         <div className="field">
                           <label htmlFor="new-plan-corner-radius">Corner radius</label>
                           <input id="new-plan-corner-radius" value={cornerRadius} aria-invalid={cornerRadius.trim() !== '' && !((parsed.cornerRadius ?? 0) > 0)} onChange={(e) => setCornerRadius(e.target.value)} />
-                          <span className="field-help">Creates tangent fillets with a true build radius—not a visual-only effect.</span>
+                          <span className="field-help">Creates tangent fillets with a true build radius, not a visual-only effect.</span>
                         </div>
                       )}
 
@@ -930,7 +930,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                           <span>3</span>
                           <div>
                             <strong>Curve a wall</strong>
-                            <small>Exact circular arc — click a wall in the preview or pick one below.</small>
+                            <small>Exact circular arc: click a wall in the preview or pick one below.</small>
                           </div>
                         </div>
                         <div className="seg tabs new-plan-treatment" role="radiogroup" aria-label="Initial wall treatment">
@@ -1175,7 +1175,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                 Rename from “{planName}”
               </button>
             )}
-            <span className="new-plan-foot-note">Saves to Documents/Groundplan — rename anytime with Save As.</span>
+            <span className="new-plan-foot-note">Saves to Documents/Groundplan; rename anytime with Save As.</span>
           </div>
           <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
           <button

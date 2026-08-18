@@ -69,7 +69,7 @@ export async function loadCompanion(
       derived: true,
       reason:
         source === 'extent'
-          ? 'No wall outline could be traced, so the room is the extent of the drawing — treat its area as an over-estimate.'
+          ? 'No wall outline could be traced, so the room is the extent of the drawing. Treat its area as an over-estimate.'
           : source === 'none'
             ? 'This plan has no wall geometry, so it has no room outline yet.'
             : closed

@@ -266,15 +266,15 @@ export function TraceDialog({
     if (!widthValue || !depthValue) {
       onError(
         units === 'metric'
-          ? 'Enter both dimensions, like 120cm or 1.2m — an outline needs a real size.'
-          : 'Enter both dimensions, like 4\' or 48" — an outline needs a real size.',
+          ? 'Enter both dimensions, like 120cm or 1.2m. An outline needs a real size.'
+          : 'Enter both dimensions, like 4\' or 48". An outline needs a real size.',
       );
       return;
     }
 
     const confirmed = confirmedResult();
     if (!confirmed?.ok) {
-      onError(confirmed?.reason ?? 'Tracing failed — adjust threshold or invert');
+      onError(confirmed?.reason ?? 'Tracing failed: adjust threshold or invert');
       return;
     }
 

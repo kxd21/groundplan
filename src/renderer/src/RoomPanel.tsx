@@ -793,7 +793,7 @@ export default function RoomPanel({
             {room.holes > 0 ? ` · ${room.holes} cut-out${room.holes === 1 ? '' : 's'}` : ''}
           </p>
         ) : (
-          <p className="hint">No outline yet — draw one below.</p>
+          <p className="hint">No outline yet. Draw one below.</p>
         )}
 
         <div className="field-row">

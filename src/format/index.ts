@@ -160,7 +160,7 @@ function unwrap(buf: Buffer): Unwrapped {
     };
   }
 
-  throw new Error('unrecognised container — not an OLE compound file or MFC archive');
+  throw new Error('unrecognised container: not an OLE compound file or MFC archive');
 }
 
 export function loadBuffer(buf: Buffer, path = '<memory>'): LoadedFile {

@@ -188,7 +188,7 @@ export function GearView({
     if (reply.ok) {
       onInventoryChanged?.();
       onStatus?.(
-        `Company inventory updated — ${reply.added ?? 0} new, ${reply.updated ?? 0} updated. Export an inventory pack to share with other computers.`,
+        `Company inventory updated: ${reply.added ?? 0} new, ${reply.updated ?? 0} updated. Export an inventory pack to share with other computers.`,
       );
     } else if (reply.reason) onError(reply.reason);
   };

@@ -165,7 +165,7 @@ function buildSheet(request: PrintRequest): { html: string; pageCount: number } 
   const scale = SCALES.find((s) => s.id === request.scale) ?? SCALES[2];
   const drawnAt = scale.inchesPerFoot
     ? `${scale.label}`
-    : 'Fit to page — not to scale';
+    : 'Fit to page: not to scale';
 
   const box = parseViewBox(request.svg);
   const frameWidth = pageWidth - MARGIN * 2 - 0.2;

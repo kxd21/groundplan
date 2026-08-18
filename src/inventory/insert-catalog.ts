@@ -302,28 +302,28 @@ export const INSERT_TREE: InsertBranch[] = [
     children: [
       leaf(
         'door-double',
-        'Door — double',
+        'Door: double',
         ['Door - Double (Out)', 'Door - Double', 'Double Door'],
         ['not-drawn'],
         "6' x 6' Door Double",
       ),
       leaf(
         'door-single-in-l',
-        'Door — single in (L)',
+        'Door: single in (L)',
         ['Door - Single (In) Left Swing', 'Door - Single'],
         ['not-drawn'],
         "3' x 3' Door Single",
       ),
       leaf(
         'door-single-in-r',
-        'Door — single in (R)',
+        'Door: single in (R)',
         ['Door - Single (In) Right Swing', 'Door - Single'],
         ['not-drawn'],
         "3' x 3' Door Single",
       ),
       leaf(
         'door-single-out-r',
-        'Door — single out (R)',
+        'Door: single out (R)',
         ['Door - Single (Out) Right Swing', 'Door - Single'],
         ['not-drawn'],
         "3' x 3' Door Single",

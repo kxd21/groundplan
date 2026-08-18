@@ -88,7 +88,7 @@ function LeafRow({
               ? `Place stock ${leaf.stockName}`
               : available
                 ? 'Arm stock size from keywords'
-                : 'Not in inventory and no stock size — add it in Inventory first'
+                : 'Not in inventory and no stock size. Add it in Inventory first'
         }
       >
         <span className="insert-leaf-main">

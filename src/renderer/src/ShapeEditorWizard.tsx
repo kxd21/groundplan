@@ -745,7 +745,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
   const onManualPointer = (raw: Point, shiftKey: boolean) => {
     if (!tracingOpen) return;
     if (!(width && width > 0) || !(depth && depth > 0)) {
-      onError('Enter the real width and depth first — the photo is scaled to that size');
+      onError('Enter the real width and depth first. The photo is scaled to that size');
       return;
     }
     const last = manualPoints[manualPoints.length - 1];
@@ -773,7 +773,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
   const applyMerge = () => {
     if (!draft) return;
     if (!canReshape) {
-      onError('Add / cut needs a rectangular outline. Pick rectangle, L, or U — or reset after curves.');
+      onError('Add / cut needs a rectangular outline. Pick rectangle, L, or U, or reset after curves.');
       return;
     }
     if (patchX == null || patchY == null || !(patchW && patchW > 0) || !(patchD && patchD > 0)) {
@@ -807,7 +807,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
       return;
     }
     if (tracingOpen && manualPoints.length > 0) {
-      onError('Close the outline first — click near the first corner, or Close outline');
+      onError('Close the outline first. Click near the first corner, or Close outline');
       return;
     }
     if (!draft) {
@@ -857,7 +857,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
       setRefImage(loaded);
       enterManualMode();
       if (!name.trim()) setName(file.name.replace(/\.[^.]+$/, ''));
-      onStatus('Image loaded — set real size, then click each corner on the photo');
+      onStatus('Image loaded: set real size, then click each corner on the photo');
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     }
@@ -1082,7 +1082,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
                           ? refImage
                             ? `Click corners on the photo (${manualPoints.length} so far). Close near the first corner.`
                             : 'Upload an image, or click freely in the size box to draw corners.'
-                          : 'Outline closed — add/cut below if it is rectangular, or retrace.'}
+                          : 'Outline closed: add/cut below if it is rectangular, or retrace.'}
                       </p>
                       <div className="actions-row">
                         <button
@@ -1109,7 +1109,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
                           className="btn-outline"
                           onClick={() => {
                             clearManualTrace();
-                            onStatus('Trace cleared — click corners again');
+                            onStatus('Trace cleared: click corners again');
                           }}
                         >
                           Retrace
@@ -1171,7 +1171,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
                   </div>
                   <p className="hint">
                     {canReshape
-                      ? 'Merge a rectangular bay into the outline, or cut an opening out — same as the room builder.'
+                      ? 'Merge a rectangular bay into the outline, or cut an opening out. Same as the room builder.'
                       : tracingOpen
                         ? 'Close the manual outline first, then add or cut if it is rectangular.'
                         : 'Add / cut needs a rectangular (axis-aligned) outline.'}
@@ -1362,8 +1362,8 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
             seedPatchBeside(room);
             onStatus(
               result.points > 24
-                ? `Auto-trace applied · ${room.walls.length} corners — drag points to refine, or Auto-trace again with Fewer corners`
-                : `Auto-trace applied · ${room.walls.length} corners — drag points to refine`,
+                ? `Auto-trace applied · ${room.walls.length} corners: drag points to refine, or Auto-trace again with Fewer corners`
+                : `Auto-trace applied · ${room.walls.length} corners: drag points to refine`,
             );
           }}
           onError={onError}

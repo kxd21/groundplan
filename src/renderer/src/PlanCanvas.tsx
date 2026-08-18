@@ -10,6 +10,19 @@ import type { PlanBackground } from '../../format/companion.js';
 import { constrainRoomCorner, type CustomRoomAngleLock } from './custom-room.js';
 import type { WallEditSession } from './wall-edit.js';
 import { flattenWall } from '../../format/room.js';
+import {
+  angleAt,
+  cursorFor,
+  edgeHandleFits,
+  frameCorners,
+  handlePoints,
+  hitHandle,
+  resizeFrom,
+  rotateFrom,
+  HANDLE_HALF,
+  type HandleId,
+  type TransformFrame,
+} from './transform-handles.js';
 
 const UNITS_PER_FOOT = 120;
 const UNITS_PER_INCH = 10;
@@ -100,6 +113,24 @@ interface Props {
   stackSet?: Array<{ id: number; name: string; elevation: number; kind: string }> | null;
   /** Fired once a drag ends, with the total movement in logical units. */
   onMoveSelection: (dx: number, dy: number) => void;
+  /**
+   * The selected object's own rectangle, when exactly one thing is selected and
+   * it can be transformed. Drives the on-canvas resize and rotate handles; null
+   * falls back to the plain bounds highlight.
+   */
+  transformTarget?: {
+    nodeId: number;
+    width: number;
+    height: number;
+    /** Absolute angle when the file stores one; null = rotate-by only. */
+    angleDegrees: number | null;
+    canResize: boolean;
+    canRotate: boolean;
+  } | null;
+  /** Commit an absolute size from a handle drag, in logical units. */
+  onResizeTo?: (nodeId: number, width: number, height: number) => void;
+  /** Commit a relative rotation from the rotate grip, in degrees. */
+  onRotateBy?: (nodeId: number, degrees: number) => void;
   editable: boolean;
   /** Reports the pointer position in logical units, or null when outside. */
   onCursor?: (position: { x: number; y: number } | null) => void;
@@ -315,7 +346,20 @@ function hitTestCandidates(
       for (let i = 0; i + 3 < p.pts.length; i += 2) {
         distance = Math.min(distance, distanceToSegment(x, y, p.pts[i], p.pts[i + 1], p.pts[i + 2], p.pts[i + 3]));
       }
-      if (p.type === 'polygon' && p.pts.length >= 4) {
+      // Furniture is picked by its BODY, not just its outline.
+      //
+      // `primitiveTypeFor` maps RVSegmentRect to 'polygon' but RVSegmentPoly to
+      // 'polyline', and a Room Viewer round table is a poly. So a stage could be
+      // clicked anywhere on its fill while a table could only be hit within the
+      // pick tolerance of its 1px edge — 0.56 ft at 12% zoom, which is less than
+      // half a chair. A scan of 34 points across a banquet row selected nothing.
+      //
+      // Walls and regions stay edge-picked on purpose: their rings enclose the
+      // whole floor, so an interior test there would swallow every click on
+      // empty ground and break marquee selection.
+      const closedBody =
+        p.type === 'polygon' || (p.layer === 'furniture' && p.pts.length >= 6);
+      if (closedBody && p.pts.length >= 4) {
         distance = Math.min(
           distance,
           distanceToSegment(x, y, p.pts[p.pts.length - 2], p.pts[p.pts.length - 1], p.pts[0], p.pts[1]),
@@ -400,6 +444,9 @@ export function PlanCanvas({
   placeOnLabel = null,
   stackSet = null,
   onMoveSelection,
+  transformTarget = null,
+  onResizeTo,
+  onRotateBy,
   editable,
   onCursor,
   onZoom,
@@ -471,6 +518,28 @@ export function PlanCanvas({
     y: number;
   } | null>(null);
   const [nudge, setNudge] = useState<{ dx: number; dy: number } | null>(null);
+  /** A live resize/rotate drag on the transform handles. */
+  const transformRef = useRef<{
+    nodeId: number;
+    handle: HandleId;
+    /** The frame as it stood when the handle was grabbed. */
+    frame: TransformFrame;
+    startX: number;
+    startY: number;
+    /** Pointer bearing when a rotate grip was grabbed. */
+    grabAngle: number;
+    width: number;
+    height: number;
+    rotateBy: number;
+  } | null>(null);
+  const [transformPreview, setTransformPreview] = useState<{
+    handle: HandleId;
+    width: number;
+    height: number;
+    rotateBy: number;
+  } | null>(null);
+  /** The handle under the pointer, so the cursor can say what a drag would do. */
+  const [hoverHandle, setHoverHandle] = useState<HandleId | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [peekStack, setPeekStack] = useState<Array<{ id: number; name: string }>>([]);
   const [peekCardPos, setPeekCardPos] = useState<{ x: number; y: number } | null>(null);
@@ -577,6 +646,31 @@ export function PlanCanvas({
     }
     return result;
   }, [prepared, visibleLayers]);
+
+  /**
+   * The transform frame for the one selected object, or null.
+   *
+   * Centre comes from the drawn bounds so the handles sit on what is on screen;
+   * width, height, and angle come from the document, because the world-aligned
+   * bounding box of a rotated object is not its rectangle.
+   */
+  const transformFrame = useMemo<TransformFrame | null>(() => {
+    if (!editable || !transformTarget || selection.length !== 1) return null;
+    if (selection[0] !== transformTarget.nodeId) return null;
+    if (!(transformTarget.width > 0) || !(transformTarget.height > 0)) return null;
+    const b = objectBounds.get(transformTarget.nodeId);
+    if (!b) return null;
+    return {
+      cx: (b.minX + b.maxX) / 2,
+      cy: (b.minY + b.maxY) / 2,
+      width: transformTarget.width,
+      height: transformTarget.height,
+      angle: transformTarget.angleDegrees ?? 0,
+    };
+  }, [editable, transformTarget, selection, objectBounds]);
+
+  /** Handles are a select-mode affordance; they must not fight another tool. */
+  const handlesLive = transformFrame != null && pointerMode.mode === 'select' && !wallEdit?.editable;
 
   useEffect(() => {
     viewRef.current = view;
@@ -979,7 +1073,22 @@ export function PlanCanvas({
       }
     }
 
+    // One editable object in select mode gets the real transform frame; every
+    // other case keeps the plain highlight.
+    const soloTransform = handlesLive && transformFrame && selection.length === 1;
+    if (soloTransform && transformFrame) {
+      drawTransformFrame(
+        ctx,
+        transformFrame,
+        view,
+        transformPreview,
+        nudge,
+        units,
+        transformTarget?.canRotate ?? false,
+      );
+    }
     for (const id of selection) {
+      if (soloTransform) break;
       const b = objectBounds.get(id);
       if (!b) continue;
       // Crowded multi-select: light per-item frames only when the set is small.
@@ -1226,6 +1335,10 @@ export function PlanCanvas({
     placeOnLabel,
     stackSet,
     showStackPeek,
+    handlesLive,
+    transformFrame,
+    transformPreview,
+    transformTarget,
   ]);
 
   const editingTextPrimitive = useMemo(
@@ -1348,6 +1461,41 @@ export function PlanCanvas({
       }
     }
 
+    // Transform handles beat object hit-testing: a corner grip sits on top of
+    // the object it belongs to, and a click there means resize, not re-select.
+    if (handlesLive && transformFrame && transformTarget && e.button === 0) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const handle = hitHandle(
+        transformFrame,
+        view,
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        transformTarget.canRotate,
+      );
+      const usable = handle === 'rotate' ? transformTarget.canRotate : transformTarget.canResize;
+      if (handle && usable) {
+        const at = toPlan(e);
+        transformRef.current = {
+          nodeId: transformTarget.nodeId,
+          handle,
+          frame: transformFrame,
+          startX: at.x,
+          startY: at.y,
+          grabAngle: angleAt(transformFrame, at.x, at.y),
+          width: transformFrame.width,
+          height: transformFrame.height,
+          rotateBy: 0,
+        };
+        setTransformPreview({
+          handle,
+          width: transformFrame.width,
+          height: transformFrame.height,
+          rotateBy: 0,
+        });
+        return;
+      }
+    }
+
     // Room wall editing beats furniture hit-testing so chairs along a wall
     // cannot steal the click meant for push / curve.
     if (wallEdit && wallEdit.editable && e.button === 0 && pointerMode.mode === 'select') {
@@ -1398,10 +1546,48 @@ export function PlanCanvas({
       }
     }
 
+    // While a stamp stays armed, pressing on something that is ALREADY selected
+    // — which is exactly what you just dropped — grabs it to nudge into place
+    // instead of stamping a second copy. Everything else still stamps, so
+    // placing onto a surface ("Place next on this") is untouched, and you never
+    // have to end placing just to move the piece you only just put down.
+    const grabArmedSelection =
+      pointerMode.mode === 'stamp' &&
+      editable &&
+      e.button === 0 &&
+      !e.shiftKey &&
+      selection.length > 0 &&
+      (() => {
+        // Bounds, not the stroke-distance hit test. `hitTest` measures to the
+        // nearest drawn SEGMENT with an 8-screen-pixel tolerance, which at 8%
+        // zoom is 0.8 ft — so pressing the middle of a 5.5 ft round table is
+        // 2.75 ft from its outline and registers as empty canvas. Testing the
+        // press against the bounding box of what is already selected is both
+        // generous and safe: it can only ever grab a piece the user just put
+        // down, never unrelated geometry, so stamping onto a surface still
+        // works everywhere else.
+        const p = toPlan(e);
+        const slack = 2 / view.scale;
+        for (const id of selection) {
+          const b = objectBounds.get(id);
+          if (!b) continue;
+          if (
+            p.x >= b.minX - slack &&
+            p.x <= b.maxX + slack &&
+            p.y >= b.minY - slack &&
+            p.y <= b.maxY + slack
+          ) {
+            return true;
+          }
+        }
+        return false;
+      })();
+
     if (
       (pointerMode.mode === 'stamp' || pointerMode.mode === 'span' || pointerMode.mode === 'path') &&
       onCanvasClick &&
-      e.button === 0
+      e.button === 0 &&
+      !grabArmedSelection
     ) {
       const point = toPlan(e);
       // Association is decided at the actual click location, before optional
@@ -1559,6 +1745,35 @@ export function PlanCanvas({
     setShiftHeld(e.shiftKey);
     if (pointerMode.mode === 'span' || pointerMode.mode === 'path') setPointer(plan);
 
+    const transforming = transformRef.current;
+    if (transforming) {
+      if (transforming.handle === 'rotate') {
+        const rotateBy = rotateFrom(
+          transforming.frame,
+          transforming.grabAngle,
+          angleAt(transforming.frame, plan.x, plan.y),
+          e.shiftKey,
+        );
+        transforming.rotateBy = rotateBy;
+        setTransformPreview({ handle: 'rotate', width: transforming.width, height: transforming.height, rotateBy });
+      } else {
+        const size = resizeFrom(
+          transforming.frame,
+          transforming.handle,
+          plan.x - transforming.startX,
+          plan.y - transforming.startY,
+          {
+            lockAspect: e.shiftKey,
+            snapStep: editSnapStep(snapStep, units, { shift: false, alt: e.altKey }),
+          },
+        );
+        transforming.width = size.width;
+        transforming.height = size.height;
+        setTransformPreview({ handle: transforming.handle, ...size, rotateBy: 0 });
+      }
+      return;
+    }
+
     if (pointMoveRef.current) {
       const next = snapPlanPoint(plan, snapStep, units, { shift: e.shiftKey, alt: e.altKey });
       setPointPreview({ ...pointMoveRef.current, ...next });
@@ -1619,6 +1834,23 @@ export function PlanCanvas({
       return;
     }
 
+    // Cheap, and it has to run before object hover so the cursor over a corner
+    // grip says "resize" rather than "select the thing underneath".
+    if (handlesLive && transformFrame && transformTarget) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const over = hitHandle(
+        transformFrame,
+        view,
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        transformTarget.canRotate,
+      );
+      const usable = over === 'rotate' ? transformTarget.canRotate : transformTarget.canResize;
+      setHoverHandle(over && usable ? over : null);
+    } else if (hoverHandle) {
+      setHoverHandle(null);
+    }
+
     if (scene && editable && scene.primitives.length <= HOVER_PRIMITIVE_LIMIT) {
       hoverPointRef.current = plan;
       if (hoverFrameRef.current == null) {
@@ -1659,6 +1891,22 @@ export function PlanCanvas({
 
   const endDrag = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+
+    if (transformRef.current) {
+      const drag = transformRef.current;
+      transformRef.current = null;
+      setTransformPreview(null);
+      if (drag.handle === 'rotate') {
+        // Below a twentieth of a degree this was a click on the grip.
+        if (Math.abs(drag.rotateBy) >= 0.05) onRotateBy?.(drag.nodeId, drag.rotateBy);
+      } else if (
+        Math.abs(drag.width - drag.frame.width) >= 1 ||
+        Math.abs(drag.height - drag.frame.height) >= 1
+      ) {
+        onResizeTo?.(drag.nodeId, drag.width, drag.height);
+      }
+      return;
+    }
 
     if (pointMoveRef.current) {
       const moved = pointPreview ?? pointMoveRef.current;
@@ -1746,10 +1994,21 @@ export function PlanCanvas({
   // sheet.
   const twoPoint: 'start' | 'end' | undefined = pointerMode.parity;
 
+  // A drag in progress keeps its cursor even when the pointer runs off the grip.
+  const activeHandle = transformPreview?.handle ?? hoverHandle;
+
   return (
     <div
       className="canvas-wrap"
       ref={wrapRef}
+      // A grip under the pointer (or held in a drag) owns the cursor: the arrow
+      // has to agree with what a drag from here would actually do.
+      style={
+        activeHandle && transformFrame
+          ? ({ '--canvas-cursor': cursorFor(activeHandle, transformFrame.angle) } as CSSProperties)
+          : undefined
+      }
+      data-handle={activeHandle ? 'on' : undefined}
       data-mode={spaceHeld ? 'pan' : mode}
       data-two-point={twoPoint}
       data-path-points={pointerMode.mode === 'path' ? pathPoints.length : undefined}
@@ -1894,8 +2153,8 @@ export function PlanCanvas({
         <button
           className={`icon-btn${pointerMode.mode === 'pan' ? ' is-on' : ''}`}
           onClick={() => onToggleHand?.()}
-          title="Hand tool — drag to pan (H)"
-          aria-label="Hand tool — drag to pan (H)"
+          title="Hand tool: drag to pan (H)"
+          aria-label="Hand tool: drag to pan (H)"
           aria-pressed={pointerMode.mode === 'pan'}
         >
           <IconHand />
@@ -2279,7 +2538,105 @@ function drawGrid(
   if (spacing * 5 < Math.max(size.width, size.height)) draw(minor * 5, paper ? 0.11 : 0.09);
 }
 
-/** An honest bounds highlight. Resize is available in Properties, not via fake handles. */
+/**
+ * The transform frame: the object's own rectangle with live handles.
+ *
+ * Drawn instead of the plain bounds highlight whenever exactly one editable
+ * object is selected in select mode. The rectangle is the object's, not the
+ * world-aligned box, so the grips sit on the real corners of a rotated riser.
+ */
+function drawTransformFrame(
+  ctx: CanvasRenderingContext2D,
+  frame: TransformFrame,
+  view: View,
+  preview: { handle: HandleId; width: number; height: number; rotateBy: number } | null,
+  nudge: { dx: number; dy: number } | null,
+  units: UnitSystem,
+  canRotate: boolean,
+): void {
+  // A live drag paints the size and angle it is asking for, not the committed
+  // ones, or the frame would lag a whole IPC round-trip behind the pointer.
+  const live: TransformFrame = {
+    cx: frame.cx + (nudge?.dx ?? 0),
+    cy: frame.cy + (nudge?.dy ?? 0),
+    width: preview && preview.handle !== 'rotate' ? preview.width : frame.width,
+    height: preview && preview.handle !== 'rotate' ? preview.height : frame.height,
+    angle: frame.angle + (preview?.rotateBy ?? 0),
+  };
+
+  const corners = frameCorners(live, view);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,148,255,0.85)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  corners.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.closePath();
+  ctx.stroke();
+
+  const points = handlePoints(live, view, canRotate);
+
+  for (const point of points) {
+    if (!edgeHandleFits(live, view, point.id)) continue;
+    const active = preview?.handle === point.id;
+    if (point.id === 'rotate') {
+      // A stem to the top edge, so the grip reads as attached to the object.
+      const top = points.find((p) => p.id === 'n');
+      if (top) {
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(point.x, point.y);
+        ctx.strokeStyle = 'rgba(77,148,255,0.55)';
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = active ? 'rgba(22,135,248,1)' : '#fff';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(22,135,248,0.95)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      continue;
+    }
+    ctx.beginPath();
+    ctx.rect(point.x - HANDLE_HALF, point.y - HANDLE_HALF, HANDLE_HALF * 2, HANDLE_HALF * 2);
+    ctx.fillStyle = active ? 'rgba(22,135,248,1)' : '#fff';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(22,135,248,0.95)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  if (preview) {
+    const label =
+      preview.handle === 'rotate'
+        ? `${(((live.angle % 360) + 360) % 360).toFixed(1)}°`
+        : `${formatLength(live.width, units)} × ${formatLength(live.height, units)}`;
+    ctx.font = '600 11px -apple-system, "Segoe UI", system-ui, sans-serif';
+    const textWidth = ctx.measureText(label).width;
+    const chipW = textWidth + 14;
+    const chipH = 20;
+    const centre = {
+      x: live.cx * view.scale + view.offsetX,
+      y: live.cy * view.scale + view.offsetY,
+    };
+    const lowest = Math.max(...corners.map((c) => c.y));
+    const chipX = Math.round(centre.x - chipW / 2);
+    const chipY = Math.round(Math.max(RULER + 4, lowest + 10));
+    ctx.fillStyle = 'rgba(22,135,248,0.95)';
+    ctx.fillRect(chipX, chipY, chipW, chipH);
+    ctx.fillStyle = '#fff';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, chipX + 7, chipY + chipH / 2);
+  }
+  ctx.restore();
+}
+
+/** An honest bounds highlight, for anything the transform frame does not cover. */
 function drawSelectionFrame(
   ctx: CanvasRenderingContext2D,
   b: { minX: number; minY: number; maxX: number; maxY: number },

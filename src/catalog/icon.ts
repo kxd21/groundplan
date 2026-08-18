@@ -237,7 +237,7 @@ export function screenIconName(name: string): NameScreen {
   // A name with no recognisable equipment vocabulary is not necessarily a leak,
   // but it is the shape a one-off custom symbol has, so it gets attention.
   if (reasons.length === 0 && !TECHNOLOGY.test(trimmed)) {
-    reasons.push('no recognisable equipment vocabulary — check it is not job-specific');
+    reasons.push('no recognisable equipment vocabulary. Check it is not job-specific');
   }
 
   return { safe: reasons.length === 0, reasons };

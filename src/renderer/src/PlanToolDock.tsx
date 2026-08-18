@@ -1,5 +1,7 @@
 import { useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 
+import { IconEdit, IconMore, IconSidebarLeft, IconSidebarRight } from './icons.js';
+
 export interface PlanDockTool {
   id: string;
   label: string;
@@ -178,7 +180,7 @@ export default function PlanToolDock({
           title="Customize toolbar"
           data-tooltip="Customize toolbar"
         >
-          ⚙
+          <IconEdit size={12} />
         </button>
         <button
           type="button"
@@ -187,7 +189,7 @@ export default function PlanToolDock({
           title={`Move toolbar ${side === 'left' ? 'right' : side === 'right' ? 'to a floating position' : 'left'}`}
           data-tooltip={`Dock: ${side === 'left' ? 'move right' : side === 'right' ? 'float' : 'move left'}`}
         >
-          {side === 'left' ? '⇥' : side === 'right' ? '✣' : '⇤'}
+          {side === 'left' ? <IconSidebarRight size={12} /> : side === 'right' ? <IconMore size={12} /> : <IconSidebarLeft size={12} />}
         </button>
         <button
           type="button"

@@ -297,7 +297,7 @@ export default function CreateDialog({
             </h2>
             <p>
               {!hasRoom || drawingRoomOutline
-                ? 'Add a site plan or click corners to close the outline — then apply a kit.'
+                ? 'Add a site plan or click corners to close the outline, then apply a kit.'
                 : layoutDone
                   ? 'Tweak on the plan, or print. Bank stamps stay under the fold.'
                   : 'Apply a matching kit, or build stage and seating yourself, then print.'}
@@ -750,7 +750,7 @@ export default function CreateDialog({
               <p className="hint">
                 {seatKind === 'round'
                   ? 'Chairs face the table. Click the plan for each table group; change settings here and stamp again.'
-                  : 'Rows centre on each click. Keep this panel open — adjust angle or row lengths, then click the plan again.'}
+                  : 'Rows centre on each click. Keep this panel open to adjust angle or row lengths, then click the plan again.'}
               </p>
             </details>
           </div>

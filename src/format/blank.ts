@@ -181,13 +181,13 @@ export function createBlankPlan(options: BlankPlanOptions = {}): BlankPlanResult
  */
 export const ROOM_PRESETS: Array<{ label: string; width: number; depth: number; ceilingFt?: number }> = [
   { label: 'Empty sheet', width: 0, depth: 0 },
-  { label: "Boardroom — 20' × 16', 10' ceiling", width: 20, depth: 16, ceilingFt: 10 },
-  { label: "Meeting room — 30' × 20', 12' ceiling", width: 30, depth: 20, ceilingFt: 12 },
-  { label: "Small ballroom — 40' × 30', 14' ceiling", width: 40, depth: 30, ceilingFt: 14 },
-  { label: "Ballroom — 60' × 40', 18' ceiling", width: 60, depth: 40, ceilingFt: 18 },
-  { label: "Large ballroom — 100' × 60', 22' ceiling", width: 100, depth: 60, ceilingFt: 22 },
-  { label: "General session — 150' × 80', 25' ceiling", width: 150, depth: 80, ceilingFt: 25 },
-  { label: "Concert floor — 200' × 120', 40' ceiling", width: 200, depth: 120, ceilingFt: 40 },
-  { label: "Exhibit hall — 250' × 120', 30' ceiling", width: 250, depth: 120, ceilingFt: 30 },
-  { label: "Arena floor — 300' × 200', 45' ceiling", width: 300, depth: 200, ceilingFt: 45 },
+  { label: "Boardroom: 20' × 16', 10' ceiling", width: 20, depth: 16, ceilingFt: 10 },
+  { label: "Meeting room: 30' × 20', 12' ceiling", width: 30, depth: 20, ceilingFt: 12 },
+  { label: "Small ballroom: 40' × 30', 14' ceiling", width: 40, depth: 30, ceilingFt: 14 },
+  { label: "Ballroom: 60' × 40', 18' ceiling", width: 60, depth: 40, ceilingFt: 18 },
+  { label: "Large ballroom: 100' × 60', 22' ceiling", width: 100, depth: 60, ceilingFt: 22 },
+  { label: "General session: 150' × 80', 25' ceiling", width: 150, depth: 80, ceilingFt: 25 },
+  { label: "Concert floor: 200' × 120', 40' ceiling", width: 200, depth: 120, ceilingFt: 40 },
+  { label: "Exhibit hall: 250' × 120', 30' ceiling", width: 250, depth: 120, ceilingFt: 30 },
+  { label: "Arena floor: 300' × 200', 45' ceiling", width: 300, depth: 200, ceilingFt: 45 },
 ];

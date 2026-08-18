@@ -290,7 +290,7 @@ export function InventoryPalette({
       setWDraft(item.width != null && Number.isFinite(item.width) ? formatLength(item.width, units) : '');
       setHDraft(item.height != null && Number.isFinite(item.height) ? formatLength(item.height, units) : '');
     }
-    onStatus('Made a variation — give it a name');
+    onStatus('Made a variation: give it a name');
   };
 
   const remove = async (item: Item) => {
@@ -339,9 +339,25 @@ export function InventoryPalette({
         />
       )}
 
-      <div className="section-title" style={{ padding: '14px 14px 8px', margin: 0 }}>
-        <span>Inventory</span>
-        <span className="num">{inventory?.total ?? 0}</span>
+      {inventory?.notice && (
+        <div className="recovery-notice is-rail" role="status">
+          <IconWarning size={14} />
+          <span>{inventory.notice}</span>
+        </div>
+      )}
+
+      {/* Trace and Add ride on the search row. This panel used to open with
+          "Inventory 828" — the two facts the active source tab already shows —
+          and once that went, the two actions were left holding a 42px row on
+          their own. A search field has room at its end. */}
+      <div className="search inventory-palette-search">
+        <IconSearch size={13} />
+        <input
+          aria-label="Search equipment by name or category"
+          placeholder="Search"
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+        />
         <button
           className="icon-btn title-action"
           title="Trace an item from a picture"
@@ -358,23 +374,6 @@ export function InventoryPalette({
         >
           <IconPlus size={12} />
         </button>
-      </div>
-
-      {inventory?.notice && (
-        <div className="recovery-notice is-rail" role="status">
-          <IconWarning size={14} />
-          <span>{inventory.notice}</span>
-        </div>
-      )}
-
-      <div className="search">
-        <IconSearch size={13} />
-        <input
-          aria-label="Search equipment by name or category"
-          placeholder="Search name or category…"
-          value={query}
-          onChange={(e) => onQuery(e.target.value)}
-        />
       </div>
 
       <div className="palette-filter">
@@ -495,7 +494,6 @@ export function InventoryPalette({
                 }
                 onClick={() => canPlace && onPlace(item.id, item.name)}
               >
-                <span className="palette-drag-handle" aria-hidden>⠿</span>
                 <Preview
                 thumb={item.tracedIcon ? centredToThumb(item.tracedIcon) : thumbs[item.id]}
                 width={item.width}

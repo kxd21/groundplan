@@ -132,7 +132,7 @@ export function pairScreen(screen: Screen, projector: Projector): Pairing {
     if (projector.lumens < wanted) {
       problems.push(
         `${projector.lumens.toLocaleString('en-US')} lumens is dim for a ${Math.round(squareFeet)} sq ft image ` +
-          `in ambient light — reckon on ${Math.round(wanted).toLocaleString('en-US')}.`,
+          `in ambient light: reckon on ${Math.round(wanted).toLocaleString('en-US')}.`,
       );
     }
   }
@@ -302,7 +302,7 @@ export function summariseSightlines(views: SeatView[]): SightlineSummary {
     notes: [],
   };
 
-  if (summary.tooFar) summary.notes.push(`${summary.tooFar} seats are further than six image heights — the text will be hard to read.`);
+  if (summary.tooFar) summary.notes.push(`${summary.tooFar} seats are further than six image heights. The text will be hard to read.`);
   if (summary.tooClose) summary.notes.push(`${summary.tooClose} seats are inside two image heights and will be craning.`);
   if (summary.offAxis) summary.notes.push(`${summary.offAxis} seats are more than 45 degrees off the screen.`);
   if (summary.blocked) {

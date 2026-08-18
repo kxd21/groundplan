@@ -251,7 +251,7 @@ export function stageBuildList(build: StageBuild, solution: StageSolution): Buil
     lines.push({
       item: `Legs ${(height / IN).toFixed(0)}in`,
       quantity,
-      detail: stock ? undefined : 'not a stock leg height — needs adjustable legs or packing',
+      detail: stock ? undefined : 'not a stock leg height. Needs adjustable legs or packing',
     });
   }
 
@@ -298,7 +298,7 @@ export function stageWarnings(build: StageBuild): string[] {
       warnings.push(`${name} is ${(level.height / IN).toFixed(0)}in high and has no stairs.`);
     }
     if (level.height >= 48 * IN) {
-      warnings.push(`${name} is 4 ft or more above the floor — check whether guardrail is required.`);
+      warnings.push(`${name} is 4 ft or more above the floor. Check whether guardrail is required.`);
     }
   }
 

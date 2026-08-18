@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
+import { IconCheck } from './icons.js';
 
 export interface EditablePointPath {
   nodeId: number;
@@ -235,7 +236,7 @@ export default function PointEditor({ paths, units, editable, onMovePoint, onSet
                         aria-label={`Apply point ${index + 1} coordinates`}
                         title="Apply coordinates"
                       >
-                        ✓
+                        <IconCheck size={12} />
                       </button>
                     </div>
                   );

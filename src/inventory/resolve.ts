@@ -78,7 +78,7 @@ export function resolveInventoryQuery(
       return {
         status: 'ambiguous',
         candidates: loose.slice(0, 12),
-        reason: `${loose.length} items match “${query.trim()}” — use an exact catalogue name`,
+        reason: `${loose.length} items match “${query.trim()}”. Use an exact catalogue name`,
       };
     }
     return { status: 'none', reason: `no inventory item matches “${query.trim()}”` };
@@ -106,7 +106,7 @@ export function resolveInventoryQuery(
   return {
     status: 'ambiguous',
     candidates: (tied.length > 1 ? tied : scored).map((row) => row.item).slice(0, 12),
-    reason: `${tied.length > 1 ? tied.length : scored.length} items match “${query.trim()}” — pick one exactly`,
+    reason: `${tied.length > 1 ? tied.length : scored.length} items match “${query.trim()}”. Pick one exactly`,
   };
 }
 

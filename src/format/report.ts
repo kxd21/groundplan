@@ -95,7 +95,7 @@ export function buildReport(input: ReportInput): string {
     );
 
     lines.push('### Capacity by layout', '');
-    lines.push('Estimated from usable floor area. Not an occupancy figure — that depends on exits and local code.', '');
+    lines.push('Estimated from usable floor area. Not an occupancy figure. That depends on exits and local code.', '');
     lines.push(
       ...table(
         ['Layout', 'People', 'Allowance'],

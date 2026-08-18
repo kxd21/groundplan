@@ -180,7 +180,7 @@ export function InventoryView({
     const reply = await api.inventoryDuplicate(item.id);
     if (reply.ok) {
       onChanged();
-      onStatus(`Copied ${item.name} — rename the copy to tell them apart`);
+      onStatus(`Copied ${item.name}: rename the copy to tell them apart`);
       if (reply.id) {
         setRenaming(reply.id);
         setNameDraft(`${item.name} (copy)`);
@@ -228,11 +228,11 @@ export function InventoryView({
       onChanged();
       if (reply.cancelled) {
         onStatus(
-          `Scan cancelled after ${reply.processed ?? reply.scanned} of ${reply.plans} plans — kept ${reply.added} new symbols`,
+          `Scan cancelled after ${reply.processed ?? reply.scanned} of ${reply.plans} plans: kept ${reply.added} new symbols`,
         );
       } else {
         onStatus(
-          `Read ${reply.scanned.toLocaleString()} plans — ${reply.added} new symbols, ${reply.updated} items now have real geometry`,
+          `Read ${reply.scanned.toLocaleString()} plans: ${reply.added} new symbols, ${reply.updated} items now have real geometry`,
         );
       }
     } catch (err) {
@@ -430,7 +430,7 @@ export function InventoryView({
             if (reply.cancelled) return;
             if (reply.ok) {
               onChanged();
-              onStatus(`Imported pack — ${reply.added} new, ${reply.updated} updated`);
+              onStatus(`Imported pack: ${reply.added} new, ${reply.updated} updated`);
             } else if (reply.reason) onError(reply.reason);
           }}
           title="Merge an inventory pack from another computer into this one"
@@ -526,7 +526,7 @@ export function InventoryView({
                     className={`inv-symbol${item.mappedBy === 'auto' ? ' is-auto' : ''}`}
                     title={
                       item.mappedBy === 'auto'
-                        ? `Matched automatically to "${item.symbolName}" — ${item.mapReason}. Click the size to correct it.`
+                        ? `Matched automatically to "${item.symbolName}": ${item.mapReason}. Click the size to correct it.`
                         : 'Places as the real drawn symbol'
                     }
                   >
@@ -575,7 +575,7 @@ export function InventoryView({
                   className={`inv-size num${item.sizeSource === 'user' ? ' is-set' : ''}`}
                   title={
                     item.sizeSource === 'user'
-                      ? 'Size you set — used when placing'
+                      ? 'Size you set: used when placing'
                       : item.width
                         ? 'Size guessed from the name. Click to correct it.'
                         : 'No size yet. Click to set one.'

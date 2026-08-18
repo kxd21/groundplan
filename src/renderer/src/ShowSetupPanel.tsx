@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { IconDrawPolygon, IconFile, IconPrint, IconRuler } from './icons.js';
+import { IconCheck, IconDrawPolygon, IconFile, IconPrint, IconRuler } from './icons.js';
 
 export interface PlanIdentityFields {
   date: string;
@@ -210,7 +210,7 @@ export default function ShowSetupPanel({
 
       <div className="show-setup-phase">
         <div className="show-setup-phase-head">
-          <span className="show-setup-phase-index">{hasRoom && !drawingRoomOutline ? '✓' : '1'}</span>
+          <span className="show-setup-phase-index">{hasRoom && !drawingRoomOutline ? <IconCheck size={12} /> : '1'}</span>
           <div>
             <strong>Build the room</strong>
             <small>
@@ -219,7 +219,7 @@ export default function ShowSetupPanel({
                   ? `Boundary in place · ${roomSizeText}`
                   : 'Boundary is in place.'
                 : hasBackground
-                  ? 'Site plan is under the plot — click corners to trace walls.'
+                  ? 'Site plan is under the plot. Click corners to trace walls.'
                   : 'Trace on a blank sheet, or add a site plan / CAD PDF first.'}
             </small>
           </div>
@@ -296,7 +296,7 @@ export default function ShowSetupPanel({
             <small>
               {identityFilled
                 ? [identity.venue, identity.event].filter(Boolean).join(' · ')
-                : 'Optional — venue, event, date for print'}
+                : 'Optional: venue, event, date for print'}
             </small>
           </span>
         </button>
@@ -379,14 +379,14 @@ export default function ShowSetupPanel({
           aria-expanded={kitsOpen}
           onClick={() => setKitsOpen((open) => !open)}
         >
-          <span className="show-setup-phase-index">{layoutDone ? '✓' : '2'}</span>
+          <span className="show-setup-phase-index">{layoutDone ? <IconCheck size={12} /> : '2'}</span>
           <span>
             <strong>Start from a kit</strong>
             <small>
               {layoutDone
-                ? 'Layout applied — tweak on the plan or apply another kit'
+                ? 'Layout applied: tweak on the plan or apply another kit'
                 : selected
-                  ? `Fast path — ${selected.name}${
+                  ? `Fast path: ${selected.name}${
                       selected.id === suggestedKit ? ' · fits this room' : ' · will fit to this room'
                     }`
                   : 'Drop in a matching layout (fitted to this room), then tweak'}
@@ -405,7 +405,7 @@ export default function ShowSetupPanel({
                 title={
                   selected
                     ? `${selected.name} · ${selected.chairs.toLocaleString()} chairs · ${selected.banks} banks${
-                        selected.id === suggestedKit ? ' — matches this room' : ''
+                        selected.id === suggestedKit ? ' · matches this room' : ''
                       }`
                     : undefined
                 }
@@ -462,7 +462,7 @@ export default function ShowSetupPanel({
                     includeGear: false,
                   })
                 }
-                title="Replace chairs and tables only — keep stage and gear"
+                title="Replace chairs and tables only: keep stage and gear"
               >
                 Seating only
               </button>

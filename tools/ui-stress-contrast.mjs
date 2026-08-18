@@ -86,10 +86,23 @@ const openSurface = async (label, clickSpec) => {
   } catch {
     /* ok */
   }
-  if (clickSpec) {
-    await clickButton(clickSpec, `open:${label}`, (id, ok, detail) => log(id, ok, detail), {
-      optional: true,
-    });
+  if (!clickSpec) return;
+  // A surface can need more than one click to reach — the welcome screen lives
+  // behind the Browse rail once a plan is open.
+  const steps = Array.isArray(clickSpec) ? clickSpec : [clickSpec];
+  for (const [i, step] of steps.entries()) {
+    const id = steps.length > 1 ? `open:${label}:${i + 1}` : `open:${label}`;
+    if (step.eval) {
+      try {
+        await ev(step.eval);
+        log(id, true, 'via api');
+      } catch (err) {
+        log(id, false, String(err && err.message ? err.message : err));
+      }
+      await sleep(step.settle ?? 900);
+      continue;
+    }
+    await clickButton(step, id, (cid, ok, detail) => log(cid, ok, detail));
     await sleep(280);
   }
 };
@@ -124,6 +137,12 @@ const auditContrast = async (theme, surface) => {
     '    let node = el;',
     '    while (node && node.nodeType === 1) {',
     '      const cs = getComputedStyle(node);',
+    // A gradient or image paints over whatever colour sits behind it, and this
+    // walk only understands colours. Continuing past it resolved white-on-blue
+    // hero text against the page ground and reported 1.13:1 — 24 of the 34
+    // failures in one run were this single blind spot. Unknown is reported as
+    // unknown.
+    '      if (cs.backgroundImage && cs.backgroundImage !== \'none\') return null;',
     '      const bg = parseColor(cs.backgroundColor);',
     '      if (bg && bg.a > 0.08) {',
     '        let composite = bg;',
@@ -156,6 +175,7 @@ const auditContrast = async (theme, surface) => {
     '  };',
     '  const fails = [];',
     '  const seen = new Set();',
+    '  let measured = 0, skippedNoText = 0, skippedNoBg = 0;',
     "  const selectors = ['button','a','label','summary','th','td','li','h1','h2','h3','h4','strong','small','span','p','input','select','textarea','[role=\"tab\"]','[role=\"menuitem\"]','.hint','.muted','.statusbar','.ribbon-action','.tool-button','.create-flow-step','.show-setup-phase','.layer-count','.autosave-label','.show-setup-chip','.field label','.create-dialog-head small','.inspector-empty','.welcome-home'];",
     '  const nodes = new Set();',
     '  for (const sel of selectors) document.querySelectorAll(sel).forEach((el) => nodes.add(el));',
@@ -169,15 +189,31 @@ const auditContrast = async (theme, surface) => {
     '    if (el.closest(\"button:disabled, [aria-disabled=true]\")) continue;',
     '    if (/^(INPUT|TEXTAREA|SELECT)$/i.test(el.tagName) && !(el.value || \"\").trim() && !(el.getAttribute(\"aria-label\") || \"\").trim()) continue;',
     '    if (/^(INPUT)$/i.test(el.tagName) && el.type === \"checkbox\") continue;',
-    '    let text = (el.innerText || el.value || el.getAttribute(\"aria-label\") || el.getAttribute(\"placeholder\") || \"\").replace(/\\s+/g, \" \").trim();',
-    '    if (!text) continue;',
+    // `aria-label` used to stand in for missing text, so a 15x3px carousel dot
+    // — an empty button whose visual is its background — was measured as if it
+    // rendered its label, against the 4.5:1 threshold for body copy. Twelve
+    // failures in one run were dots that paint no glyphs at all. An icon
+    // control's contrast is a real question, but it is the 3:1 non-text one,
+    // not this check.
+    // `color` only paints text this element renders ITSELF. A container whose
+    // text all lives in children that set their own colours was being measured
+    // against a colour nothing on screen uses — a recent-plan card reported
+    // 1.03:1 while every word inside it was perfectly legible. Direct text
+    // nodes are the honest test.
+    '    const ownsText = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());',
+    '    const isField = /^(INPUT|TEXTAREA|SELECT)$/i.test(el.tagName);',
+    '    let text = (el.innerText || el.value || el.getAttribute(\"placeholder\") || \"\").replace(/\\s+/g, \" \").trim();',
+    '    if (!text) { skippedNoText++; continue; }',
+    '    if (!ownsText && !isField) { skippedNoText++; continue; }',
     '    if (el.children.length > 3 && text.length > 80 && !/^(BUTTON|A|LABEL|SUMMARY)$/i.test(el.tagName)) continue;',
     '    text = text.slice(0, 64);',
     '    const color = parseColor(cs.color);',
     '    if (!color || color.a < 0.2) continue;',
     '    const bg = bgOf(el);',
+    '    if (!bg) { skippedNoBg++; continue; }',
     '    const fg = blend(color, bg);',
     '    const ratio = contrast(fg, bg);',
+    '    measured++;',
     '    const fontSize = parseFloat(cs.fontSize) || 13;',
     '    const bold = (parseInt(cs.fontWeight, 10) || 400) >= 600;',
     '    const large = fontSize >= 18 || (fontSize >= 14 && bold);',
@@ -189,7 +225,10 @@ const auditContrast = async (theme, surface) => {
     '    fails.push({ theme: theme, surface: surface, text: text, ratio: Math.round(ratio * 100) / 100, min: min, fontSize: fontSize, color: cs.color, background: \"rgba(\" + bg.r + \",\" + bg.g + \",\" + bg.b + \",1)\", path: pathOf(el) });',
     '  }',
     '  fails.sort((a, b) => a.ratio - b.ratio);',
-    '  return fails.slice(0, TOP_N);',
+    // Skips are reported, not hidden. A checker that silently ignores half the
+    // page looks identical to a clean page, and this one previously did exactly
+    // that in the other direction — inventing failures it could not resolve.
+    '  return { fails: fails.slice(0, TOP_N), measured: measured, skippedNoText: skippedNoText, skippedNoBg: skippedNoBg };',
     '})(' +
       JSON.stringify(theme) +
       ', ' +
@@ -213,12 +252,44 @@ console.log('title', await ev('document.title'));
 const surfaces = [
   { id: 'plan-chrome', open: null },
   { id: 'setup', open: { text: 'Setup' } },
-  { id: 'inspector', open: { text: 'Inspector' } },
-  { id: 'browser', open: { text: 'Browser' } },
-  { id: 'tools', open: { text: 'Tools' } },
+  // Mode labels, not panel nouns: the shell redesign renamed these to match the
+  // mode strip, and the harness kept opening panels that no longer answer to
+  // "Inspector" / "Browser" / "Tools" — so it was sampling whatever happened to
+  // be on screen and still reporting a pass.
+  { id: 'inspector', open: { text: 'Inspect' } },
+  { id: 'browser', open: { text: 'Browse' } },
+  { id: 'tools', open: { text: 'Draw' } },
+  // The welcome screen is the first thing every launch shows and was the one
+  // surface never audited — no button reaches it once a plan is restored, and
+  // `plan-chrome` opens nothing, so coverage depended on the app's state rather
+  // than on this list. A deliberately unreadable `--home-ink-3` cleared the
+  // entire gate because of it. Audited last so the editor surfaces above still
+  // have a plan; the second step answers the unsaved-changes prompt if the run
+  // dirtied one.
 ];
 
+// Audited after every editor surface, in both themes: reaching it closes the
+// open plan, which disables the mode buttons the other surfaces need.
+const welcomeSurface =
+  {
+    id: 'welcome',
+    open: [
+      { eval: '(() => { window.groundplan.closePlan(); return true; })()' },
+      {
+        eval:
+          "(() => { const b = [...document.querySelectorAll('.discard-prompt-actions button')]" +
+          ".find((x) => /Discard changes/.test(x.textContent)); if (b) b.click(); return true; })()",
+      },
+      // `closePlan` drops the session in the main process, but the renderer
+      // holds its own copy of the open document and keeps drawing it, so the
+      // audit was photographing the editor and calling it the welcome screen.
+      // Reloading makes the renderer re-read state from main.
+      { eval: '(() => { setTimeout(() => location.reload(), 0); return true; })()', settle: 6000 },
+    ],
+  };
+
 const allFails = [];
+const coverage = { measured: 0, skippedNoText: 0, skippedNoBg: 0 };
 
 for (const theme of ['light', 'dark']) {
   console.log(`\n-- Theme: ${theme} --`);
@@ -227,7 +298,11 @@ for (const theme of ['light', 'dark']) {
     await openSurface(surface.id, surface.open);
     const shotPath = path.join(AUDIT, `ui-contrast-${theme}-${surface.id}.png`);
     await shot(shotPath);
-    const fails = await auditContrast(theme, surface.id);
+    const scan = await auditContrast(theme, surface.id);
+    const fails = scan.fails;
+    coverage.measured += scan.measured;
+    coverage.skippedNoText += scan.skippedNoText;
+    coverage.skippedNoBg += scan.skippedNoBg;
     allFails.push(...fails);
     const worst = fails[0];
     log(
@@ -253,7 +328,24 @@ await ev(`(() => {
 })()`);
 await sleep(400);
 await shot(path.join(AUDIT, 'ui-contrast-dark-new-plan.png'));
-const newPlanFails = await auditContrast('dark', 'new-plan');
+for (const theme of ['light', 'dark']) {
+  await setTheme(theme);
+  await openSurface(welcomeSurface.id, welcomeSurface.open);
+  await shot(path.join(AUDIT, `ui-contrast-${theme}-welcome.png`));
+  const scan = await auditContrast(theme, 'welcome');
+  coverage.measured += scan.measured;
+  coverage.skippedNoText += scan.skippedNoText;
+  coverage.skippedNoBg += scan.skippedNoBg;
+  allFails.push(...scan.fails);
+  const worst = scan.fails[0];
+  log(
+    `contrast:${theme}:welcome`,
+    scan.fails.length === 0,
+    scan.fails.length ? `${scan.fails.length} fails; worst ${worst.ratio}:1 “${worst.text}”` : 'ok',
+  );
+}
+
+const newPlanFails = (await auditContrast('dark', 'new-plan')).fails;
 allFails.push(...newPlanFails);
 log(
   'contrast:dark:new-plan',
@@ -275,7 +367,7 @@ await ev(`(() => {
 })()`);
 await sleep(400);
 await shot(path.join(AUDIT, 'ui-contrast-light-new-plan.png'));
-const newPlanLightFails = await auditContrast('light', 'new-plan');
+const newPlanLightFails = (await auditContrast('light', 'new-plan')).fails;
 allFails.push(...newPlanLightFails);
 log(
   'contrast:light:new-plan',
@@ -303,6 +395,11 @@ const reportPath = path.join(AUDIT, 'ui-contrast-report.json');
 fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
 
 console.log('\n=== Summary ===');
+console.log(
+  `Coverage: ${coverage.measured} text nodes measured · ` +
+    `${coverage.skippedNoText} skipped (no rendered text) · ` +
+    `${coverage.skippedNoBg} skipped (background not resolvable)`,
+);
 console.log(`Unique contrast fails: ${unique.length}`);
 for (const f of unique.slice(0, 25)) {
   console.log(
@@ -312,5 +409,19 @@ for (const f of unique.slice(0, 25)) {
 }
 console.log(`Report: ${reportPath}`);
 
+// `:hit-target` entries note a control the harness could not reach by pointer
+// and had to DOM-click. Worth seeing, but it still audited the surface, so it is
+// advisory rather than a hole in coverage.
+const brokenChecks = record.filter((r) => !r.ok && !r.id.endsWith(':hit-target'));
+if (brokenChecks.length) {
+  console.log('\nChecks that did not complete:');
+  for (const b of brokenChecks) console.log(`  ${b.id}${b.detail ? ` — ${b.detail}` : ''}`);
+}
+
 await close();
-process.exit(unique.length > 0 ? 1 : 0);
+// A surface that never opened is a hole in coverage, not a pass. This used to
+// exit on `unique.length` alone, so the run could fail to reach every screen it
+// names, audit whatever happened to be in front of it, and still report
+// success — which is how a deliberately unreadable `--home-ink-3` cleared the
+// whole gate.
+process.exit(unique.length > 0 || brokenChecks.length > 0 ? 1 : 0);

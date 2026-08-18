@@ -37,7 +37,7 @@ export function arrayGrid(
   if (total > ARRAY_GRID_MAX) {
     return {
       ok: false,
-      reason: `array is capped at ${ARRAY_GRID_MAX} items — use the seating planner for full-room fills`,
+      reason: `array is capped at ${ARRAY_GRID_MAX} items. Use the seating planner for full-room fills`,
     };
   }
 
@@ -55,7 +55,7 @@ export function arrayGrid(
         ? size.height
         : 0;
   if (!(gapX > 0) || !(gapY > 0)) {
-    return { ok: false, reason: 'that item has no size to space copies by — enter gap X and gap Y' };
+    return { ok: false, reason: 'that item has no size to space copies by. Enter gap X and gap Y' };
   }
 
   const original = node;

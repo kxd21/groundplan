@@ -55,19 +55,21 @@ export default function BuildStageDialog({
   const [heightText, setHeightText] = useState(() => formatLength(24 * UNITS_PER_INCH, units));
   const [backDepthText, setBackDepthText] = useState(() => formatLength(8 * UNITS_PER_FOOT, units));
   const [backHeightText, setBackHeightText] = useState(() => formatLength(24 * UNITS_PER_INCH, units));
-  const [stairs, setStairs] = useState('sides');
+  const [stairs, setStairs] = useState('front');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setPreset('house-42');
-    setTiered(true);
-    setWidthText(formatLength(42 * UNITS_PER_FOOT, units));
-    setDepthText(formatLength(8 * UNITS_PER_FOOT, units));
-    setHeightText(formatLength(32 * UNITS_PER_INCH, units));
+    // Single-deck default — house/tiered presets are one click away.
+    // Resetting to house-42 on every open made custom W×D×H easy to miss.
+    setPreset('4x8');
+    setTiered(false);
+    setWidthText(formatLength(24 * UNITS_PER_FOOT, units));
+    setDepthText(formatLength(16 * UNITS_PER_FOOT, units));
+    setHeightText(formatLength(24 * UNITS_PER_INCH, units));
     setBackDepthText(formatLength(8 * UNITS_PER_FOOT, units));
     setBackHeightText(formatLength(24 * UNITS_PER_INCH, units));
-    setStairs('sides');
+    setStairs('front');
     setBusy(false);
   }, [open, units]);
 
@@ -122,7 +124,14 @@ export default function BuildStageDialog({
       setStairs('sides');
     } else if (id === 'circ') {
       setTiered(false);
+      setHeightText(formatLength(24 * UNITS_PER_INCH, units));
       setStairs('none');
+    } else {
+      // Stock single-deck presets — leave custom height alone only if already
+      // editing; otherwise reset to a common 24″ deck with front stairs.
+      setTiered(false);
+      setHeightText(formatLength(24 * UNITS_PER_INCH, units));
+      setStairs('front');
     }
   };
 
@@ -190,7 +199,7 @@ export default function BuildStageDialog({
       }
       const warn = Array.isArray(reply.warnings) ? reply.warnings.filter(Boolean) : [];
       if (warn.length) {
-        onStatus(`${reply.note ?? 'Stage added'} — ${warn.join(' · ')}`);
+        onStatus(`${reply.note ?? 'Stage added'}: ${warn.join(' · ')}`);
       } else {
         onStatus(reply.note ?? 'Stage added');
       }

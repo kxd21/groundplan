@@ -343,10 +343,10 @@ export function traceImage(image: RasterImage, options: TraceOptions = {}): Trac
   const coverage = inkCount / ink.length;
 
   if (inkCount === 0) {
-    return { ...EMPTY, coverage, reason: 'nothing was dark enough — try raising the threshold' };
+    return { ...EMPTY, coverage, reason: 'nothing was dark enough. Try raising the threshold' };
   }
   if (coverage > 0.98) {
-    return { ...EMPTY, coverage, reason: 'everything was dark — try lowering the threshold' };
+    return { ...EMPTY, coverage, reason: 'everything was dark: try lowering the threshold' };
   }
 
   const { region, size } = largestRegion(ink, image.width, image.height);

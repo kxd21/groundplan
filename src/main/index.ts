@@ -305,6 +305,9 @@ const sha256 = (data: Uint8Array | string): string =>
  * Renderer paths are capabilities, not arbitrary filesystem input. A path is
  * granted only after an OS open/save dialog, a recent-list response, a folder
  * listing, or an OS file-association event.
+ *
+ * Automation (CDP / `GROUNDPLAN_E2E_*`) can also grant paths under an explicit
+ * root so tests do not have to drive native open sheets.
  */
 const grantedPaths = new Map<string, string>();
 const grantedDirectories = new Map<string, string>();
@@ -318,20 +321,84 @@ const grantDirectory = (path: string): string => {
   grantedDirectories.set(pathIdentity(granted), granted);
   return granted;
 };
+
+/** True when Electron was started for UI automation / CDP scripts. */
+function e2eAutomationEnabled(): boolean {
+  return (
+    process.env.GROUNDPLAN_E2E === '1' ||
+    Boolean(process.env.GROUNDPLAN_E2E_SAVE_PATH?.trim()) ||
+    Boolean(process.env.GROUNDPLAN_E2E_SAVE_DIR?.trim()) ||
+    Boolean(process.env.GROUNDPLAN_E2E_IMPORT_PATH?.trim()) ||
+    Boolean(process.env.GROUNDPLAN_E2E_GRANT_ROOT?.trim())
+  );
+}
+
+/**
+ * Roots where automation may grant paths without a native dialog.
+ * Defaults to the E2E save directory / Downloads when E2E mode is on.
+ */
+function e2eGrantRoots(): string[] {
+  const roots: string[] = [];
+  const explicit = process.env.GROUNDPLAN_E2E_GRANT_ROOT?.trim();
+  if (explicit) roots.push(canonicalPath(explicit));
+  const saveDir = process.env.GROUNDPLAN_E2E_SAVE_DIR?.trim();
+  if (saveDir) roots.push(canonicalPath(saveDir));
+  const savePath = resolveE2eSavePath();
+  if (savePath) roots.push(canonicalPath(dirname(savePath)));
+  const importPath = process.env.GROUNDPLAN_E2E_IMPORT_PATH?.trim();
+  if (importPath) roots.push(canonicalPath(dirname(importPath)));
+  if (e2eAutomationEnabled() && roots.length === 0) {
+    try {
+      roots.push(canonicalPath(join(app.getPath('downloads'))));
+    } catch {
+      /* app not ready yet */
+    }
+  }
+  return [...new Set(roots)];
+}
+
+function e2ePathAllowed(candidate: string): boolean {
+  if (process.env.GROUNDPLAN_E2E_ALLOW_ANY === '1') return true;
+  const listed = process.env.GROUNDPLAN_E2E_GRANT_PATHS?.trim();
+  if (listed) {
+    for (const entry of listed.split(/[:\n]/).map((s) => s.trim()).filter(Boolean)) {
+      if (pathIdentity(canonicalPath(entry)) === pathIdentity(candidate)) return true;
+    }
+  }
+  if (!e2eAutomationEnabled()) return false;
+  const id = pathIdentity(candidate);
+  return e2eGrantRoots().some((root) => {
+    const rootId = pathIdentity(root);
+    return id === rootId || id.startsWith(`${rootId}/`) || id.startsWith(`${rootId}\\`);
+  });
+}
+
+/** Grant a path when E2E policy allows it; otherwise require a prior grant. */
 const requireGrantedPath = (path: unknown, extensions?: readonly string[]): string => {
   if (typeof path !== 'string' || !path.trim()) throw new Error('a valid file path is required');
   const candidate = canonicalPath(path);
-  const granted = grantedPaths.get(pathIdentity(candidate));
+  let granted = grantedPaths.get(pathIdentity(candidate));
+  if (!granted && e2ePathAllowed(candidate) && existsSync(candidate)) {
+    granted = grantPath(candidate);
+  }
   if (!granted) throw new Error('that file was not selected in Groundplan');
   if (extensions && !extensions.includes(extname(granted).toLowerCase())) {
-    throw new Error('that file type is not supported for this action');
+    // `.gear.json` reports ext `.json` — also accept when the full suffix matches.
+    const lower = granted.toLowerCase();
+    const ok = extensions.some(
+      (ext) => lower.endsWith(ext.toLowerCase()) || extname(granted).toLowerCase() === ext.toLowerCase(),
+    );
+    if (!ok) throw new Error('that file type is not supported for this action');
   }
   return granted;
 };
 const requireGrantedDirectory = (path: unknown): string => {
   if (typeof path !== 'string' || !path.trim()) throw new Error('a valid folder is required');
   const candidate = canonicalPath(path);
-  const granted = grantedDirectories.get(pathIdentity(candidate));
+  let granted = grantedDirectories.get(pathIdentity(candidate));
+  if (!granted && e2ePathAllowed(candidate)) {
+    granted = grantDirectory(candidate);
+  }
   if (!granted) throw new Error('that folder was not selected in Groundplan');
   return granted;
 };
@@ -1009,7 +1076,7 @@ async function maybeAutoAbsorbGear(): Promise<string | undefined> {
   const summary = await absorbOpenGearIntoInventory();
   if (!summary) return undefined;
   if (!summary.added && !summary.updated) return 'Company inventory already had these lines.';
-  return `Pushed to company inventory — ${summary.added} new, ${summary.updated} updated. Share an inventory pack so other computers get them.`;
+  return `Pushed to company inventory. ${summary.added} new, ${summary.updated} updated. Share an inventory pack so other computers get them.`;
 }
 
 /** The gear lists currently loaded, independent of the open plan. */
@@ -1741,16 +1808,37 @@ async function saveGearDocumentCore(saveAs: boolean): Promise<SaveGearResult> {
   const source = state.path;
   let target = source;
   if (saveAs || !target) {
-    const suggested =
-      (state.lists[0]?.jobNumber ? `Job ${state.lists[0].jobNumber}` : 'Gear list') +
-      GEAR_EXTENSION;
-    const result = await dialog.showSaveDialog({
-      title: 'Save gear list',
-      defaultPath: state.path ?? suggested,
-      filters: [{ name: 'Groundplan gear list', extensions: ['json'] }],
-    });
-    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
-    target = grantPath(result.filePath);
+    const e2eGear =
+      process.env.GROUNDPLAN_E2E_GEAR_SAVE_PATH?.trim() ||
+      (resolveE2eSavePath()
+        ? resolveE2eSavePath()!.replace(/\.rv4$/i, GEAR_EXTENSION)
+        : undefined);
+    if (e2eGear && e2eAutomationEnabled()) {
+      target = grantPath(e2eGear.endsWith(GEAR_EXTENSION) ? e2eGear : `${e2eGear}${GEAR_EXTENSION}`);
+    } else {
+      // Suggested name ends with `.gear.json`. macOS appends the filter extension,
+      // so the filter must be `gear.json` — not `json` — or we get `.gear.json.json`.
+      const base =
+        (state.lists[0]?.jobNumber ? `Job ${state.lists[0].jobNumber}` : 'Gear list').replace(
+          /[\\/:*?"<>|]/g,
+          '-',
+        ) || 'Gear list';
+      const suggested = state.path ?? `${base}${GEAR_EXTENSION}`;
+      const result = await dialog.showSaveDialog({
+        title: 'Save gear list',
+        defaultPath: suggested,
+        filters: [{ name: 'Groundplan gear list', extensions: ['gear.json'] }],
+      });
+      if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+      let chosen = result.filePath;
+      // Defend against hosts that still double-suffix.
+      if (/\.gear\.json\.json$/i.test(chosen)) {
+        chosen = chosen.replace(/\.json$/i, '');
+      } else if (!chosen.toLowerCase().endsWith(GEAR_EXTENSION)) {
+        chosen = chosen.endsWith('.json') ? chosen.replace(/\.json$/i, GEAR_EXTENSION) : `${chosen}${GEAR_EXTENSION}`;
+      }
+      target = grantPath(chosen);
+    }
   }
 
   const overwritingSource = !!source && samePath(target, source);
@@ -1854,12 +1942,103 @@ function resolveE2eSavePath(): string | undefined {
   return undefined;
 }
 
+const pendingDiscardPrompts = new Map<string, (choice: 'cancel' | 'save' | 'discard') => void>();
+const acknowledgedDiscardPrompts = new Map<string, () => void>();
+let discardPromptSeq = 0;
+
+ipcMain.on('dialog:confirm-discard-ack', (_event, id: string) => {
+  acknowledgedDiscardPrompts.get(id)?.();
+});
+
+ipcMain.on(
+  'dialog:confirm-discard-result',
+  (_event, id: string, choice: 'cancel' | 'save' | 'discard') => {
+    const resolve = pendingDiscardPrompts.get(id);
+    if (!resolve) return;
+    pendingDiscardPrompts.delete(id);
+    resolve(choice);
+  },
+);
+
+/**
+ * Ask the renderer to show the unsaved-changes prompt.
+ *
+ * Resolves `null` when the renderer cannot answer — no window, a destroyed
+ * window, or no reply inside the timeout — so the caller falls back to the
+ * native sheet rather than hanging. Without that fallback a crashed renderer
+ * would leave the app unquittable.
+ */
+async function askRendererDiscard(work: string): Promise<'cancel' | 'save' | 'discard' | null> {
+  const target = mainWindow;
+  if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return null;
+  const id = `discard-${++discardPromptSeq}`;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (choice: 'cancel' | 'save' | 'discard' | null) => {
+      if (settled) return;
+      settled = true;
+      pendingDiscardPrompts.delete(id);
+      acknowledgedDiscardPrompts.delete(id);
+      clearTimeout(ackTimer);
+      resolve(choice);
+    };
+
+    // Only the ACK is on a clock. Once the renderer says the prompt is on
+    // screen we wait for the person as long as it takes: a deadline here is
+    // what produced a native sheet stacking on top of a perfectly good in-app
+    // prompt when nobody answered within the window.
+    const ackTimer = setTimeout(() => finish(null), 4_000);
+    acknowledgedDiscardPrompts.set(id, () => clearTimeout(ackTimer));
+    pendingDiscardPrompts.set(id, (choice) => finish(choice));
+
+    try {
+      if (target.isMinimized()) target.restore();
+      target.focus();
+      target.webContents.send('dialog:confirm-discard', { id, work });
+    } catch {
+      finish(null);
+    }
+  });
+}
+
 async function confirmDiscard(kind: 'plan' | 'gear' | 'all'): Promise<boolean> {
   const dirtyPlan = !!(session && (session.dirty || planSidecarPending));
   const dirtyGear = !!gear?.dirty;
   const needsPlan = kind !== 'gear' && dirtyPlan;
   const needsGear = kind !== 'plan' && dirtyGear;
   if (!needsPlan && !needsGear) return true;
+
+  // CDP / UI automation cannot click native Discard sheets.
+  if (
+    e2eAutomationEnabled() &&
+    process.env.GROUNDPLAN_E2E_AUTO_DISCARD !== '0'
+  ) {
+    if (recoveryRoot) {
+      if (needsPlan) cancelPlanRecoverySchedule();
+      if (needsGear) cancelGearRecoverySchedule();
+      await Promise.all([
+        needsPlan ? planRecoveryWrite : Promise.resolve(),
+        needsGear ? gearRecoveryWrite : Promise.resolve(),
+      ]);
+      const removals: Promise<void>[] = [];
+      if (needsPlan && session) {
+        removals.push(
+          removeRecovery(recoveryRoot, recoveryId('plan', canonicalPath(session.path))),
+        );
+        if (activePlanRecoveryId) removals.push(removeRecovery(recoveryRoot, activePlanRecoveryId));
+        activePlanRecoveryId = null;
+      }
+      const gearKey = needsGear ? currentGearRecoveryKey() : null;
+      if (gearKey) removals.push(removeRecovery(recoveryRoot, recoveryId('gear', gearKey)));
+      if (needsGear && activeGearRecoveryId) {
+        removals.push(removeRecovery(recoveryRoot, activeGearRecoveryId));
+        activeGearRecoveryId = null;
+      }
+      await Promise.all(removals);
+      notifyRecoveryChanged();
+    }
+    return true;
+  }
 
   const work =
     needsPlan && needsGear
@@ -1877,9 +2056,13 @@ async function confirmDiscard(kind: 'plan' | 'gear' | 'all'): Promise<boolean> {
     cancelId: 0,
     noLink: true,
   };
-  const response = mainWindow
-    ? await dialog.showMessageBox(mainWindow, options)
-    : await dialog.showMessageBox(options);
+  const inApp = await askRendererDiscard(work);
+  const response =
+    inApp != null
+      ? { response: inApp === 'discard' ? 2 : inApp === 'save' ? 1 : 0 }
+      : mainWindow
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
   if (response.response === 2) {
     if (recoveryRoot) {
       if (needsPlan) cancelPlanRecoverySchedule();
@@ -3221,7 +3404,7 @@ app.whenReady().then(async () => {
     linkObjects(parent, child, 'stack-on');
     const parentElev = selectionElevation(s, parent);
     const childElev = selectionElevation(s, child);
-    let note = 'Stacked — moves with parent';
+    let note = 'Stacked: moves with parent';
     if (parentElev && childElev && parentElev.elevation >= 0) {
       const elevResult = setInstanceElevation(s, childElev.key, parentElev.elevation, unitSystem());
       if (elevResult.ok && elevResult.note) note = `${elevResult.note} · stacked on parent`;
@@ -3382,7 +3565,7 @@ app.whenReady().then(async () => {
     const source = grantDirectory(result.filePaths[0]);
     const imported = await importInventoryPack(source, inventoryFile, inventory);
     if (!imported.ok) return imported;
-    inventoryNotice = `Imported inventory pack — ${imported.added} new, ${imported.updated} updated.`;
+    inventoryNotice = `Imported inventory pack: ${imported.added} new, ${imported.updated} updated.`;
     return inventoryMutateOk({ ...imported });
   });
 
@@ -3676,7 +3859,7 @@ app.whenReady().then(async () => {
       if (typeof patch.photoDataUrl === 'string') {
         // Cap stored photos so the inventory JSON stays portable.
         if (patch.photoDataUrl.length > 350_000) {
-          return { ok: false, reason: 'that photo is too large — try a smaller image' };
+          return { ok: false, reason: 'that photo is too large. Try a smaller image' };
         }
         if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(patch.photoDataUrl)) {
           return { ok: false, reason: 'photo must be a PNG or JPEG' };
@@ -4007,15 +4190,21 @@ app.whenReady().then(async () => {
 
   handle('gear:import', async () => {
     if (gearSaving) throw new Error('wait for the current gear-list save to finish');
-    const result = await dialog.showOpenDialog({
-      title: 'Import a gear list',
-      properties: ['openFile'],
-      filters: [{ name: 'Gear list PDF', extensions: ['pdf'] }],
-    });
-    if (result.canceled || !result.filePaths[0]) return null;
-    if (!(await confirmDiscard('gear'))) return null;
-
-    const source = grantPath(result.filePaths[0]);
+    const e2eImport = process.env.GROUNDPLAN_E2E_IMPORT_PATH?.trim();
+    let source: string | undefined;
+    if (e2eImport) {
+      if (!(await confirmDiscard('gear'))) return null;
+      source = grantPath(requireGrantedPath(e2eImport, ['.pdf']));
+    } else {
+      const result = await dialog.showOpenDialog({
+        title: 'Import a gear list',
+        properties: ['openFile'],
+        filters: [{ name: 'Gear list PDF', extensions: ['pdf'] }],
+      });
+      if (result.canceled || !result.filePaths[0]) return null;
+      if (!(await confirmDiscard('gear'))) return null;
+      source = grantPath(result.filePaths[0]);
+    }
     await enforceFileSize(source, MAX_IMPORT_BYTES);
     const lists = await importGearPdf(new Uint8Array(await readFile(source)), source);
     gear = { lists, dirty: true };
@@ -4731,22 +4920,28 @@ app.whenReady().then(async () => {
       _event,
       patch: { date?: string; venue?: string; event?: string; contact?: string },
     ) =>
-      applyEdit((s) => {
-        const next = {
-          date: typeof patch?.date === 'string' ? patch.date : undefined,
-          venue: typeof patch?.venue === 'string' ? patch.venue : undefined,
-          event: typeof patch?.event === 'string' ? patch.event : undefined,
-          contact: typeof patch?.contact === 'string' ? patch.contact : undefined,
-        };
-        const cleaned: Partial<{ date: string; venue: string; event: string; contact: string }> = {};
-        if (next.date !== undefined) cleaned.date = next.date.trim();
-        if (next.venue !== undefined) cleaned.venue = next.venue.trim();
-        if (next.event !== undefined) cleaned.event = next.event.trim();
-        if (next.contact !== undefined) cleaned.contact = next.contact.trim();
-        const result = setPlanIdentity(s.loaded.document, cleaned);
-        if (!result.ok) return { ok: false, reason: result.reason };
-        return { ok: true, text: 'Show details saved' };
-      }),
+      applyEdit(
+        (s) => {
+          const next = {
+            date: typeof patch?.date === 'string' ? patch.date : undefined,
+            venue: typeof patch?.venue === 'string' ? patch.venue : undefined,
+            event: typeof patch?.event === 'string' ? patch.event : undefined,
+            contact: typeof patch?.contact === 'string' ? patch.contact : undefined,
+          };
+          const cleaned: Partial<{ date: string; venue: string; event: string; contact: string }> =
+            {};
+          if (next.date !== undefined) cleaned.date = next.date.trim();
+          if (next.venue !== undefined) cleaned.venue = next.venue.trim();
+          if (next.event !== undefined) cleaned.event = next.event.trim();
+          if (next.contact !== undefined) cleaned.contact = next.contact.trim();
+          const result = setPlanIdentity(s.loaded.document, cleaned);
+          if (!result.ok) return { ok: false, reason: result.reason };
+          return { ok: true, text: 'Show details saved' };
+        },
+        // Trailer-only patch — do not refuse show details because an unrelated
+        // wall segment fails a strict census (see locateSegmentPoints fallback).
+        { skipRoundTripVerify: true },
+      ),
   );
 
   handle('plan:av-summary', () => (session ? avSummary(session, unitSystem()) : null), null);
@@ -5243,7 +5438,7 @@ app.whenReady().then(async () => {
     const walls = model?.room?.walls ?? 0;
     const hasRoom = walls >= 3 && model?.room?.source !== 'extent' && model?.room?.source !== 'none';
     if (hasRoom) {
-      return { ok: false, reason: 'this plan already has a room — close it normally instead' };
+      return { ok: false, reason: 'this plan already has a room. Close it normally instead' };
     }
     if (session.dirty) {
       const confirmed = await dialog.showMessageBox(mainWindow!, {

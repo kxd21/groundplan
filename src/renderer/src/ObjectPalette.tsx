@@ -56,7 +56,7 @@ export default function ObjectPalette({ items, armedId, disabled, onArm, onBrows
             title={
               match
                 ? `${cat.label}\nClick to browse Insert · Shift+click to stamp ${match.name}`
-                : `${cat.label}: nothing matched in inventory — click to browse Insert`
+                : `${cat.label}: nothing matched in inventory: click to browse Insert`
             }
             onClick={(e) => {
               if (e.shiftKey && match) {

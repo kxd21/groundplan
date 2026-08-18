@@ -381,7 +381,7 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                       />
                       <span>
                         <strong>Sightline grades on seats</strong>
-                        <small>Colour every chair by A/V view of the screen. Off by default — very busy on large plans.</small>
+                        <small>Colour every chair by A/V view of the screen. Off by default; very busy on large plans.</small>
                       </span>
                     </label>
                   </div>

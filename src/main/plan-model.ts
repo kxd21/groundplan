@@ -629,7 +629,7 @@ export function resolvePlanRoom(doc: RVDocument): {
 
 function describeSource(source: 'walls' | 'region' | 'extent' | 'none'): string | undefined {
   if (source === 'extent') {
-    return 'No wall outline could be traced, so this is the extent of the drawing — treat the area as an over-estimate.';
+    return 'No wall outline could be traced, so this is the extent of the drawing. Treat the area as an over-estimate.';
   }
   if (source === 'none') return 'This plan has no wall geometry, so it has no room outline yet.';
   return undefined;
@@ -803,7 +803,7 @@ export function createPolygonalRoom(session: Session, input: Point[], units: Uni
     return { ok: false, reason: 'that is larger than any room this format can hold' };
   }
   if (outlineCrossesItself(corners)) {
-    return { ok: false, reason: 'the room outline crosses itself — undo a corner and trace around the edge in order' };
+    return { ok: false, reason: 'the room outline crosses itself. Undo a corner and trace around the edge in order' };
   }
 
   const room = roomFromPolygon(corners, state.rendered?.name ?? planName(session.loaded.document) ?? 'Room');
@@ -1523,7 +1523,7 @@ export function placeScreenProjectorPair(
     return {
       ok: true,
       created: screen.created,
-      note: 'Screen placed — no projector match in inventory; place one and set throw manually',
+      note: 'Screen placed: no projector match in inventory; place one and set throw manually',
     };
   }
   const created = [...(screen.created ?? []), ...(projector.created ?? [])];

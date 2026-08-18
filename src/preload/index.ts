@@ -216,6 +216,37 @@ const api = {
     ipcRenderer.on('recovery:changed', handler);
     return () => ipcRenderer.removeListener('recovery:changed', handler);
   },
+  /**
+   * Main asks the renderer to put the unsaved-changes prompt on screen.
+   *
+   * This used to be `dialog.showMessageBox`, a native sheet. Two problems with
+   * that: UI automation cannot click a native sheet at all (the main process
+   * carried a test-only auto-discard branch to work around it), and on the
+   * paths that open a file it could end up behind the window, where it silently
+   * blocked everything — the app shipped a "look for a Save or Discard dialog
+   * behind this window" message because of it. In-app, it is always visible,
+   * always operable, and looks like the rest of the product.
+   */
+  onConfirmDiscard: (
+    fn: (request: { id: string; work: string }) => void,
+  ): (() => void) => {
+    const handler = (_event: unknown, request: { id: string; work: string }) => fn(request);
+    ipcRenderer.on('dialog:confirm-discard', handler);
+    return () => ipcRenderer.removeListener('dialog:confirm-discard', handler);
+  },
+  /**
+   * Sent once the prompt is actually painted. Main waits a few seconds for this
+   * and only falls back to the native sheet if it never arrives — i.e. the
+   * renderer is wedged or gone. Without an ack, main could only guess with a
+   * timeout, and a user who took longer than the timeout to answer got the
+   * in-app prompt AND a native sheet on top of it.
+   */
+  ackConfirmDiscard: (id: string): void => {
+    ipcRenderer.send('dialog:confirm-discard-ack', id);
+  },
+  resolveConfirmDiscard: (id: string, choice: 'cancel' | 'save' | 'discard'): void => {
+    ipcRenderer.send('dialog:confirm-discard-result', id, choice);
+  },
   platform: process.platform,
 
   move: (nodeId: number, dx: number, dy: number): Promise<EditReply> =>

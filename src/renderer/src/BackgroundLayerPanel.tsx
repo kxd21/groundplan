@@ -129,7 +129,7 @@ export default function BackgroundLayerPanel({
         ...fitRect(prepared.width, prepared.height, extent),
       };
       onPreview(next);
-      onCommit(next, 'Site plan added — set a known width, then trace the room');
+      onCommit(next, 'Site plan added: set a known width, then trace the room');
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -148,7 +148,7 @@ export default function BackgroundLayerPanel({
     if (!(background.width > 0)) return;
     const factor = known / background.width;
     if (!(factor > 0.01 && factor < 100)) {
-      onError('That scale is out of range — check the known width.');
+      onError('That scale is out of range. Check the known width.');
       return;
     }
     const cx = background.x + background.width / 2;

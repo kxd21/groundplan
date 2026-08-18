@@ -564,3 +564,35 @@ export function IconHelp({ size = 16, className }: IconProps) {
     </svg>
   );
 }
+
+/** Overflow menu — the ribbon controls that are reached once a session. */
+/**
+ * Favourite marker. `filled` paints the interior so the on/off states differ by
+ * more than a hairline — the ★/☆ text glyphs this replaces rendered in whatever
+ * the platform emoji font decided, at a weight that never matched the toolbar.
+ */
+export function IconStar({ size = 16, className, filled = false }: IconProps & { filled?: boolean }) {
+  return (
+    <svg {...base(size)} className={className} fill={filled ? 'currentColor' : 'none'}>
+      <path d="M8 2.25l1.76 3.63 3.99.54-2.9 2.78.71 3.96L8 11.28l-3.56 1.88.71-3.96-2.9-2.78 3.99-.54z" />
+    </svg>
+  );
+}
+
+export function IconCheck({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3 8.4l3.2 3.1L13 4.6" />
+    </svg>
+  );
+}
+
+export function IconMore({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="3.4" cy="8" r="1.05" />
+      <circle cx="8" cy="8" r="1.05" />
+      <circle cx="12.6" cy="8" r="1.05" />
+    </svg>
+  );
+}

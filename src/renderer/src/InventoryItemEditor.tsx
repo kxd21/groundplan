@@ -249,7 +249,7 @@ export default function InventoryItemEditor({
     setClearTrace(false);
     setWDraft(formatLength(trace.width, units));
     setHDraft(formatLength(trace.height, units));
-    onStatus('Outline ready — save to apply it to this item');
+    onStatus('Outline ready: save to apply it to this item');
   };
 
   const save = async () => {

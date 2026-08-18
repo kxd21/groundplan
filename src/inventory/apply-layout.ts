@@ -179,7 +179,7 @@ export function applyFullLayoutRecipe(
   if (existingChairs > 0 && !options.replaceExistingSeating) {
     return {
       ...empty,
-      reason: `plan already has ${existingChairs} chairs — pass replaceExistingSeating to rebuild seating`,
+      reason: `plan already has ${existingChairs} chairs. Pass replaceExistingSeating to rebuild seating`,
     };
   }
 
@@ -211,7 +211,7 @@ export function applyFullLayoutRecipe(
     if (room.created) created.push(...room.created);
     session.refresh();
   } else if (!hasRoom && recipe.room) {
-    return { ...empty, reason: 'plan has no room — draw or create one before applying this kit' };
+    return { ...empty, reason: 'plan has no room. Draw or create one before applying this kit' };
   } else if (
     hasRoom &&
     options.fitToExistingRoom !== false &&
@@ -403,7 +403,7 @@ export function applyFullLayoutRecipe(
   const parts = [
     includeSeating ? `${seated.chairsPlaced} chairs` : null,
     includeGear ? `${gearPlaced} gear` : null,
-    includeStage ? `${stagesPlaced} stage(s)` : null,
+    includeStage ? `${stagesPlaced} ${stagesPlaced === 1 ? 'stage' : 'stages'}` : null,
   ].filter(Boolean);
   return {
     ok: true,

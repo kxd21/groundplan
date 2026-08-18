@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useReducer,
   useEffect,
   useMemo,
   useRef,
@@ -91,8 +92,9 @@ import {
   IconAlignBottom,
   IconDistributeHorizontal,
   IconDistributeVertical,
-  IconHelp,
+  IconMore,
   IconHand,
+  IconStar,
 } from './icons.js';
 import type { Layer, Scene } from '../../format/scene.js';
 import type { PlanBackground } from '../../format/companion.js';
@@ -125,7 +127,6 @@ import { CommandPalette, type RunnableCommand } from './CommandPalette.js';
 import {
   COMMAND_CATALOG,
   SHELL_MODES,
-  deriveShellMode,
   shortcutCheatSheet,
   type CommandContext,
   type CommandId,
@@ -133,6 +134,17 @@ import {
   isCommandId,
   MENU_TO_COMMAND,
 } from './commands.js';
+import {
+  INITIAL_WORKSPACE,
+  escapeConsumed,
+  isContentLayer,
+  panelsFor,
+  resolveLanding,
+  workspaceReducer,
+  workspaceStatus,
+  type Overlay,
+  type WorkspaceMode,
+} from './workspace.js';
 import type { CustomRoomPrefs } from './custom-room.js';
 import type { GearList, GearTotals } from '../../gear/model.js';
 import type { GroundplanApi } from '../../preload/index.js';
@@ -443,13 +455,46 @@ export function App() {
   const [showTooltips, setShowTooltips] = useState(
     () => localStorage.getItem('groundplan:tooltips') !== 'false',
   );
-  /** Modes are exclusive — start with a quiet canvas; open Browse/Place/Inspect/Draw on demand. */
-  const [railOpen, setRailOpen] = useState(() => localStorage.getItem('groundplan:rail-open') === 'true');
-  const [inspectorOpen, setInspectorOpen] = useState(
-    () => localStorage.getItem('groundplan:inspector-open') === 'true',
-  );
-  const [toolDockOpen, setToolDockOpen] = useState(
-    () => localStorage.getItem('groundplan:tool-dock-open') === 'true',
+  /**
+   * The whole workspace, as one value.
+   *
+   * Every panel below is DERIVED from this. Nothing else in the component may
+   * open or close one: the reducer in `workspace.ts` owns which mode is live,
+   * which overlays survive it, and what Escape unwinds. That is what stops a
+   * panel being left behind by a code path that forgot about it.
+   */
+  const [workspace, dispatchWorkspace] = useReducer(workspaceReducer, INITIAL_WORKSPACE);
+  /**
+   * The mode each open plan was last left in, by path.
+   *
+   * Switching between two plans should not reset your working context, but a
+   * mode is a fact about a PLAN, not about the app. Persisting one globally —
+   * "restore whatever I quit in" — leaks a mode from one show file onto a
+   * different one opened tomorrow, which is the same class of bug as landing
+   * everything in Place. Memory is per plan, and per session.
+   */
+  const modeByPlan = useRef(new Map<string, WorkspaceMode>());
+  const panels = useMemo(() => panelsFor(workspace), [workspace]);
+  const {
+    railOpen,
+    inspectorOpen,
+    toolDockOpen,
+    createDialogOpen,
+    refineRoomOpen,
+    seatingOpen,
+    calculatorOpen,
+    wallEditLive,
+  } = panels;
+  const planRailSource = panels.railSource as PlanRailSource;
+  const roomWorkspaceFocus = workspace.roomFocus;
+  const wallsEditArmed = workspace.overlays.includes('wall-edit');
+
+  const enterMode = useCallback((mode: WorkspaceMode) => dispatchWorkspace({ type: 'enter', mode }), []);
+  const openOverlay = useCallback((overlay: Overlay) => dispatchWorkspace({ type: 'open-overlay', overlay }), []);
+  const closeOverlay = useCallback((overlay: Overlay) => dispatchWorkspace({ type: 'close-overlay', overlay }), []);
+  const setRoomWorkspaceFocus = useCallback(
+    (focus: 'walls' | 'room') => dispatchWorkspace({ type: 'room-focus', focus }),
+    [],
   );
   const [toolDockCompact, setToolDockCompact] = useState(
     () => localStorage.getItem('groundplan:tool-dock-compact') === 'true',
@@ -690,12 +735,7 @@ export function App() {
   const [insertGroup, setInsertGroup] = useState<InsertGroupId | null>(null);
   const [shapeWizardOpen, setShapeWizardOpen] = useState(false);
   const [buildStageOpen, setBuildStageOpen] = useState(false);
-  const [seatingOpen, setSeatingOpen] = useState(false);
-  const [calculatorOpen, setCalculatorOpen] = useState(false);
-  const [refineRoomOpen, setRefineRoomOpen] = useState(false);
-  const [roomWorkspaceFocus, setRoomWorkspaceFocus] = useState<'walls' | 'room'>('room');
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   /** Last structured action ID — shown in the status bar for agents and power users. */
   const [lastCommandId, setLastCommandId] = useState<CommandId | null>(null);
@@ -725,6 +765,14 @@ export function App() {
   const [createMenuPos, setCreateMenuPos] = useState<{ top: number; left: number } | null>(null);
   const createMenuRef = useRef<HTMLDivElement | null>(null);
   const createMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  /* The ribbon's overflow. Open a folder, flip the theme, settings, shortcuts:
+     four controls that a user touches once a session but that sat in the strip
+     permanently, and were the first things pushed off the right edge on a
+     narrow window. All four are also on ⌘K and the application menu. */
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [moreMenuPos, setMoreMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const moreMenuRef = useRef<HTMLDivElement | null>(null);
+  const moreMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [backgroundOpen, setBackgroundOpen] = useState(false);
   /** Two-point site-plan calibrate: collect plan points, then scale underlay. */
   const [bgCalibratePoints, setBgCalibratePoints] = useState<Array<{ x: number; y: number }> | null>(
@@ -790,9 +838,7 @@ export function App() {
   >(null);
   const [colorDraft, setColorDraft] = useState('#20252b');
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
-  const [zoom, setZoom] = useState(0.05);
   const [view, setView] = useState<Workspace>('plan');
-  const [planRailSource, setPlanRailSource] = useState<PlanRailSource>('equipment');
   const [equipmentSource, setEquipmentSource] = useState<EquipmentSource>('inventory');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('layers');
   const [wallEdit, setWallEdit] = useState<import('./wall-edit.js').WallEditSession | null>(null);
@@ -906,40 +952,50 @@ export function App() {
       )?.text ?? '');
 
   useEffect(() => {
-    // Room layout mode forces a transient collapse — don't persist that.
-    if (refineRoomOpen) return;
-    localStorage.setItem('groundplan:rail-open', String(railOpen));
-  }, [railOpen, refineRoomOpen]);
+    // Remember where this plan was left, but only if it is somewhere worth
+    // coming back to. `browse` is how you go and find a DIFFERENT file, so it
+    // is the last mode almost every plan is technically in when you leave it —
+    // recording it would mean every plan reopened into the file browser. The
+    // exclusive room workspace is excluded for the same kind of reason: it is a
+    // task you finish, not a place you sit.
+    if (!doc?.path) return;
+    if (workspace.mode === 'browse' || workspace.mode === 'room-layout') return;
+    modeByPlan.current.set(doc.path, workspace.mode);
+  }, [doc?.path, workspace.mode]);
 
+  /**
+   * Say what the workspace is now, from one place, in one wording — to screen
+   * readers only.
+   *
+   * A mode change is the most visible event in the app: the strip highlights
+   * the button and a whole panel opens or closes. Announcing it AGAIN as a
+   * toast over the drawing made the mode the third thing on screen saying the
+   * same word, and put it where the user is trying to look. Sighted users get
+   * the answer from the chrome; assistive tech still needs it said, so it is
+   * said in a live region instead of a toast.
+   *
+   * Toasts stay for things with no other evidence — "Corner added on wall 1",
+   * "Wall edit off".
+   */
+  const [modeAnnouncement, setModeAnnouncement] = useState('');
   useEffect(() => {
-    if (refineRoomOpen) return;
-    localStorage.setItem('groundplan:inspector-open', String(inspectorOpen));
-  }, [inspectorOpen, refineRoomOpen]);
+    if (view !== 'plan' || !doc) return;
+    setModeAnnouncement(workspaceStatus(workspace));
+    // Fires on a real transition, not on every render that touches the doc.
+  }, [workspace.mode, workspace.overlays]);
 
-  const layoutBeforeRefineRef = useRef<{ rail: boolean; inspector: boolean } | null>(null);
-
-  const beginRoomWorkspaceLayout = () => {
-    if (!layoutBeforeRefineRef.current) {
-      layoutBeforeRefineRef.current = { rail: railOpen, inspector: inspectorOpen };
-    }
-    setRailOpen(false);
-    setInspectorOpen(false);
-  };
-
-  const restoreRoomWorkspaceLayout = () => {
-    const prev = layoutBeforeRefineRef.current;
-    if (prev) {
-      setRailOpen(prev.rail);
-      setInspectorOpen(prev.inspector);
-      layoutBeforeRefineRef.current = null;
-    }
-  };
-
-  const closeRoomWorkspace = () => {
-    setRefineRoomOpen(false);
+  /**
+   * Leave the exclusive room workspace.
+   *
+   * This used to be three functions: one stashed `railOpen`/`inspectorOpen`
+   * into a ref on the way in, one put them back on the way out, and any exit
+   * path that forgot the second leaked the stash. The reducer carries the
+   * return target as state, so leaving is one dispatch and cannot leak.
+   */
+  const closeRoomWorkspace = useCallback(() => {
     setWallPickIndex(null);
-    restoreRoomWorkspaceLayout();
-  };
+    dispatchWorkspace({ type: 'escape' });
+  }, []);
 
   useEffect(() => {
     if (!createMenuOpen) {
@@ -978,6 +1034,42 @@ export function App() {
   }, [createMenuOpen]);
 
   useEffect(() => {
+    if (!moreMenuOpen) {
+      setMoreMenuPos(null);
+      return;
+    }
+    const place = () => {
+      const button = moreMenuButtonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      if (rect.width <= 0 && rect.height <= 0) return;
+      setMoreMenuPos({
+        top: Math.round(rect.bottom + 6),
+        right: Math.max(8, Math.round(window.innerWidth - rect.right)),
+      });
+    };
+    place();
+    const onPointerDown = (event: PointerEvent) => {
+      const root = moreMenuRef.current;
+      const button = moreMenuButtonRef.current;
+      const target = event.target as Node;
+      if (root?.contains(target) || button?.contains(target)) return;
+      setMoreMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMoreMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [moreMenuOpen]);
+
+  useEffect(() => {
     localStorage.setItem('groundplan:appearance', appearance);
   }, [appearance]);
 
@@ -998,9 +1090,6 @@ export function App() {
     return () => media.removeEventListener('change', update);
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem('groundplan:tool-dock-open', String(toolDockOpen));
-  }, [toolDockOpen]);
 
   useEffect(() => {
     localStorage.setItem('groundplan:recent-inventory', JSON.stringify(recentInventory));
@@ -1122,7 +1211,37 @@ export function App() {
     return api.onRecoveryChanged(refreshRecoveries);
   }, [refreshRecoveries]);
 
-  const adopt = useCallback((result: Doc) => {
+  /**
+   * The unsaved-changes prompt, in the window instead of a native sheet. Main
+   * drives it over IPC and waits for one of three answers; see
+   * `onConfirmDiscard` in the preload for why it moved.
+   */
+  const [discardPrompt, setDiscardPrompt] = useState<{ id: string; work: string } | null>(null);
+
+  useEffect(() => api.onConfirmDiscard?.(setDiscardPrompt) ?? undefined, []);
+
+  // Tell main the prompt is really on screen. Until this lands main is holding
+  // a short ack timer; after it, main waits on the person indefinitely.
+  useEffect(() => {
+    if (discardPrompt) api.ackConfirmDiscard?.(discardPrompt.id);
+  }, [discardPrompt]);
+
+  const answerDiscard = useCallback((choice: 'cancel' | 'save' | 'discard') => {
+    setDiscardPrompt((current) => {
+      if (current) api.resolveConfirmDiscard?.(current.id, choice);
+      return null;
+    });
+  }, []);
+
+  /**
+   * Make a document active.
+   *
+   * `landing` is how a caller that already knows says so. Every open path —
+   * Recent, the Open dialog, a tab switch, a double-clicked file — leaves it
+   * out and gets the derived answer; New Plan passes the mode its own flow
+   * needs, because the dialog has just asked the user what they want.
+   */
+  const adopt = useCallback((result: Doc, landing?: WorkspaceMode) => {
     setDoc(result);
     setPlanBackground(null);
     setSaveConflict(null);
@@ -1148,10 +1267,27 @@ export function App() {
     // start point against a document that no longer existed.
     dispatchTool({ type: 'reset' });
     setPrintOpen(false);
-    setSeatingOpen(false);
-    setCalculatorOpen(false);
+    closeOverlay('seating');
+    closeOverlay('calculator');
     setBackgroundOpen(false);
     if (autoFitOnOpen) setFitToken((t) => t + 1);
+
+    // Where the plan lands. A tab you already had open keeps the mode you left
+    // it in; anything else follows what the document actually is. This is the
+    // single choke point every open path runs through — Recent, the Open
+    // dialog, a tab switch, a double-clicked file in Finder, and New plan — so
+    // the rule cannot be bypassed by adding another entry point later.
+    dispatchWorkspace({
+      type: 'enter',
+      mode: resolveLanding({
+        explicit: landing,
+        remembered: modeByPlan.current.get(result.path),
+        facts: {
+          hasRoom: !!result.hasRoom,
+          hasContent: (result.scene?.primitives ?? []).some((p) => isContentLayer(p.layer)),
+        },
+      }),
+    });
   }, [autoFitOnOpen, dispatchTool]);
 
   const planIdentityFields = useMemo<PlanIdentityFields>(
@@ -1209,7 +1345,7 @@ export function App() {
       if (generation !== nativeDialogGeneration.current) return;
       setBusy(false);
       setBusyMessage(null);
-      setStatus('File picker is still open — choose a plan or cancel in the system dialog.');
+      setStatus('File picker is still open. Choose a plan or cancel in the system dialog.');
       window.setTimeout(() => setStatus(null), 5000);
     }, NATIVE_DIALOG_BUSY_MS);
     try {
@@ -1242,7 +1378,7 @@ export function App() {
       if (generation !== nativeDialogGeneration.current) return;
       setBusy(false);
       setBusyMessage(null);
-      setStatus('Folder picker is still open — choose a folder or cancel in the system dialog.');
+      setStatus('Folder picker is still open. Choose a folder or cancel in the system dialog.');
       window.setTimeout(() => setStatus(null), 5000);
     }, NATIVE_DIALOG_BUSY_MS);
     try {
@@ -1251,9 +1387,9 @@ export function App() {
       if (!dir) return;
       setFolder(dir);
       setEntries(await api.listDirectory(dir));
-      setPlanRailSource('folder');
+      dispatchWorkspace({ type: 'browse-source', source: 'folder' });
       setView('plan');
-      setRailOpen(true);
+      enterMode('place');
     } catch (err) {
       if (generation !== nativeDialogGeneration.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -1440,85 +1576,30 @@ export function App() {
   const setShellMode = useCallback(
     (mode: ShellMode | 'none') => {
       if (view !== 'plan' || !doc) return;
-      if (mode === 'none') {
-        setRailOpen(false);
-        setInspectorOpen(false);
-        setCreateDialogOpen(false);
-        setToolDockOpen(false);
-        showStatus('Full canvas', 1800);
-        return;
-      }
-      setRefineRoomOpen(false);
-      setSeatingOpen(false);
-      setCalculatorOpen(false);
       setCreateMenuOpen(false);
-      if (mode === 'browse') {
-        setCreateDialogOpen(false);
-        setToolDockOpen(false);
-        setInspectorOpen(false);
-        setPlanRailSource((current) => (current === 'equipment' ? 'recent' : current));
-        setRailOpen(true);
-        showStatus('Browse · recent plans and folders', 2500);
-        return;
-      }
-      if (mode === 'place') {
-        setCreateDialogOpen(false);
-        setToolDockOpen(false);
-        setInspectorOpen(false);
-        setPlanRailSource('equipment');
-        setRailOpen(true);
-        showStatus('Place · stamp inventory and gear', 2500);
-        return;
-      }
-      if (mode === 'inspect') {
-        setCreateDialogOpen(false);
-        setToolDockOpen(false);
-        setRailOpen(false);
-        setInspectorOpen(true);
-        showStatus('Inspect · layers and properties', 2500);
-        return;
-      }
-      if (mode === 'setup') {
-        setToolDockOpen(false);
-        setRailOpen(false);
-        setInspectorOpen(false);
-        setCreateDialogOpen(true);
+      // One dispatch. Five branches each setting six booleans by hand is how a
+      // panel got left behind; the reducer decides what closes and what stays.
+      const next = mode === 'none' ? 'canvas' : (mode as WorkspaceMode);
+      dispatchWorkspace({ type: 'enter', mode: next });
+      if (next === 'setup') {
         void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
         void api.listBankPresets().then(setBankPresets).catch(() => undefined);
-        showStatus('Setup · room, kit, and print', 2500);
-        return;
       }
-      // draw
-      setCreateDialogOpen(false);
-      setInspectorOpen(false);
-      setRailOpen(false);
-      setToolDockOpen(true);
-      showStatus('Draw · tools shelf', 2500);
     },
-    [view, doc, showStatus],
+    [view, doc],
   );
 
-  const shellMode = useMemo(
-    () =>
-      deriveShellMode({
-        createDialogOpen,
-        toolDockOpen,
-        inspectorOpen,
-        railOpen,
-        planRailSource,
-      }),
-    [createDialogOpen, toolDockOpen, inspectorOpen, railOpen, planRailSource],
-  );
+  // The mode is stored, not inferred. `deriveShellMode` used to reconstruct it
+  // from five booleans that `setShellMode` had just written, so the same fact
+  // lived in two places and could disagree.
+  const shellMode: ShellMode | 'none' = workspace.mode === 'canvas' || workspace.mode === 'room-layout'
+    ? 'none'
+    : workspace.mode;
 
   const openCreateDialog = useCallback(() => {
-    setRefineRoomOpen(false);
     setWallPickIndex(null);
-    setSeatingOpen(false);
-    setCalculatorOpen(false);
-    setInspectorOpen(false);
-    setToolDockOpen(false);
     setCreateMenuOpen(false);
-    setCreateDialogOpen(true);
+    dispatchWorkspace({ type: 'enter', mode: 'setup' });
     void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
     void api.listBankPresets().then(setBankPresets).catch(() => undefined);
   }, []);
@@ -1529,13 +1610,13 @@ export function App() {
 
   const openNewShapeDialog = useCallback(() => {
     setCreateMenuOpen(false);
-    setCreateDialogOpen(false);
+    enterMode('canvas');
     setShapeWizardOpen(true);
   }, []);
 
   const openNewItemDialog = useCallback(async () => {
     setCreateMenuOpen(false);
-    setCreateDialogOpen(false);
+    enterMode('canvas');
     try {
       const taken = new Set((inventory?.items ?? []).map((item) => item.name.trim().toLowerCase()));
       let name = 'New item';
@@ -1558,7 +1639,7 @@ export function App() {
         peakQuantity: 0,
         addedAt: new Date().toISOString(),
       });
-      showStatus('New item — set the name, size, and icon', 4000);
+      showStatus('New item: set the name, size, and icon', 4000);
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err));
     }
@@ -1583,6 +1664,13 @@ export function App() {
     [inventoryChanged, newItemEditor, newItemProvisional, showStatus],
   );
 
+  /**
+   * Wall editing on or off.
+   *
+   * It is one overlay toggle. This used to be four branches that between them
+   * closed six other panels by hand, because "wall edit can stay open while
+   * Place is open" was wired per call site instead of declared once.
+   */
   const toggleEditWalls = useCallback(() => {
     if (!doc?.editable || !doc?.hasRoom) {
       notify(
@@ -1592,30 +1680,34 @@ export function App() {
       );
       return;
     }
-    if (refineRoomOpen && roomWorkspaceFocus === 'walls') {
+    // Inside the exclusive room workspace the wall handles are already live, so
+    // the button means "leave the workspace" rather than "arm the overlay".
+    if (refineRoomOpen) {
       closeRoomWorkspace();
-      showStatus('Room layout workspace closed');
+      showStatus('Room layout closed');
       return;
     }
-    beginRoomWorkspaceLayout();
+    if (wallsEditArmed) {
+      closeOverlay('wall-edit');
+      setWallPickIndex(null);
+      showStatus('Wall edit off');
+      return;
+    }
     setRoomWorkspaceFocus('walls');
-    setRefineRoomOpen(true);
-    setSeatingOpen(false);
-    setCalculatorOpen(false);
-    setCreateDialogOpen(false);
-    setToolDockOpen(false);
+    openOverlay('wall-edit');
     setSelectedIds([]);
-    // Create lives in the top toolbar now — leave the side inspector closed.
-    setInspectorOpen(false);
     const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
     if (refusal) notify(refusal);
-    showStatus('Edit walls · click a wall, then Push / Curve / Length on the plan', 4500);
-    setFitToken((t) => t + 1);
+    showStatus('Edit walls on · click a wall, then Push / Curve / Length', 4500);
   }, [
     doc?.editable,
     doc?.hasRoom,
     refineRoomOpen,
-    roomWorkspaceFocus,
+    wallsEditArmed,
+    closeRoomWorkspace,
+    closeOverlay,
+    openOverlay,
+    setRoomWorkspaceFocus,
     notify,
     showStatus,
     dispatchTool,
@@ -1664,8 +1756,9 @@ export function App() {
   useEffect(() => {
     if (!startNewRoomOutline || !doc?.editable) return;
     setStartNewRoomOutline(false);
-    setCreateDialogOpen(false);
-    setInspectorOpen(false);
+    // No mode change here. `adopt` has already landed this plan on the canvas;
+    // a second writer on a later tick is what made the landing depend on effect
+    // ordering rather than on intent.
     setSelectedIds([]);
     saveNewRoomOutlineRef.current = true;
     setAwaitingRoomOutline(true);
@@ -1768,7 +1861,7 @@ export function App() {
       acceptPlanFolderState(reply.state);
       setSelectedPlanFolderId(target.parentId);
       setPlanFolderEditor(null);
-      showStatus('Folder removed — original plans were left untouched');
+      showStatus('Folder removed: original plans were left untouched');
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1829,7 +1922,7 @@ export function App() {
           return;
         }
         acceptPlanFolderState(reply.state);
-        showStatus('Removed from folder — original file was left untouched');
+        showStatus('Removed from folder: original file was left untouched');
       } catch (err) {
         notify(err instanceof Error ? err.message : String(err));
       }
@@ -1940,7 +2033,7 @@ export function App() {
           const depthFt = (extent.maxY - extent.minY) / UNITS_PER_FOOT;
           const kitId = suggestKitForRoom(layoutKits, widthFt, depthFt);
           if (kitId && !/card.?party/i.test(kitId)) {
-            showStatus('Room ready — applying matching kit…', 4200);
+            showStatus('Room ready: applying matching kit…', 4200);
             setKitsBusy(true);
             void api
               .applyLayoutRecipe(kitId, {
@@ -1965,7 +2058,7 @@ export function App() {
               .catch((err) => notify(err instanceof Error ? err.message : String(err)))
               .finally(() => setKitsBusy(false));
           } else {
-            showStatus('Room ready — apply a kit or build the layout', 5200);
+            showStatus('Room ready: apply a kit or build the layout', 5200);
           }
         }
       }
@@ -1992,7 +2085,7 @@ export function App() {
             setSetupCompleted((current) => ({ ...current, seating: true }));
           }
           showStatus(
-            keepPlacing ? `${result.status} · click again or Done placing` : result.status,
+            keepPlacing ? `${result.status} · drag it to adjust, or click to place another` : result.status,
           );
         }
       } else if (result.reason) {
@@ -2008,33 +2101,34 @@ export function App() {
     void applyToolEffect(effect, refusal);
   }, [applyToolEffect, dispatchTool]);
 
-  /** Single room-edit path: focused refine workspace (not Inspector Room tab). */
+  /** Room resize uses exclusive refine dock; walls-only stays overlay so Place can stay open. */
+  /**
+   * The two ways into room editing.
+   *
+   * Walls stay on the plan as an overlay so Place can stay open beside them;
+   * resizing takes the canvas over, because it needs the whole sheet. The
+   * reducer remembers where the exclusive workspace was entered from, so
+   * leaving it lands back there instead of dumping the user on a bare canvas.
+   */
   const openRoomEditWorkspace = useCallback(
     (focus: 'walls' | 'room' = 'room') => {
       if (!doc?.editable || !doc?.hasRoom) {
         notify(doc?.hasRoom ? 'This plan is read-only' : 'Draw or finish the room first');
         return;
       }
-      beginRoomWorkspaceLayout();
-      setRoomWorkspaceFocus(focus);
-      setRefineRoomOpen(true);
-      setSeatingOpen(false);
-      setCalculatorOpen(false);
-      setInspectorOpen(false);
-      setCreateDialogOpen(false);
-      setToolDockOpen(false);
-      setRailOpen(false);
       setSelectedIds([]);
       dispatchTool({ type: 'pick', choice: SELECT });
+      if (focus === 'walls') {
+        setRoomWorkspaceFocus('walls');
+        openOverlay('wall-edit');
+        showStatus('Edit walls on · click a wall, then Push / Curve / Length', 4500);
+        return;
+      }
+      enterMode('room-layout');
       setFitToken((t) => t + 1);
-      showStatus(
-        focus === 'walls'
-          ? 'Edit walls · click a wall, then Push / Curve / Length on the plan'
-          : 'Room layout workspace · resize, add/cut, then drag walls on the plan',
-        4500,
-      );
+      showStatus('Room layout · resize, add/cut, then drag walls on the plan', 4500);
     },
-    [doc?.editable, doc?.hasRoom, dispatchTool, notify, showStatus],
+    [doc?.editable, doc?.hasRoom, dispatchTool, enterMode, notify, openOverlay, setRoomWorkspaceFocus, showStatus],
   );
 
   const openRoomPanel = useCallback(() => {
@@ -2068,7 +2162,7 @@ export function App() {
         }
       }
       openCreateDialog();
-      showStatus('Room ready — finished as a rectangle · next: build stage', 5200);
+      showStatus('Room ready: finished as a rectangle · next: build stage', 5200);
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error));
     }
@@ -2087,7 +2181,7 @@ export function App() {
     setDoc(null);
     setActivePlanPath(null);
     setPlanTabs([]);
-    setCreateDialogOpen(false);
+    enterMode('canvas');
     showStatus('Empty plan discarded', 3200);
     refreshRecent();
   }, [notify, refreshRecent, showStatus]);
@@ -2103,7 +2197,7 @@ export function App() {
       setAwaitingRoomOutline(true);
       openCreateDialog();
       showStatus(
-        'Outline cancelled — draw corners, finish as rectangle, or discard this empty plan',
+        'Outline cancelled: draw corners, finish as rectangle, or discard this empty plan',
         6400,
       );
     }
@@ -2115,7 +2209,7 @@ export function App() {
     setArmedInventoryId(null);
     dispatchTool({ type: 'pick', choice: SELECT });
     if (hadSelection) {
-      setInspectorOpen(true);
+      enterMode('inspect');
       setInspectorTab('properties');
       showStatus('Ready to edit, rotate, or Repeat');
     }
@@ -2198,7 +2292,7 @@ export function App() {
         return;
       }
       setView('plan');
-      showStatus(`Click the plan to place ${description} · stays armed until Done placing`);
+      showStatus(`Click the plan to place ${description} · drag a placed piece to adjust it`);
     },
     [dispatchTool, notify, showStatus],
   );
@@ -2220,7 +2314,7 @@ export function App() {
         return;
       }
       setView('plan');
-      showStatus(`Click the plan to place ${name} · stays armed until Done placing`);
+      showStatus(`Click the plan to place ${name} · drag a placed piece to adjust it`);
     },
     [dispatchTool, notify, rememberRecentInventory, showStatus],
   );
@@ -2251,7 +2345,7 @@ export function App() {
       if (leaf.id === 'proj-combo') {
         const { refusal } = dispatchTool({ type: 'pick', choice: avPairChoice });
         if (refusal) notify(refusal);
-        else showStatus('Click where the screen should sit — projector and throw follow', 5000);
+        else showStatus('Click where the screen should sit; projector and throw follow', 5000);
         return;
       }
       const match = matchInsertItem(leaf, inventoryRows);
@@ -2309,7 +2403,7 @@ export function App() {
     }
     if (!annotationDraft.trim()) setAnnotationDraft(text);
     openCreateDialog();
-    showStatus('Text tool armed — edit the label, then click the plan to place it');
+    showStatus('Text tool armed: edit the label, then click the plan to place it');
     window.setTimeout(() => {
       const input = annotationInputRef.current;
       input?.focus();
@@ -2489,7 +2583,7 @@ export function App() {
       setTextRotationDraft(String(Math.round(primitive.textStyle.angleDegrees * 10) / 10));
     }
     setTextEditingId(nodeId);
-    setInspectorOpen(true);
+    enterMode('inspect');
     setInspectorTab('properties');
     dispatchTool({ type: 'pick', choice: SELECT });
   }, [dispatchTool, doc]);
@@ -2655,7 +2749,7 @@ export function App() {
           // Better to be told the sheet crops than to find out at the venue.
           notify(
             `Saved ${name}, but the drawing is ${Math.round(((reply.overBy ?? 1) - 1) * 100)}% larger than ` +
-              `this sheet at that scale — use a bigger sheet or a smaller scale to see all of it.`,
+              `this sheet at that scale: use a bigger sheet or a smaller scale to see all of it.`,
           );
         } else {
           showStatus(`Saved ${name}`);
@@ -2692,7 +2786,7 @@ export function App() {
           setSelection(null);
           void attachPlacedToParent(reply.created);
         }
-        setInspectorOpen(true);
+        enterMode('inspect');
         setInspectorTab('properties');
         setSetupCompleted((current) => ({ ...current, insert: true }));
         // Keep the same SKU armed so drag and click share one keep-placing flow.
@@ -2701,7 +2795,7 @@ export function App() {
           type: 'pick',
           choice: { kind: 'stamp', stamp: { what: 'inventory', id, name } },
         });
-        showStatus(`${placeMethodStatus(reply.method)} · still armed — click or drag again`);
+        showStatus(`${placeMethodStatus(reply.method)} · still armed: click or drag again`);
       } else {
         notify(reply.reason ?? 'Could not place that item');
       }
@@ -2730,14 +2824,14 @@ export function App() {
           setSelection(null);
           void attachPlacedToParent(reply.created);
         }
-        setInspectorOpen(true);
+        enterMode('inspect');
         setInspectorTab('properties');
         setSetupCompleted((current) => ({ ...current, insert: true }));
         dispatchTool({
           type: 'pick',
           choice: { kind: 'stamp', stamp: { what: 'gear', description } },
         });
-        showStatus(`${placeMethodStatus(reply.method, description)} · still armed — click or drag again`);
+        showStatus(`${placeMethodStatus(reply.method, description)} · still armed: click or drag again`);
       } else {
         notify(reply.reason ?? `Could not place ${description}`);
       }
@@ -2848,7 +2942,7 @@ export function App() {
       return;
     }
     if (columns * rows > 200) {
-      notify('Array is capped at 200 — use the seating planner for full-room fills');
+      notify('Array is capped at 200. Use the seating planner for full-room fills');
       return;
     }
     const gapX = arrayGapXDraft.trim() ? parseLength(arrayGapXDraft, unitSystem) : null;
@@ -2877,7 +2971,7 @@ export function App() {
       };
       applied(reply);
       if (reply.ok) {
-        setInspectorOpen(true);
+        enterMode('inspect');
         setInspectorTab('properties');
         setSetupCompleted((current) => ({ ...current, repeat: true }));
         const n = reply.created?.length ?? count;
@@ -2900,7 +2994,7 @@ export function App() {
     };
     applied(reply);
     if (reply.ok) {
-      setInspectorOpen(true);
+      enterMode('inspect');
       setInspectorTab('properties');
       setSetupCompleted((current) => ({ ...current, repeat: true }));
       const n = reply.created?.length ?? columns * rows;
@@ -3321,6 +3415,31 @@ export function App() {
     }
   }, [elevationKey, doc?.editable, unitSystem, notify, showStatus]);
 
+  /**
+   * Commit a size from a drag on the canvas transform handles.
+   *
+   * Same IPC as the Properties width/height fields, so a handle drag and a typed
+   * value are one operation with one undo step. The aspect lock is deliberately
+   * NOT applied here — on the canvas, Shift is the lock, and re-applying the
+   * panel's toggle would silently override what the drag asked for.
+   */
+  const resizeSelectionTo = useCallback(
+    async (nodeId: number, width: number, height: number) => {
+      if (!doc?.editable || !(width > 0) || !(height > 0)) return;
+      applied((await api.resize(nodeId, width, height)) as { ok: boolean; reason?: string; doc?: Doc });
+    },
+    [doc?.editable, applied],
+  );
+
+  /** Commit a rotation from the canvas rotate grip. */
+  const rotateSelectionBy = useCallback(
+    async (nodeId: number, degrees: number) => {
+      if (!doc?.editable || !Number.isFinite(degrees)) return;
+      applied((await api.batch('rotate', [nodeId], degrees)) as { ok: boolean; reason?: string; doc?: Doc });
+    },
+    [doc?.editable, applied],
+  );
+
   const commitSelectionSize = useCallback(async () => {
     if (!selection || selectedId == null || selection.nodeId !== selectedId || !doc?.editable) return;
     const draft = sizeDraftRef.current;
@@ -3365,7 +3484,7 @@ export function App() {
   const commitSelectionAngle = useCallback(async () => {
     if (!selection || selectedId == null || selection.nodeId !== selectedId || !doc?.editable) return;
     if (selection.angleDegrees == null) {
-      notify('This item only supports rotate-by — use the angle slider below');
+      notify('This item only supports rotate-by. Use the angle slider below');
       return;
     }
     const target = Number(angleAbsoluteDraftRef.current);
@@ -3412,7 +3531,7 @@ export function App() {
         return false;
       }
       applied(reply);
-      showStatus(kind === 'curve' ? 'Converted segment to a curve — drag either round handle' : 'Straightened segment');
+      showStatus(kind === 'curve' ? 'Converted segment to a curve. Drag either round handle' : 'Straightened segment');
       return true;
     },
     [doc?.editable, selectedId, applied, notify, showStatus],
@@ -3467,11 +3586,6 @@ export function App() {
           setNewPlanOpen(false);
           return;
         }
-        if (createDialogOpen) {
-          e.preventDefault();
-          setCreateDialogOpen(false);
-          return;
-        }
         if (newItemEditor) {
           e.preventDefault();
           void closeNewItemEditor(false);
@@ -3497,19 +3611,18 @@ export function App() {
           setBuildStageOpen(false);
           return;
         }
-        if (seatingOpen) {
+        // Everything above is a modal that owns the screen. Everything the
+        // WORKSPACE has open unwinds through one rule instead of five ordered
+        // branches — newest overlay, then the exclusive room workspace, then
+        // the mode. That is the only order a user can predict, and the reducer
+        // guarantees repeated presses always terminate on a bare canvas.
+        if (escapeConsumed(workspace)) {
           e.preventDefault();
-          setSeatingOpen(false);
-          return;
-        }
-        if (refineRoomOpen) {
-          e.preventDefault();
-          closeRoomWorkspace();
-          return;
-        }
-        if (calculatorOpen) {
-          e.preventDefault();
-          setCalculatorOpen(false);
+          if (workspace.overlays.includes('wall-edit') && workspace.overlays.length === 1) {
+            setWallPickIndex(null);
+          }
+          if (workspace.mode === 'room-layout') setWallPickIndex(null);
+          dispatchWorkspace({ type: 'escape' });
           return;
         }
       }
@@ -3596,7 +3709,7 @@ export function App() {
       if (e.key.toLowerCase() === 'a' && !mod && doc) {
         e.preventDefault();
         dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
-        setInspectorOpen(true);
+        enterMode('inspect');
         setInspectorTab('properties');
         return;
       }
@@ -3673,7 +3786,7 @@ export function App() {
       if (
         d &&
         doc?.editable &&
-        (refineRoomOpen) &&
+        (wallEditLive) &&
         wallEdit?.editable &&
         wallEdit.walls.length &&
         !selectedIds.length
@@ -3785,6 +3898,8 @@ export function App() {
     seatingOpen,
     calculatorOpen,
     refineRoomOpen,
+    wallsEditArmed,
+    workspace,
     cancelPlacement,
     toggleMeasure,
     toggleDimension,
@@ -3803,6 +3918,8 @@ export function App() {
     nudgeStep,
     fineNudgeStep,
     refineRoomOpen,
+    wallsEditArmed,
+    wallEditLive,
     wallEdit,
     wallEditGesture,
     showStatus,
@@ -3971,19 +4088,6 @@ export function App() {
     );
   }, [doc?.scene.primitives]);
 
-  const layerObjectTotal = useMemo(
-    () => LAYERS.reduce((total, layer) => total + (layerCounts.get(layer.id) ?? 0), 0),
-    [layerCounts],
-  );
-
-  const visibleLayerObjectTotal = useMemo(
-    () =>
-      LAYERS.reduce(
-        (total, layer) => total + (visible.has(layer.id) ? (layerCounts.get(layer.id) ?? 0) : 0),
-        0,
-      ),
-    [layerCounts, visible],
-  );
 
   const organizedLayers = useMemo(() => {
     const query = layerQuery.trim().toLowerCase();
@@ -4024,7 +4128,7 @@ export function App() {
       setSelectionScope(scope);
       setSelectedIds(ids);
       setSelection(null);
-      setInspectorOpen(true);
+      enterMode('inspect');
       setInspectorTab('properties');
       showStatus(`Selected ${ids.length.toLocaleString()} object${ids.length === 1 ? '' : 's'} in ${label}`);
     },
@@ -4122,6 +4226,28 @@ export function App() {
 
   const extent = doc?.scene.roomExtent ?? doc?.scene.extent ?? null;
   const inventoryTotal = doc?.scene.inventory.reduce((sum, i) => sum + i.count, 0) ?? 0;
+  /**
+   * The actual drawing, for the sheet preview.
+   *
+   * This pane used to render a grey box containing the word "PLAN" sized to the
+   * footprint ratio, while its own heading advertised "Visible layers · N
+   * objects". At the one moment a user decides whether to commit — did the
+   * stage make it onto the sheet, is anything clipped — it showed them nothing.
+   *
+   * It reuses `toSvg`, the same renderer behind Export SVG, so the preview and
+   * the exported artwork cannot drift apart. Only built while the dialog is
+   * open, and it escapes plan text itself (`svg.ts:79`), which is what makes it
+   * safe to inject as markup.
+   */
+  const printPreviewSvg = useMemo(() => {
+    if (!printOpen || !doc) return null;
+    try {
+      return toSvg(doc.scene, visible, printScale, planBackground);
+    } catch {
+      return null;
+    }
+  }, [printOpen, doc, visible, printScale, planBackground]);
+
   const printPreview = useMemo(() => {
     if (!doc) return null;
     let minX = Number.POSITIVE_INFINITY;
@@ -4198,6 +4324,31 @@ export function App() {
     () => countFurniture(doc?.scene.inventory ?? []),
     [doc?.scene.inventory],
   );
+
+  /**
+   * What the Setup checklist reports, READ OFF THE DRAWING.
+   *
+   * `setupCompleted` below is a set of latches written from a dozen call sites
+   * and never rolled back, so one Undo after applying a kit emptied the room
+   * while the panel still read "Layout ready · Build a stage done · Place
+   * objects done · Seating planner done". The plan is the only thing that knows
+   * whether a stage exists, so it is asked directly.
+   *
+   * `print` stays a session fact — nothing in the file records that a PDF was
+   * produced — but it is gated on the drawing still having content, so it
+   * cannot outlive the work it described.
+   */
+  const setupState = useMemo(() => {
+    const inventory = doc?.scene.inventory ?? [];
+    const hasContent = inventory.length > 0;
+    return {
+      stage: inventory.some((item) => /\bstage\b|\briser\b|\bdeck\b/i.test(item.name)),
+      insert: hasContent,
+      seating: furnitureCounts.chairs > 0,
+      repeat: setupCompleted.repeat && hasContent,
+      print: setupCompleted.print && hasContent,
+    };
+  }, [doc?.scene.inventory, furnitureCounts.chairs, setupCompleted.repeat, setupCompleted.print]);
 
   const applyShowKit = useCallback(
     async (
@@ -4360,6 +4511,28 @@ export function App() {
   /** Absolute X/Y is single-selection only — multi-select keeps stale drafts otherwise. */
   const canPositionSelection = !!selection && selectedIds.length === 1 && !singleIsAnnotation;
   /**
+   * What the canvas needs to draw live transform handles.
+   *
+   * Same gates as the Properties fields, so a grip never offers an edit the
+   * panel would refuse. `width`/`height` are the object's OWN rectangle
+   * (`measureNode` reads local geometry), which is what makes handles on a
+   * rotated riser land on its real corners.
+   */
+  const transformTarget = useMemo(
+    () =>
+      selection && selectedIds.length === 1 && (canResizeSelection || canTransformSelection)
+        ? {
+            nodeId: selection.nodeId,
+            width: selection.widthUnits,
+            height: selection.heightUnits,
+            angleDegrees: selection.angleDegrees,
+            canResize: canResizeSelection,
+            canRotate: canTransformSelection,
+          }
+        : null,
+    [selection, selectedIds.length, canResizeSelection, canTransformSelection],
+  );
+  /**
    * Annotation is available in every editable plan.
    *
    * `annotationCapabilities` used to gate these buttons, back when a label or a
@@ -4497,10 +4670,7 @@ export function App() {
           dispatchTool({ type: 'pick', choice: roomOutlineChoice });
           return;
         case 'seating.planner':
-          setSeatingOpen(true);
-          setCreateDialogOpen(false);
-          setCalculatorOpen(false);
-          setToolDockOpen(false);
+          openOverlay('seating');
           return;
         case 'stage.build':
           setBuildStageOpen(true);
@@ -4514,8 +4684,8 @@ export function App() {
           setShapeWizardOpen(true);
           return;
         case 'calc.open':
-          setCalculatorOpen(true);
-          setSeatingOpen(false);
+          openOverlay('calculator');
+          closeOverlay('seating');
           return;
         case 'settings.open':
           setSettingsOpen(true);
@@ -4630,6 +4800,40 @@ export function App() {
       onFocusCapture={handleAppFocus}
       onBlurCapture={handleAppBlur}
     >
+      {discardPrompt && (
+        <div className="discard-prompt-backdrop" role="presentation">
+          <section
+            className="discard-prompt"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="discard-prompt-title"
+          >
+            <strong id="discard-prompt-title">Save changes to {discardPrompt.work}?</strong>
+            <p>Save keeps your latest work. Discarding removes the unsaved edits for good.</p>
+            <div className="discard-prompt-actions">
+              <button type="button" onClick={() => answerDiscard('cancel')}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="discard-prompt-danger"
+                onClick={() => answerDiscard('discard')}
+              >
+                Discard changes
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                autoFocus
+                onClick={() => answerDiscard('save')}
+              >
+                Save changes
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       <CommandPalette
         open={commandPaletteOpen}
         catalog={commandCatalog}
@@ -4645,23 +4849,26 @@ export function App() {
           onCreated={(created, options) => {
             setNewPlanOpen(false);
             // The same path an opened plan takes, so nothing is left over from
-            // whatever was on screen before.
-            adopt(created as Doc);
+            // whatever was on screen before — but the landing is stated here,
+            // once, because this flow already knows it. Tracing an outline and
+            // calibrating a background both need the sheet clear; everything
+            // else starts in Setup.
+            adopt(
+              created as Doc,
+              options.openBackground || options.startRoomOutline ? 'canvas' : 'setup',
+            );
             setCustomRoomPrefs(options.customRoom ?? null);
             setStartNewRoomOutline(options.startRoomOutline);
             setAwaitingRoomOutline(options.startRoomOutline);
             if (options.openBackground) {
-              setCreateDialogOpen(false);
-              setInspectorOpen(false);
               setBackgroundOpen(true);
               showStatus(
                 'Add your site plan or CAD PDF, set a known width, then click corners to trace the room',
                 7200,
               );
             } else if (options.startRoomOutline) {
-              // Keep the canvas clear for tracing — open Show setup once the room exists.
-              setCreateDialogOpen(false);
-              setInspectorOpen(false);
+              // The canvas is already clear; `adopt` was told so. Show setup
+              // opens on its own once the room exists.
               showStatus(
                 'Click corners to finish the room · Enter closes · Esc cancels · Finish as rectangle on the banner',
                 6400,
@@ -4669,10 +4876,10 @@ export function App() {
             } else {
               openCreateDialog();
               if (options.applyKitId) {
-                showStatus('Room ready — applying matching kit…', 4200);
+                showStatus('Room ready: applying matching kit…', 4200);
                 void applyShowKit(options.applyKitId, { quiet: true, assumeOpen: true });
               } else {
-                showStatus('Room ready — apply a kit or build the layout', 5200);
+                showStatus('Room ready: apply a kit or build the layout', 5200);
               }
             }
             setFitToken((t) => t + 1);
@@ -4714,7 +4921,7 @@ export function App() {
           armInsertLeaf(leafId);
         }}
         onUnavailable={(label) => {
-          notify(`“${label}” is not in inventory and has no stock size — add it under Inventory first`);
+          notify(`“${label}” is not in inventory and has no stock size: add it under Inventory first`);
         }}
       />
 
@@ -4754,7 +4961,7 @@ export function App() {
         onClose={() => setBuildStageOpen(false)}
         onBuilt={(next, created) => {
           if (next) setDoc(next as Doc);
-          setInspectorOpen(true);
+          enterMode('inspect');
           setInspectorTab('properties');
           if (created?.length) {
             setSelectedIds(created);
@@ -4763,7 +4970,7 @@ export function App() {
           setSetupCompleted((current) => ({ ...current, stage: true }));
           showStatus(
             created?.length
-              ? 'Stage built — select a deck to rotate or Repeat, or Insert the next piece'
+              ? 'Stage built: select a deck to rotate or Repeat, or Insert the next piece'
               : 'Stage built',
           );
           setFitToken((t) => t + 1);
@@ -4777,7 +4984,7 @@ export function App() {
           className="seating-window-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setSeatingOpen(false);
+            if (event.target === event.currentTarget) closeOverlay('seating');
           }}
         >
           <section
@@ -4801,7 +5008,7 @@ export function App() {
               <button
                 type="button"
                 className="seating-window-close"
-                onClick={() => setSeatingOpen(false)}
+                onClick={() => closeOverlay('seating')}
                 aria-label="Close seating planner"
                 title="Close seating planner (Esc)"
               >
@@ -4817,7 +5024,7 @@ export function App() {
                 onError={notify}
                 drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
                 onDrawRoomOutline={() => {
-                  setSeatingOpen(false);
+                  closeOverlay('seating');
                   setShellMode('setup');
                   const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
                   if (refusal) notify(refusal);
@@ -4869,9 +5076,11 @@ export function App() {
             if (change.appearance) setAppearance(change.appearance);
             if (change.density) setDensity(change.density);
             if (change.showTooltips != null) setShowTooltips(change.showTooltips);
-            if (change.railOpen != null) setRailOpen(change.railOpen);
-            if (change.inspectorOpen != null) setInspectorOpen(change.inspectorOpen);
-            if (change.toolDockOpen != null) setToolDockOpen(change.toolDockOpen);
+            // Settings toggles a panel by asking for its mode, so a preference
+            // cannot put the workspace into a shape the mode strip can't reach.
+            if (change.railOpen != null) enterMode(change.railOpen ? 'place' : 'canvas');
+            if (change.inspectorOpen != null) enterMode(change.inspectorOpen ? 'inspect' : 'canvas');
+            if (change.toolDockOpen != null) enterMode(change.toolDockOpen ? 'draw' : 'canvas');
             if (change.toolDockCompact != null) setToolDockCompact(change.toolDockCompact);
             if (change.toolDockSide) setToolDockSide(change.toolDockSide);
           }}
@@ -5123,16 +5332,6 @@ export function App() {
             <IconFile />
             <span>Open</span>
           </button>
-          <button
-            className="icon-btn ribbon-action"
-            onClick={openFolder}
-            disabled={busy}
-            data-tooltip={`Open folder (${shortcut('O', true)})`}
-            aria-label="Open plan folder"
-          >
-            <IconFolder />
-            <span>Folder</span>
-          </button>
         </div>
 
         <div className="seg ribbon-group shell-mode-strip" role="toolbar" aria-label="Workspace modes">
@@ -5146,7 +5345,7 @@ export function App() {
                 className={`icon-btn ribbon-action${on ? ' is-on' : ''}`}
                 disabled={disabled}
                 aria-pressed={on}
-                data-tooltip={`${mode.label} — ${mode.hint}`}
+                data-tooltip={`${mode.label}: ${mode.hint}`}
                 aria-label={`${on ? 'Hide' : 'Show'} ${mode.label} mode`}
                 onClick={() => runCommand(on ? 'mode.none' : mode.commandId)}
               >
@@ -5206,7 +5405,7 @@ export function App() {
                 className={`icon-btn ribbon-action${planBackground?.visible ? ' is-on' : ''}`}
                 onClick={() => setBackgroundOpen(true)}
                 disabled={!doc}
-                data-tooltip={planBackground ? 'Open Background Studio — align and scale the site plan' : 'Open Background Studio — site plan, CAD PDF, or image underlay'}
+                data-tooltip={planBackground ? 'Open Background Studio: align and scale the site plan' : 'Open Background Studio: site plan, CAD PDF, or image underlay'}
                 aria-label={planBackground ? 'Open Background Studio' : 'Upload a site plan or CAD drawing'}
                 aria-pressed={!!planBackground?.visible}
               >
@@ -5287,7 +5486,7 @@ export function App() {
                 disabled={!doc}
                 data-tooltip={
                   snapStep
-                    ? 'Snapping on — edits use 1″ (Shift = fine, Alt = free) (S)'
+                    ? 'Snapping on: edits use 1″ (Shift = fine, Alt = free) (S)'
                     : 'Snapping off (S)'
                 }
                 aria-label={snapStep ? 'Disable snapping' : 'Enable snapping'}
@@ -5317,7 +5516,7 @@ export function App() {
 
             {/* Event layout, drawing tools, and wall edit live in Setup / Draw / room.edit — not the ribbon. */}
 
-            <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}${refineRoomOpen && textEditingId == null ? ' is-room-layout' : ''}`}>
+            <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}${wallEditLive && textEditingId == null ? ' is-room-layout' : ''}`}>
             {textEditingId != null ? (
               <div className="text-context-toolbar" aria-label="Quick text formatting">
                 <span className="text-context-mode"><IconText size={14} /><b>Editing text</b></span>
@@ -5377,17 +5576,28 @@ export function App() {
                   aria-label="Text color"
                   title="Text color"
                 />
-                <button className="text-context-advanced" onClick={() => { setInspectorOpen(true); setInspectorTab('properties'); }}>
+                <button className="text-context-advanced" onClick={() => { enterMode('inspect'); setInspectorTab('properties'); }}>
                   Advanced…
                 </button>
                 <span className="spacer" />
                 <button onClick={cancelTextEditing}>Cancel</button>
                 <button className="primary" onClick={() => void commitTextEditing(true)}>Done</button>
               </div>
-            ) : refineRoomOpen ? (
+            ) : wallEditLive ? (
               <WallEditToolbar
-                focus={roomWorkspaceFocus}
-                onFocus={setRoomWorkspaceFocus}
+                focus={refineRoomOpen ? roomWorkspaceFocus : 'walls'}
+                onFocus={(focus) => {
+                  if (focus === 'room') {
+                    openRoomEditWorkspace('room');
+                    return;
+                  }
+                  if (refineRoomOpen) {
+                    setRoomWorkspaceFocus('walls');
+                    return;
+                  }
+                  openOverlay('wall-edit');
+                  setRoomWorkspaceFocus('walls');
+                }}
                 gesture={wallEditGesture}
                 onGesture={setWallEditGesture}
                 wallLabel={
@@ -5525,8 +5735,15 @@ export function App() {
                   })();
                 }}
                 onDone={() => {
-                  closeRoomWorkspace();
-                  showStatus('Room layout workspace closed');
+                  if (refineRoomOpen) {
+                    closeRoomWorkspace();
+                    closeOverlay('wall-edit');
+                    showStatus('Room layout workspace closed');
+                    return;
+                  }
+                  closeOverlay('wall-edit');
+                  setWallPickIndex(null);
+                  showStatus('Wall edit off');
                 }}
               />
             ) : (
@@ -5544,7 +5761,7 @@ export function App() {
               <button
                 className="icon-btn"
                 onClick={() => {
-                  setInspectorOpen(true);
+                  enterMode('inspect');
                   setInspectorTab('properties');
                 }}
                 disabled={!doc}
@@ -5553,6 +5770,25 @@ export function App() {
               >
                 <IconEdit />
               </button>
+              {/* Paste is the one clipboard action that works on an empty
+                  selection, so it stays out of the contextual run below. */}
+              <button
+                className="icon-btn"
+                onClick={() => void pastePlanSelection()}
+                disabled={!doc?.editable}
+                data-tooltip={planClipboard ? `Paste ${planClipboard.count} copied item${planClipboard.count === 1 ? '' : 's'} (${shortcut('V')})` : `Paste copied shapes (${shortcut('V')})`}
+                aria-label="Paste copied shapes"
+              >
+                <IconPaste />
+              </button>
+              {/* Rotate, flip, align, distribute, order, group, duplicate and
+                  delete all act ON a selection — nineteen controls that did
+                  nothing until one existed, yet held the second row at full
+                  width every second the app was open. They now appear with the
+                  selection they operate on, which also means the row reads as
+                  an answer to "what can I do with this?" rather than a wall. */}
+              {selectedIds.length > 0 && (
+                <>
               <span className="seg-divider" aria-hidden />
               <button
                 className="icon-btn"
@@ -5693,15 +5929,6 @@ export function App() {
               </button>
               <button
                 className="icon-btn"
-                onClick={() => void pastePlanSelection()}
-                disabled={!doc?.editable}
-                data-tooltip={planClipboard ? `Paste ${planClipboard.count} copied item${planClipboard.count === 1 ? '' : 's'} (${shortcut('V')})` : `Paste copied shapes (${shortcut('V')})`}
-                aria-label="Paste copied shapes"
-              >
-                <IconPaste />
-              </button>
-              <button
-                className="icon-btn"
                 onClick={() => void groupPlanSelection()}
                 disabled={!doc?.editable || selectedIds.length < 2}
                 data-tooltip={`Group selected shapes (${shortcut('G')})`}
@@ -5736,6 +5963,8 @@ export function App() {
               >
                 <IconTrash />
               </button>
+                </>
+              )}
             </div>
 
             <div className="seg plan-output-controls" aria-label="Plan output">
@@ -5817,35 +6046,78 @@ export function App() {
           </>
         )}
 
-        <div className="seg ribbon-group utility-controls" aria-label="Help and settings">
+        {/* Pinned to the right edge and out of the scroll, so the session
+            controls a user does reach for are never the ones cut off. */}
+        <div className="seg ribbon-group utility-controls" aria-label="More">
           <button
-            className={`icon-btn ribbon-action${darkMode ? ' is-on' : ''}`}
-            onClick={() => setAppearance(darkMode ? 'light' : 'dark')}
-            data-tooltip={darkMode ? 'Use light interface' : 'Use dark interface'}
-            aria-label={darkMode ? 'Use light interface' : 'Use dark interface'}
-            aria-pressed={darkMode}
+            ref={moreMenuButtonRef}
+            type="button"
+            className={`icon-btn ribbon-action${moreMenuOpen ? ' is-on' : ''}`}
+            onClick={() => setMoreMenuOpen((open) => !open)}
+            data-tooltip="Folder, appearance, settings, and shortcuts"
+            aria-label="More"
+            aria-haspopup="menu"
+            aria-expanded={moreMenuOpen}
           >
-            {darkMode ? <IconSun /> : <IconMoon />}
-            <span>{darkMode ? 'Light UI' : 'Dark UI'}</span>
+            <IconMore />
+            <span>More</span>
           </button>
-          <button
-            className="icon-btn ribbon-action"
-            onClick={() => setSettingsOpen(true)}
-            data-tooltip="Open settings"
-            aria-label="Settings"
-          >
-            <IconEdit />
-            <span>Settings</span>
-          </button>
-          <button
-            className="icon-btn ribbon-action"
-            onClick={() => void runCommand('help.shortcuts')}
-            data-tooltip="Show keyboard shortcuts (?)"
-            aria-label="Keyboard shortcuts"
-          >
-            <IconHelp />
-            <span>Help</span>
-          </button>
+          {moreMenuOpen &&
+            moreMenuPos &&
+            createPortal(
+              <div
+                ref={moreMenuRef}
+                className="ribbon-create-menu ribbon-more-menu"
+                role="menu"
+                aria-label="More"
+                style={{ top: moreMenuPos.top, right: moreMenuPos.right }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    openFolder();
+                  }}
+                >
+                  <span>Open folder…</span>
+                  <kbd>{shortcut('O', true)}</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setAppearance(darkMode ? 'light' : 'dark');
+                  }}
+                >
+                  <span>{darkMode ? 'Light interface' : 'Dark interface'}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setSettingsOpen(true);
+                  }}
+                >
+                  <span>Settings…</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    void runCommand('help.shortcuts');
+                  }}
+                >
+                  <span>Keyboard shortcuts</span>
+                  <kbd>?</kbd>
+                </button>
+              </div>,
+              document.body,
+            )}
         </div>
 
         </div>
@@ -5861,7 +6133,11 @@ export function App() {
         </div>
       )}
 
-      {view === 'plan' && planTabs.length > 0 && (
+      {/* One open plan needs no tab strip: the filename is already in the title
+          bar, and Copy / Paste / New are on the quick bar, the inspector, and
+          the keyboard. Showing a one-item tab row cost 34px of canvas and a
+          third copy of the same three buttons. */}
+      {view === 'plan' && planTabs.length > 1 && (
         <nav className="plan-document-tabs" aria-label="Open plans">
           <div className="plan-document-tabs-scroll" role="tablist">
             {planTabs.map((tab) => {
@@ -6066,24 +6342,27 @@ export function App() {
             </>
           ) : (
             <>
+              {/* Four tabs in a 2x2 grid used to sit here, costing two rows
+                  before the rail showed anything. They were also two different
+                  kinds of control wearing one costume: "Equipment" called
+                  `enterMode('place')` — it was the Place button from the mode
+                  strip — while the other three pick a source WITHIN Browse.
+                  `railSource === 'equipment'` is exactly `mode === 'place'`, so
+                  the rail now shows the three real sources, on one row, only in
+                  the mode they belong to. Switching between equipment and plans
+                  is what the mode strip is for. */}
+              {planRailSource !== 'equipment' && (
               <nav className="rail-source-tabs" aria-label="Plan browser source">
                 <button
-                  className={planRailSource === 'equipment' ? 'active' : ''}
-                  onClick={() => setPlanRailSource('equipment')}
-                  aria-pressed={planRailSource === 'equipment'}
-                >
-                  Equipment
-                </button>
-                <button
                   className={planRailSource === 'recent' ? 'active' : ''}
-                  onClick={() => setPlanRailSource('recent')}
+                  onClick={() => dispatchWorkspace({ type: 'browse-source', source: 'recent' })}
                   aria-pressed={planRailSource === 'recent'}
                 >
                   Recent
                 </button>
                 <button
                   className={planRailSource === 'collections' ? 'active' : ''}
-                  onClick={() => setPlanRailSource('collections')}
+                  onClick={() => dispatchWorkspace({ type: 'browse-source', source: 'collections' })}
                   aria-pressed={planRailSource === 'collections'}
                   title="Organize plans without moving their files"
                 >
@@ -6092,7 +6371,7 @@ export function App() {
                 <button
                   className={planRailSource === 'folder' ? 'active' : ''}
                   onClick={() => {
-                    if (folder) setPlanRailSource('folder');
+                    if (folder) dispatchWorkspace({ type: 'browse-source', source: 'folder' });
                     else void openFolder();
                   }}
                   aria-pressed={planRailSource === 'folder'}
@@ -6100,6 +6379,7 @@ export function App() {
                   Browse
                 </button>
               </nav>
+              )}
 
               {planRailSource === 'collections' ? (
                 <section className="plan-folders-panel" aria-label="Organized plan folders">
@@ -6158,7 +6438,7 @@ export function App() {
                     <span className="plan-folder-workspace-launch-icon"><IconFolder size={15} /></span>
                     <span>
                       <strong>Open Folder Workspace</strong>
-                      <small>Virtual folders — search, notes, status; files stay on disk</small>
+                      <small>Virtual folders: search, notes, status; files stay on disk</small>
                     </span>
                     <span aria-hidden="true">↗</span>
                   </button>
@@ -6290,7 +6570,7 @@ export function App() {
                                     : ''}
                                 </span>
                               </span>
-                              {candidate.favorite && <span className="plan-folder-favorite" title="Favorite folder">★</span>}
+                              {candidate.favorite && <span className="plan-folder-favorite" title="Favorite folder"><IconStar size={12} filled /></span>}
                               <span className="plan-folder-chevron" aria-hidden="true">›</span>
                             </button>
                           </li>
@@ -6338,7 +6618,7 @@ export function App() {
                                     </span>
                                   </span>
                                 </span>
-                                {plan.starred && <span className="plan-folder-plan-star" title="Starred">★</span>}
+                                {plan.starred && <span className="plan-folder-plan-star" title="Starred"><IconStar size={12} filled /></span>}
                               </button>
                               <button
                                 className="plan-folder-remove-plan"
@@ -6421,7 +6701,6 @@ export function App() {
                       title={`Inventory (${inventory?.total ?? 0})`}
                     >
                       <span className="tab-label">Inventory</span>
-                      <span className="num">{inventory?.total ?? 0}</span>
                     </button>
                     <button
                       type="button"
@@ -6432,7 +6711,6 @@ export function App() {
                       title={gear ? `Gear list (${gear.totals[gearIndex]?.pieces ?? 0})` : 'Gear list'}
                     >
                       <span className="tab-label">Gear list</span>
-                      {gear && <span className="num">{gear.totals[gearIndex]?.pieces ?? 0}</span>}
                     </button>
                     <button
                       type="button"
@@ -6443,13 +6721,19 @@ export function App() {
                       title={`On plan (${inventoryTotal.toLocaleString()})`}
                     >
                       <span className="tab-label">On plan</span>
-                      <span className="num">{inventoryTotal.toLocaleString()}</span>
                     </button>
                   </div>
-                  <div className="equipment-gesture-hint" role="note">
-                    <span><strong>Click</strong> or <strong>drag</strong> — stays armed</span>
-                    <span><kbd>Esc</kbd> / Done placing ends</span>
-                  </div>
+                  {/* Shown while something is actually armed, not always. This
+                      explains what the NEXT click will do; with nothing armed
+                      the next click does nothing, so the note was 50px of the
+                      rail teaching a rule that wasn't in force — every session,
+                      long after the gesture was learned. */}
+                  {(armedInventoryId || armedGearDescription) && (
+                    <div className="equipment-gesture-hint" role="note">
+                      <span><strong>Click</strong> to place &middot; <strong>drag</strong> a placed piece to adjust</span>
+                      <span>Stays armed &middot; <kbd>Esc</kbd> ends</span>
+                    </div>
+                  )}
                   {recentInventory.length > 0 && equipmentSource === 'inventory' ? (
                     <div className="equipment-recent" aria-label="Recently placed inventory">
                       <div className="section-title">
@@ -6675,9 +6959,9 @@ export function App() {
               canPlace={!!doc?.editable}
               onPlace={(id, name) => {
                 armInventory(id, name);
-                setPlanRailSource('equipment');
+                enterMode('place');
                 setEquipmentSource('inventory');
-                setRailOpen(true);
+                enterMode('place');
                 setView('plan');
               }}
               onError={notify}
@@ -6699,9 +6983,9 @@ export function App() {
                 onInventoryChanged={inventoryChanged}
                 onPlace={(description) => {
                   armGear(description);
-                  setPlanRailSource('equipment');
+                  enterMode('place');
                   setEquipmentSource('gear');
-                  setRailOpen(true);
+                  enterMode('place');
                   setView('plan');
                 }}
               />
@@ -6745,9 +7029,9 @@ export function App() {
                   onOrder={setToolDockOrder}
                   onHidden={setToolDockHidden}
                   onToggleCompact={() => setToolDockCompact((compact) => !compact)}
-                  onClose={() => setToolDockOpen(false)}
+                  onClose={() => enterMode('canvas')}
                   onForeground={() => {
-                    setInspectorOpen(true);
+                    enterMode('inspect');
                     setInspectorTab('properties');
                   }}
                   onBackground={() => setPaper((current) => !current)}
@@ -6823,7 +7107,7 @@ export function App() {
                         onClick: () => {
                           const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
                           if (refusal) notify(refusal);
-                          else showStatus('Click bends along the power run — Enter finishes', 4500);
+                          else showStatus('Click bends along the power run. Enter finishes', 4500);
                         },
                       },
                       {
@@ -6835,7 +7119,7 @@ export function App() {
                         onClick: () => {
                           const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
                           if (refusal) notify(refusal);
-                          else showStatus('Click bends along the signal run — Enter finishes', 4500);
+                          else showStatus('Click bends along the signal run. Enter finishes', 4500);
                         },
                       },
                       {
@@ -6893,100 +7177,12 @@ export function App() {
                         },
                       },
                     ],
-                    [
-                      {
-                        id: 'undo',
-                        label: 'Undo',
-                        shortcut: '⌘Z',
-                        icon: <IconUndo />,
-                        disabled: !doc.canUndo,
-                        onClick: () => {
-                          setLastCommandId('edit.undo');
-                          void undo();
-                        },
-                      },
-                      {
-                        id: 'redo',
-                        label: 'Redo',
-                        shortcut: '⇧⌘Z',
-                        icon: <IconRedo />,
-                        disabled: !doc.canRedo,
-                        onClick: () => {
-                          setLastCommandId('edit.redo');
-                          void redo();
-                        },
-                      },
-                      {
-                        id: 'duplicate',
-                        label: 'Duplicate',
-                        shortcut: '⌘D',
-                        icon: <IconDuplicate />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => {
-                          setLastCommandId('edit.duplicate');
-                          void duplicateSelection();
-                        },
-                      },
-                      {
-                        id: 'delete',
-                        label: 'Delete',
-                        shortcut: '⌫',
-                        icon: <IconTrash />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => {
-                          setLastCommandId('edit.delete');
-                          void deleteSelection();
-                        },
-                      },
-                      {
-                        id: 'rotate-left',
-                        label: 'Rotate left',
-                        shortcut: '[',
-                        icon: <IconRotateLeft />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => void rotateSelection(-90),
-                      },
-                      {
-                        id: 'rotate-right',
-                        label: 'Rotate right',
-                        shortcut: ']',
-                        icon: <IconRotateRight />,
-                        disabled: !doc.editable || !selectedIds.length,
-                        onClick: () => void rotateSelection(90),
-                      },
-                    ],
-                    [
-                      ...(
-                        [
-                          ['align-left', 'Align left', IconAlignLeft],
-                          ['align-center', 'Align centre', IconAlignCenter],
-                          ['align-right', 'Align right', IconAlignRight],
-                          ['align-top', 'Align top', IconAlignTop],
-                          ['align-middle', 'Align middle', IconAlignMiddle],
-                          ['align-bottom', 'Align bottom', IconAlignBottom],
-                        ] as const
-                      ).map(([action, label, Icon]) => ({
-                        id: action,
-                        label,
-                        icon: <Icon />,
-                        disabled: !doc.editable || selectedIds.length < 2,
-                        onClick: () => void arrangeSelection(action),
-                      })),
-                      {
-                        id: 'distribute-horizontal',
-                        label: 'Space across',
-                        icon: <IconDistributeHorizontal />,
-                        disabled: !doc.editable || selectedIds.length < 3,
-                        onClick: () => void arrangeSelection('distribute-horizontal'),
-                      },
-                      {
-                        id: 'distribute-vertical',
-                        label: 'Space down',
-                        icon: <IconDistributeVertical />,
-                        disabled: !doc.editable || selectedIds.length < 3,
-                        onClick: () => void arrangeSelection('distribute-vertical'),
-                      },
-                    ],
+                    /* Undo / redo / duplicate / delete / rotate and the eight
+                       align-and-distribute tools used to live here too — all
+                       fourteen of them a second copy of the strip directly
+                       above the canvas, which is where a user reaching for
+                       "undo" actually looks. The shelf is now what its name
+                       says: the tools you draw with. */
                   ]}
                 />
               )}
@@ -7075,7 +7271,7 @@ export function App() {
                     type="button"
                     className="btn-solid"
                     onClick={() => void arraySelectionGrid()}
-                    title="Duplicate on a grid — leave gaps blank to use the item size"
+                    title="Duplicate on a grid: leave gaps blank to use the item size"
                   >
                     {arrayColsDraft || '…'}×{arrayRowsDraft || '…'}
                   </button>
@@ -7134,9 +7330,11 @@ export function App() {
               showStackPeek={showStackPeek}
               stackPeekItems={stackCandidates.length >= 2 ? stackCandidates : null}
               onMoveSelection={moveSelection}
+              transformTarget={transformTarget}
+              onResizeTo={resizeSelectionTo}
+              onRotateBy={rotateSelectionBy}
               editable={doc.editable}
               onCursor={setCursor}
-              onZoom={setZoom}
               onDropItem={dropItem}
               onDropGear={dropGear}
               snapStep={snapStep}
@@ -7156,15 +7354,12 @@ export function App() {
               onTextEditorCommit={() => void commitTextEditing(true)}
               onTextEditorBlur={() => void commitTextEditing(false)}
               onTextEditorCancel={cancelTextEditing}
-              wallEdit={refineRoomOpen ? wallEdit : null}
+              wallEdit={wallEditLive ? wallEdit : null}
               onPickWall={(index) => {
                 setWallPickIndex(index);
                 if (!refineRoomOpen) {
-                  beginRoomWorkspaceLayout();
+                  openOverlay('wall-edit');
                   setRoomWorkspaceFocus('walls');
-                  setRefineRoomOpen(true);
-                  setSeatingOpen(false);
-                  setCalculatorOpen(false);
                 } else if (roomWorkspaceFocus !== 'walls') {
                   setRoomWorkspaceFocus('walls');
                 }
@@ -7327,7 +7522,7 @@ export function App() {
                   <span>
                     <strong>
                       {bgCalibratePoints.length === 0
-                        ? 'Two-point scale — click first end of a known wall'
+                        ? 'Two-point scale: click first end of a known wall'
                         : 'Click the other end of that wall'}
                     </strong>
                     <small>Esc cancels · then enter the real length</small>
@@ -7340,7 +7535,7 @@ export function App() {
                 </div>
               )}
               <WallEditHud
-                open={refineRoomOpen}
+                open={wallEditLive}
                 wallLabel={
                   wallPickIndex != null
                     ? `Wall ${wallPickIndex + 1}`
@@ -7398,7 +7593,7 @@ export function App() {
                   }
                   if (reply.doc) {
                     adopt(reply.doc as Doc);
-                    showStatus('Opened a copy — edit freely without touching the original', 4500);
+                    showStatus('Opened a copy: edit freely without touching the original', 4500);
                     refreshRecent();
                   }
                 })();
@@ -7480,7 +7675,15 @@ export function App() {
                               height: `${printPreview.footprintHeight}%`,
                             }}
                           >
-                            <span>PLAN</span>
+                            {printPreviewSvg ? (
+                              <div
+                                className="print-plan-render"
+                                aria-hidden
+                                dangerouslySetInnerHTML={{ __html: printPreviewSvg }}
+                              />
+                            ) : (
+                              <span>PLAN</span>
+                            )}
                           </div>
                         </div>
                         <div className="print-title-block">
@@ -7520,7 +7723,7 @@ export function App() {
                       <span className="print-fit-copy">
                         <strong>
                           {printScale === 'fit'
-                            ? 'Fits on one sheet — not to scale'
+                            ? 'Fits on one sheet, not to scale'
                             : printPreview.fits
                               ? 'Fits on one sheet at the selected scale'
                               : `Drawing will crop by about ${Math.max(1, Math.round((printPreview.overBy - 1) * 100))}%`}
@@ -7620,7 +7823,7 @@ export function App() {
                         type="button"
                         onClick={() => {
                           setPrintOpen(false);
-                          setInspectorOpen(true);
+                          enterMode('inspect');
                           setInspectorTab('layers');
                         }}
                       >
@@ -7706,6 +7909,7 @@ export function App() {
               )}
             </div>
           )}
+          <div className="sr-only" role="status" aria-live="polite">{modeAnnouncement}</div>
           {busy && <div className="toast" role="status">{busyMessage ?? 'Working…'}</div>}
           {status && <div className="toast toast-ok" role="status">{status}</div>}
           {inventoryUndoNotice && (
@@ -7746,7 +7950,7 @@ export function App() {
           selectedCount={selectedIds.length}
           identityBusy={identityBusy}
           roomSizeText={roomSizeText}
-          completed={setupCompleted}
+          completed={setupState}
           canCreateLabel={canCreateLabel}
           canCreateDimension={canCreateDimension}
           textActive={isPressed(tool, labelChoice(annotationDraft.trim() || 'Text'))}
@@ -7770,7 +7974,7 @@ export function App() {
           seatingArmed={
             tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
           }
-          onClose={() => setCreateDialogOpen(false)}
+          onClose={() => enterMode('canvas')}
           onSaveIdentity={savePlanIdentity}
           onOpenRoom={openRoomPanel}
           onDrawRoomOutline={() => {
@@ -7781,7 +7985,7 @@ export function App() {
               setSelectedIds([]);
               showStatus(
                 planBackground
-                  ? 'Trace the room over the site plan — click each corner, then Enter'
+                  ? 'Trace the room over the site plan. Click each corner, then Enter'
                   : 'Click each room corner on the plan, then press Enter',
                 4500,
               );
@@ -7807,13 +8011,12 @@ export function App() {
               showStatus('Select one item first, then Repeat');
               return;
             }
-            setCreateDialogOpen(false);
-            setInspectorOpen(true);
+            enterMode('inspect');
             setInspectorTab('properties');
             showStatus('Set direction and count in Properties, then Repeat', 4500);
           }}
           onSeating={() => {
-            setSeatingOpen(true);
+            openOverlay('seating');
           }}
           onPrint={() => {
             setPrintOpen(true);
@@ -7879,7 +8082,7 @@ export function App() {
             if (refusal) notify(refusal);
             else {
               showStatus(
-                'Click the plan to stamp · change settings here and click again · Done placing when finished',
+                'Click the plan to stamp · change settings here and click again · drag a placed piece to adjust it',
                 4200,
               );
             }
@@ -7995,16 +8198,16 @@ export function App() {
               inventoryRows.find((row) => /door.*single|single.*door/i.test(row.name)) ??
               inventoryRows.find((row) => /\bdoor\b/i.test(row.name));
             if (!match) {
-              notify('No door found in inventory — add one under Inventory');
+              notify('No door found in inventory. Add one under Inventory');
               return;
             }
             armInventory(match.id, match.name);
-            showStatus('Click a wall to place the door — it snaps to the perimeter', 4500);
+            showStatus('Click a wall to place the door. It snaps to the perimeter', 4500);
           }}
           onPlaceOpening={() => {
             const match = inventoryRows.find((row) => /\bopening\b/i.test(row.name));
             if (!match) {
-              notify('No opening found in inventory — add an Opening item under Inventory');
+              notify('No opening found in inventory. Add an Opening item under Inventory');
               return;
             }
             armInventory(match.id, match.name);
@@ -8094,7 +8297,7 @@ export function App() {
               if (typeof block.perRow === 'number') setSeatPerRow(block.perRow);
             }
             setSeatKind('theatre');
-            showStatus(`Loaded bank preset “${preset.name}” — Place on plan to stamp`, 3500);
+            showStatus(`Loaded bank preset “${preset.name}”: Place on plan to stamp`, 3500);
           }}
           onDeleteBankPreset={(id) => {
             void api.deleteBankPreset(id).then(() => api.listBankPresets().then(setBankPresets));
@@ -8180,7 +8383,7 @@ export function App() {
                     if (reply.cancelled) return;
                     if (reply.ok) {
                       inventoryChanged();
-                      showStatus(`Imported pack — ${reply.added} new, ${reply.updated} updated`);
+                      showStatus(`Imported pack: ${reply.added} new, ${reply.updated} updated`);
                     } else if (reply.reason) notify(reply.reason);
                   }}
                 >
@@ -8292,7 +8495,7 @@ export function App() {
                     </strong>
                     <small>
                       {tool.tool.kind === 'stamp'
-                        ? 'Click the plan to place more · Done placing to edit or Repeat'
+                        ? 'Click to place more · drag a placed piece to adjust it'
                         : tool.tool.kind === 'span'
                           ? toolBannerState?.message ?? 'Follow the prompt over the plan'
                         : tool.tool.kind === 'path'
@@ -8510,13 +8713,13 @@ export function App() {
                         setPlaceOnParentId(selection.nodeId);
                         setPlaceOnParentName(selection.name ?? selection.cls.replace(/^RV/, ''));
                         showStatus(
-                          `Place on: ${selection.name ?? 'item'} — insert podium, table, mic…`,
+                          `Place on: ${selection.name ?? 'item'}: insert podium, table, mic…`,
                           4500,
                         );
                       }}
                     >
                       {placeOnParentId === selection.nodeId
-                        ? 'Armed — insert the next piece'
+                        ? 'Armed: insert the next piece'
                         : 'Place next on this'}
                     </button>
                     {selectedIds.length === 1 && placeOnParentId != null && placeOnParentId !== selection.nodeId && (
@@ -8630,7 +8833,7 @@ export function App() {
                           ? 'Click a line, room edge, drawn shape, or symbol to reveal its editable anchors.'
                           : doc.editable
                             ? 'Click an item on the plan to edit size, position, colour, and repeats here.'
-                            : 'This plan is read-only — select an item to inspect it.'}
+                            : 'This plan is read-only. Select an item to inspect it.'}
                       </span>
                     </div>
                   </div>
@@ -8944,7 +9147,7 @@ export function App() {
                           if (first == null) return;
                           setSelectedIds([first]);
                           setSelectionScope(null);
-                          showStatus('One item kept — set Array columns and rows');
+                          showStatus('One item kept: set Array columns and rows');
                         }}
                       >
                         Keep first · enable Array
@@ -9466,7 +9669,7 @@ export function App() {
                                 aria-pressed={sizeAspectLocked}
                                 title={
                                   sizeAspectLocked
-                                    ? 'Proportions locked — unlock to stretch freely'
+                                    ? 'Proportions locked: unlock to stretch freely'
                                     : 'Lock proportions (keep aspect ratio)'
                                 }
                                 onClick={() => setSizeAspectLocked((on) => !on)}
@@ -9808,7 +10011,7 @@ export function App() {
                           className="btn-solid repeat-go"
                           onClick={() => void arraySelectionGrid()}
                           disabled={!doc.editable || selectedIds.length !== 1}
-                          title="Duplicate on a grid — blank gaps use the item size"
+                          title="Duplicate on a grid: blank gaps use the item size"
                         >
                           {arrayColsDraft || '…'}×{arrayRowsDraft || '…'}
                         </button>
@@ -9922,7 +10125,7 @@ export function App() {
                   <div className="notice" style={{ marginTop: 12 }}>
                     <IconWarning size={14} />
                     <div>
-                      {doc.repaired && <p>Recovered from a damaged file — some geometry may be missing.</p>}
+                      {doc.repaired && <p>Recovered from a damaged file. Some geometry may be missing.</p>}
                       {doc.warnings > 0 && (
                         <p>
                           {doc.warnings} object{doc.warnings === 1 ? '' : 's'} could not be decoded.
@@ -9948,7 +10151,8 @@ export function App() {
                       : 'Room size appears after the outline is finished.'}
                   </p>
                   <p className="room-inspect-gate-copy">
-                    Size and walls share one workspace on the plan — not a second editor here.
+                    Edit walls stays on the plan so Place can stay open. Room layout is the full
+                    resize workspace.
                   </p>
                   <div className="show-setup-actions room-inspect-gate-actions">
                     <button
@@ -9997,19 +10201,15 @@ export function App() {
                 />
               </div>
               <div className="section layer-manager">
+                {/* Two stat tiles used to sit under this heading, in a 60px
+                    banner. The first ("5/5 Visible layers") repeated the
+                    summary already on this heading's right edge, verbatim; the
+                    second ("0 of 0 objects shown") restated a number the group
+                    rows below already carry per group. Both are gone; the
+                    heading was always saying it. */}
                 <div className="section-title">
                   <span>Drawing layers</span>
                   <span className="layer-summary">{visible.size}/{LAYERS.length} visible</span>
-                </div>
-                <div className="layer-stats" aria-label="Layer summary">
-                  <div>
-                    <strong>{visible.size}/{LAYERS.length}</strong>
-                    <span>Visible layers</span>
-                  </div>
-                  <div>
-                    <strong>{visibleLayerObjectTotal.toLocaleString()}</strong>
-                    <span>of {layerObjectTotal.toLocaleString()} objects shown</span>
-                  </div>
                 </div>
                 <div className="layer-bulk-actions" aria-label="Layer visibility controls">
                   <button type="button" onClick={() => setAllLayersVisible(true)} disabled={!doc}>
@@ -10262,8 +10462,37 @@ export function App() {
           units={unitSystem}
           roomWidth={doc?.scene.roomExtent ? doc.scene.roomExtent.maxX - doc.scene.roomExtent.minX : undefined}
           roomHeight={doc?.scene.roomExtent ? doc.scene.roomExtent.maxY - doc.scene.roomExtent.minY : undefined}
-          onClose={() => setCalculatorOpen(false)}
+          onClose={() => closeOverlay('calculator')}
         />
+        {doc && wallsEditArmed && !refineRoomOpen && (
+          <div className="wall-edit-bridge" hidden aria-hidden>
+            <RoomPanel
+              mode="room"
+              editWallsMode
+              doc={doc}
+              onDoc={setDoc}
+              onStatus={showStatus}
+              onError={notify}
+              onSelect={(ids) => {
+                setSelectedIds(ids);
+                setSelection(null);
+              }}
+              drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
+              onDrawRoomOutline={() => {
+                closeOverlay('wall-edit');
+                enterMode('inspect');
+                setInspectorTab('room');
+                const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+                if (refusal) notify(refusal);
+                else setSelectedIds([]);
+              }}
+              onWallEditChange={setWallEdit}
+              wallPickIndex={wallPickIndex}
+              preferredWallAction={wallEditGesture}
+              onPreferredWallActionChange={setWallEditGesture}
+            />
+          </div>
+        )}
         {doc && (
           <RoomRefineWorkspace
             open={refineRoomOpen}
@@ -10279,7 +10508,7 @@ export function App() {
             drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
             onDrawRoomOutline={() => {
               closeRoomWorkspace();
-              setInspectorOpen(true);
+              enterMode('inspect');
               setInspectorTab('room');
               const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
               if (refusal) notify(refusal);
@@ -10306,9 +10535,9 @@ export function App() {
       </div>
 
       <footer className={`statusbar${welcomeMode ? ' is-welcome-hidden' : ''}`}>
-        <span className="status-context">
+        <span className="status-context" title={view === 'plan' ? doc?.path ?? undefined : gear?.path ?? undefined}>
           {view === 'plan'
-            ? doc?.path ?? 'No plan open'
+            ? doc?.path?.split(/[\\/]/).pop() ?? 'No plan open'
             : view === 'gear'
               ? gear?.path ?? gear?.lists[gearIndex]?.title ?? 'No gear list open'
               : `${inventory?.total ?? 0} equipment items · saved automatically`}
@@ -10319,7 +10548,6 @@ export function App() {
             <span className="num status-mode" title="Active shell mode">
               {shellMode}
             </span>
-            <span className="status-sep" />
           </>
         )}
         {lastCommandId && (
@@ -10327,7 +10555,6 @@ export function App() {
             <span className="num status-command" title="Last command ID">
               {lastCommandId}
             </span>
-            <span className="status-sep" />
           </>
         )}
         {view === 'plan' &&
@@ -10367,7 +10594,8 @@ export function App() {
             <span className="status-sep" />
           </>
         )}
-        {view === 'plan' && doc && <span className="num">{Math.round(zoom * 1000) / 10}%</span>}
+        {/* Zoom lives on the floating canvas pill, which shows the same number
+            and can change it. A second read-only copy here was chrome. */}
       </footer>
     </div>
   );

@@ -19,7 +19,7 @@ export function scaleBackgroundToSegment(
   if (!(measured > 1e-6)) return { error: 'Click two distinct points on the drawing.' };
   const factor = knownLength / measured;
   if (!(factor > 0.01 && factor < 100)) {
-    return { error: 'That scale is out of range — check the known length.' };
+    return { error: 'That scale is out of range. Check the known length.' };
   }
   // Scale about the midpoint of the measured segment so the clicked wall stays put.
   const mx = (a.x + b.x) / 2;
