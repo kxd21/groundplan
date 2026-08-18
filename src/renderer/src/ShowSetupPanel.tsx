@@ -152,7 +152,10 @@ export default function ShowSetupPanel({
   // kit chooser was always expanded, so a finished show opened onto controls
   // for work it had already done.
   const [kitsOpen, setKitsOpen] = useState(true);
-  const [buildOpen, setBuildOpen] = useState(false);
+  // Open when there is still a layout to build. Defaulting this closed hid the
+  // three build steps on an empty room, which is the one case where they are
+  // the point rather than an alternative.
+  const [buildOpen, setBuildOpen] = useState(!layoutDone);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
