@@ -2008,11 +2008,18 @@ async function confirmDiscard(kind: 'plan' | 'gear' | 'all'): Promise<boolean> {
   const needsGear = kind !== 'plan' && dirtyGear;
   if (!needsPlan && !needsGear) return true;
 
-  // CDP / UI automation cannot click native Discard sheets.
-  if (
-    e2eAutomationEnabled() &&
-    process.env.GROUNDPLAN_E2E_AUTO_DISCARD !== '0'
-  ) {
+  // Opt-in, not default.
+  //
+  // This existed because the unsaved-changes prompt was a native sheet and CDP
+  // cannot click one, so automation had no way past it. The prompt is in-app
+  // now and a harness answers it with an ordinary click — which means the
+  // bypass had stopped being a workaround and become a hazard: every automated
+  // run silently threw away dirty documents, and no run ever exercised the
+  // dialog it was avoiding.
+  //
+  // Set GROUNDPLAN_E2E_AUTO_DISCARD=1 to bring it back for a harness that
+  // genuinely cannot answer.
+  if (e2eAutomationEnabled() && process.env.GROUNDPLAN_E2E_AUTO_DISCARD === '1') {
     if (recoveryRoot) {
       if (needsPlan) cancelPlanRecoverySchedule();
       if (needsGear) cancelGearRecoverySchedule();

@@ -98,7 +98,7 @@ Start with `--remote-debugging-port=9222` and set:
 | `GROUNDPLAN_E2E_GEAR_SAVE_PATH` | Gear Save As target (defaults beside the E2E plan as `*.gear.json`) |
 | `GROUNDPLAN_E2E_GRANT_ROOT` | Extra folder where `openPath` / `gearImportPath` may grant without a dialog |
 | `GROUNDPLAN_E2E_GRANT_PATHS` | Colon/newline list of explicit grantable files |
-| `GROUNDPLAN_E2E_AUTO_DISCARD` | Default on in E2E — discard dirty docs without a sheet (`0` to disable) |
+| `GROUNDPLAN_E2E_AUTO_DISCARD` | Off by default. `1` discards dirty docs without asking. The unsaved-changes prompt is in-app, so a harness should click `Discard changes` instead |
 
 Pull sheet PDFs (LEMG **PULL SHEET** and classic **GEAR LIST**) both import via Gear → Import PDF.
 
