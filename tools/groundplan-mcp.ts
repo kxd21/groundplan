@@ -27,6 +27,7 @@ import {
 import { applyFullLayoutRecipe, recipeBlankPlanArgs } from '../src/inventory/apply-layout.js';
 import { emptyInventory, mergeItems } from '../src/inventory/model.js';
 import { listLayoutKits, loadLayoutKit } from '../src/inventory/layout-kits.js';
+import { PLAN_TOOLS, callPlanTool, isPlanTool } from './mcp-plan-tools.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const USER_DATA = process.env.GROUNDPLAN_USER_DATA || join(process.env.HOME || '.', '.groundplan-agent');
@@ -99,6 +100,8 @@ function loadRecipe(params: Record<string, unknown>): LayoutRecipe {
 }
 
 async function callTool(name: string, params: Record<string, unknown>): Promise<unknown> {
+  // Plan-session tools (open / inspect / edit / save) live in their own module.
+  if (isPlanTool(name)) return callPlanTool(name, params);
   if (name === 'validate_layout_recipe') {
     const recipe = loadRecipe(params);
     const inv = emptyInventory();
@@ -184,7 +187,7 @@ async function handle(msg: JsonRpc): Promise<void> {
     }
     if (msg.method === 'notifications/initialized' || msg.method === 'initialized') return;
     if (msg.method === 'tools/list') {
-      reply({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
+      reply({ jsonrpc: '2.0', id, result: { tools: [...TOOLS, ...PLAN_TOOLS] } });
       return;
     }
     if (msg.method === 'tools/call') {

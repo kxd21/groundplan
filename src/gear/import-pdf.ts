@@ -14,6 +14,9 @@
  * Continued" and must fold back into the same department, and one PDF can hold
  * several lists end to end (a job often ships as separate GS and VS Stage
  * pulls), each starting with its own "GEAR LIST" banner.
+ *
+ * LEMG / Omni “PULL SHEET” prints are also supported (QTY / S-QTY / Product
+ * Name columns). Layout is detected from the banner and column headers.
  */
 
 import { createHash } from 'node:crypto';
@@ -28,10 +31,53 @@ interface TextSpan {
 }
 
 /** Column positions in PDF points, with tolerance for a wandering renderer. */
-const HEADING_MAX_X = 40;
-const QUANTITY_MAX_X = 120;
-const DESCRIPTION_MIN_X = 128;
-const NEST_MIN_X = 150;
+interface ColumnLayout {
+  headingMaxX: number;
+  /** Right edge of the primary quantity column (excludes LEMG S-QTY). */
+  quantityMaxX: number;
+  descriptionMinX: number;
+  nestMinX: number;
+  /** Ignore part-number / PO columns to the right of this. */
+  descriptionMaxX: number;
+}
+
+/** Classic rental “GEAR LIST” print. */
+const CLASSIC_LAYOUT: ColumnLayout = {
+  headingMaxX: 40,
+  quantityMaxX: 120,
+  descriptionMinX: 128,
+  nestMinX: 150,
+  descriptionMaxX: 520,
+};
+
+/**
+ * LEMG / Omni-style “PULL SHEET” print:
+ * QTY ≈ 27, S-QTY ≈ 50, Product Name ≈ 92 (package) / 110 (contents).
+ */
+const LEMG_LAYOUT: ColumnLayout = {
+  headingMaxX: 40,
+  quantityMaxX: 45,
+  descriptionMinX: 80,
+  nestMinX: 100,
+  descriptionMaxX: 400,
+};
+
+function detectLayout(pages: TextSpan[][]): ColumnLayout {
+  for (const spans of pages) {
+    for (const line of toLines(spans)) {
+      const joined = line
+        .map((s) => s.text)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (/^PULL SHEET$/i.test(joined)) return LEMG_LAYOUT;
+      if (/\bQTY\b/i.test(joined) && /\bS-QTY\b/i.test(joined) && /Product Name/i.test(joined)) {
+        return LEMG_LAYOUT;
+      }
+    }
+  }
+  return CLASSIC_LAYOUT;
+}
 
 export class GearImportError extends Error {}
 
@@ -92,12 +138,15 @@ function toLines(spans: TextSpan[]): TextSpan[][] {
 /**
  * Extracts every gear list in a PDF.
  *
- * Returns one entry per "GEAR LIST" banner, in page order.
+ * Returns one entry per "GEAR LIST" / "PULL SHEET" banner, in page order.
  */
 export async function importGearPdf(data: Uint8Array, sourcePath?: string): Promise<GearList[]> {
   const sourceFingerprint = createHash('sha256').update(data).digest('hex');
   const pages = await readSpans(data);
   if (pages.length === 0) throw new GearImportError('the PDF has no pages');
+
+  const layout = detectLayout(pages);
+  const { headingMaxX, quantityMaxX, descriptionMinX, nestMinX, descriptionMaxX } = layout;
 
   const lists: GearList[] = [];
   let list: GearList | null = null;
@@ -135,42 +184,85 @@ export async function importGearPdf(data: Uint8Array, sourcePath?: string): Prom
 
       // Page furniture.
       if (/^Page \d+ of \d+/i.test(joined) || /^Print Date/i.test(joined)) continue;
-      if (/^Quantity\b/i.test(joined) && /Description/i.test(joined)) {
+      if (
+        (/^Quantity\b/i.test(joined) && /Description/i.test(joined)) ||
+        (/\bQTY\b/i.test(joined) && /Product Name/i.test(joined))
+      ) {
         inHeader = false;
         continue;
       }
 
-      if (/^GEAR LIST$/i.test(joined)) {
+      if (/^(GEAR LIST|PULL SHEET)$/i.test(joined)) {
         startList();
         continue;
       }
       if (!list) startList();
 
       if (inHeader) {
-        if (/^JOB\s*#/i.test(joined)) {
-          list!.jobNumber = joined.replace(/^JOB\s*#\s*/i, '').trim();
+        const jobMatch = joined.match(/\bJOB\s*#\s*(\d+)\b/i);
+        if (jobMatch) {
+          list!.jobNumber = jobMatch[1];
           continue;
         }
         if (/^LOCATION:/i.test(joined)) {
           list!.location = joined.replace(/^LOCATION:\s*/i, '').trim();
           continue;
         }
-        // The remaining header line is the job's own title.
-        if (line[0].x < HEADING_MAX_X) {
+        // LEMG venue block — capture the resort name when present.
+        if (/^The Omni Homestead Resort$/i.test(joined) || /^Omni /i.test(joined)) {
+          list!.location = joined;
+          continue;
+        }
+        // Classic: title sits at the far left. LEMG: job title is a mid-page line
+        // with a dated job code prefix (e.g. 20260816-19_Electricities_…).
+        if (line[0].x < headingMaxX) {
           list!.title = joined;
           continue;
         }
+        if (
+          list!.title === 'Gear list' &&
+          /^\d{8}/.test(joined) &&
+          /Electricities|Conference|Gala|Wedding|Show/i.test(joined)
+        ) {
+          list!.title = joined;
+          continue;
+        }
+        if (
+          list!.title === 'Gear list' &&
+          line[0].x < 200 &&
+          joined.length > 12 &&
+          !/^(Product Unavailable|Load in|Show Start|Load Out|Product Available|VENUE|LEMG|Updated|Total Weight)/i.test(
+            joined,
+          )
+        ) {
+          list!.title = joined;
+          continue;
+        }
+        continue;
       }
 
       // Repeated title lines on later pages are page furniture, not a heading.
       if (joined === list!.title) continue;
 
       const first = line[0];
+      const quantitySpan = line.find(
+        (s) => s.x < quantityMaxX && /^\d[\d,]*$/.test(s.text.trim()),
+      );
+      const descriptionSpans = line.filter(
+        (s) =>
+          s !== quantitySpan &&
+          s.x >= descriptionMinX &&
+          s.x < descriptionMaxX &&
+          !/^\d[\d,]*$/.test(s.text.trim()),
+      );
+      const looksLikeItem = Boolean(quantitySpan && descriptionSpans.length);
 
       // A department heading sits at the far left with no quantity column.
-      if (first.x < HEADING_MAX_X) {
+      // LEMG puts QTY in that same left band, so skip lines that are clearly items.
+      if (first.x < headingMaxX && !looksLikeItem) {
         const name = joined.replace(/\s+Continued$/i, '').trim();
         if (!name) continue;
+        if (/^(QTY|S-QTY|Product Name|Part Number|PO#)$/i.test(name)) continue;
         const existing = byName.get(name.toLowerCase());
         if (existing) {
           department = existing;
@@ -184,9 +276,6 @@ export async function importGearPdf(data: Uint8Array, sourcePath?: string): Prom
       }
 
       if (!department) continue;
-
-      const quantitySpan = line.find((s) => s.x < QUANTITY_MAX_X && /^\d[\d,]*$/.test(s.text.trim()));
-      const descriptionSpans = line.filter((s) => s !== quantitySpan && s.x >= DESCRIPTION_MIN_X);
       if (descriptionSpans.length === 0) continue;
 
       const description = descriptionSpans
@@ -197,7 +286,7 @@ export async function importGearPdf(data: Uint8Array, sourcePath?: string): Prom
       if (!description) continue;
 
       const quantity = quantitySpan ? Number(quantitySpan.text.replace(/,/g, '')) : 0;
-      const nested = descriptionSpans[0].x >= NEST_MIN_X;
+      const nested = descriptionSpans[0].x >= nestMinX;
 
       const item: GearItem = {
         id: nextId(),
@@ -207,19 +296,25 @@ export async function importGearPdf(data: Uint8Array, sourcePath?: string): Prom
         // A bold line with no quantity is an instruction to the warehouse
         // rather than a physical item. A non-bold line missing a quantity is
         // kept as a zero-count item (parse glitch) so reconcile still sees it.
+        // LEMG also prints italic/plain warehouse notes under packages.
         note:
-          !quantitySpan && descriptionSpans.some((span) => span.bold) ? true : undefined,
+          !quantitySpan &&
+          (descriptionSpans.some((span) => span.bold) ||
+            /^\(/.test(description) ||
+            /^(To go with|For |PLEASE |Please |\*\*\*)/i.test(description))
+            ? true
+            : undefined,
       };
 
       if (nested && lastTopLevel) lastTopLevel.children.push(item);
       else {
         department.items.push(item);
-        lastTopLevel = item;
+        lastTopLevel = item.note ? lastTopLevel : item;
       }
     }
   }
 
   const usable = lists.filter((l) => l.departments.length > 0);
-  if (usable.length === 0) throw new GearImportError('no departments found — is this a gear list?');
+  if (usable.length === 0) throw new GearImportError('no departments found: is this a gear list?');
   return usable;
 }

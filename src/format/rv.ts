@@ -95,13 +95,13 @@ export interface Point {
  * well inside ±10^7 units (≈83,000 ft). Values outside that range mean the
  * cursor has drifted out of the point array and into another field.
  *
- * The low cutoff only exists to reject denormals, which is what misaligned
- * reads produce. It must stay far below any real coordinate: a circle's
- * topmost point lands on y = 1e-14 rather than exactly zero, and a cutoff
- * anywhere near that truncates every round table to a semicircle.
+ * The low cutoff rejects denormals from misaligned reads. Real geometry can
+ * land near zero (a circle's top point ≈ 1e-14), but tag/header garbage that
+ * looks like a third "point" on a line is typically ~1e-60 or smaller — keep
+ * the floor well below real coordinates and well above those ghosts.
  */
 const COORDINATE_LIMIT = 1e7;
-const DENORMAL_CUTOFF = 1e-100;
+const DENORMAL_CUTOFF = 1e-40;
 
 function isPlausibleCoordinate(v: number): boolean {
   if (!Number.isFinite(v) || Math.abs(v) > COORDINATE_LIMIT) return false;
@@ -840,8 +840,15 @@ class DocumentParser {
       }
     }
 
-    // Nothing validated — fall back to the widest plausible run so geometry is
-    // still recovered, even though the object boundary is uncertain.
+    // Nothing validated — fall back. Prefer the fixed count when the class
+    // declares one (a line is two points) so trailing header/tag denormals are
+    // not promoted into an extra vertex.
+    if (expected != null) {
+      for (let s = windowStart; s <= windowStart + SEGMENT_POINTS_SEARCH_BYTES; s += 2) {
+        if (!pairsPlausible(s, expected)) continue;
+        return { start: s, count: expected };
+      }
+    }
     const next = findNextTag(r, windowStart, 1);
     const end = next === -1 ? buf.length : next;
     return locatePointArray(buf, windowStart, end);

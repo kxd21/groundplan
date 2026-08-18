@@ -14,9 +14,11 @@ const child = spawn('npx', ['electron-vite', 'dev', '--', '--remote-debugging-po
   cwd: ROOT,
   env: {
     ...process.env,
+    GROUNDPLAN_E2E: '1',
     GROUNDPLAN_E2E_SAVE_PATH: SAVE,
     GROUNDPLAN_E2E_SAVE_DIR: path.dirname(SAVE),
     GROUNDPLAN_E2E_SAVE_NAME: path.basename(SAVE),
+    GROUNDPLAN_E2E_GRANT_ROOT: path.dirname(SAVE),
   },
   stdio: 'inherit',
 });
