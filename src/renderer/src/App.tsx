@@ -4848,14 +4848,20 @@ export function App() {
           onError={notify}
           onCreated={(created, options) => {
             setNewPlanOpen(false);
-            // The same path an opened plan takes, so nothing is left over from
-            // whatever was on screen before — but the landing is stated here,
-            // once, because this flow already knows it. Tracing an outline and
-            // calibrating a background both need the sheet clear; everything
-            // else starts in Setup.
+            // The same path an opened plan takes. Tracing an outline and
+            // calibrating a background genuinely need the sheet clear, so they
+            // still say so; everything else now lets `resolveLanding` read the
+            // document, which is the rule every other entry point already
+            // obeys — "a room, but empty → place; anything drawn → canvas".
+            //
+            // This used to force Setup. A quick-start kit lands a finished
+            // 120-seat banquet in about a second, and the app answered by
+            // covering a third of the window with a checklist whose every item
+            // was already ticked, including an "Or build it yourself" section
+            // reading done. Landing on the drawing is what the facts say.
             adopt(
               created as Doc,
-              options.openBackground || options.startRoomOutline ? 'canvas' : 'setup',
+              options.openBackground || options.startRoomOutline ? 'canvas' : undefined,
             );
             setCustomRoomPrefs(options.customRoom ?? null);
             setStartNewRoomOutline(options.startRoomOutline);
@@ -4873,14 +4879,17 @@ export function App() {
                 'Click corners to finish the room · Enter closes · Esc cancels · Finish as rectangle on the banner',
                 6400,
               );
+            } else if (options.applyKitId) {
+              // A kit finishes the plan in about a second. Opening the Setup
+              // checklist on top of a finished banquet was the app answering
+              // completed work with a list of that work — so the drawing is
+              // what you land on, and the status line says what happened.
+              showStatus('Room ready: applying matching kit…', 4200);
+              void applyShowKit(options.applyKitId, { quiet: true, assumeOpen: true });
             } else {
+              // No kit: the room is empty and Setup is a real next step.
               openCreateDialog();
-              if (options.applyKitId) {
-                showStatus('Room ready: applying matching kit…', 4200);
-                void applyShowKit(options.applyKitId, { quiet: true, assumeOpen: true });
-              } else {
-                showStatus('Room ready: apply a kit or build the layout', 5200);
-              }
+              showStatus('Room ready: apply a kit or build the layout', 5200);
             }
             setFitToken((t) => t + 1);
             refreshRecent();
@@ -10557,9 +10566,12 @@ export function App() {
             </span>
           </>
         )}
+        {/* Shown on the bare canvas too. The counts used to appear only while a
+            panel was open, which was fine when a finished plan always landed in
+            Setup; now that it lands on the drawing, hiding the headcount is
+            hiding it exactly when the drawing is all you are looking at. */}
         {view === 'plan' &&
           doc &&
-          (shellMode === 'place' || shellMode === 'inspect' || shellMode === 'setup') &&
           (furnitureCounts.chairs > 0 || furnitureCounts.tables > 0) && (
           <>
             <span className="num">

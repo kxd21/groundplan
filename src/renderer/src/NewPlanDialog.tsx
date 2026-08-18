@@ -422,20 +422,6 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
       ? 2 * (parsed.width! + parsed.depth!)
       : 0;
 
-  const choose = (preset: Preset) => {
-    if (preset.width <= 0 || preset.depth <= 0) {
-      setShape('custom');
-      return;
-    }
-    setShape('rectangle');
-    setWallTreatment('straight');
-    setWidth(formatLength(preset.width * FT, units));
-    setDepth(formatLength(preset.depth * FT, units));
-    if (preset.ceilingFt && preset.ceilingFt > 0) {
-      setCeiling(formatLength(preset.ceilingFt * FT, units));
-    }
-  };
-
   const create = async (override?: {
     room?: NewRoomSpec;
     custom?: CustomRoomPrefs;
@@ -659,7 +645,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                 <section className="new-plan-builder-section">
                   <div className="new-plan-section-title">
                     <span>1</span>
-                    <div><strong>Choose the boundary</strong><small>Or use a quick start above to skip this.</small></div>
+                    <div><strong>Choose the boundary</strong><small>For a room that is not one of the sizes above.</small></div>
                   </div>
                   <div className="new-plan-shape-grid is-primary" role="radiogroup" aria-label="Starting room shape">
                     {PRIMARY_SHAPES.map((item) => (
@@ -911,17 +897,12 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                         </div>
                       )}
 
-                      {shape === 'rectangle' && (
-                        <div className="field">
-                          <label>Common room sizes</label>
-                          <div className="preset-grid is-compact">
-                            {presets.filter((preset) => preset.width > 0 && preset.depth > 0).map((preset) => {
-                              const active = Math.abs((parsed.width ?? 0) - preset.width * FT) < 1 && Math.abs((parsed.depth ?? 0) - preset.depth * FT) < 1;
-                              return <button key={preset.label} type="button" className={active ? 'preset active' : 'preset'} onClick={() => choose(preset)}>{preset.label}</button>;
-                            })}
-                          </div>
-                        </div>
-                      )}
+                      {/* The "Common room sizes" chip grid lived here and asked
+                          the same question as the quick-start cards at the top
+                          of this dialog — Boardroom 20' x 16', Ballroom
+                          60' x 40' and Concert floor 200' x 120' appeared in
+                          both, word for word, in two different control shapes.
+                          One named list, at the top, where the flow starts. */}
                     </section>
 
                     {curveEligible && (advancedOpen || wallTreatment === 'curve') && (
