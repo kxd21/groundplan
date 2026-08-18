@@ -148,7 +148,11 @@ export default function ShowSetupPanel({
   const [selectedKit, setSelectedKit] = useState<string>('');
   const identityDirtyRef = useRef(false);
   const layoutDone = !!(completed.stage && completed.seating);
+  // Open while there is still a layout to make; closed once there is one. The
+  // kit chooser was always expanded, so a finished show opened onto controls
+  // for work it had already done.
   const [kitsOpen, setKitsOpen] = useState(true);
+  const [buildOpen, setBuildOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
@@ -184,29 +188,72 @@ export default function ShowSetupPanel({
 
   const nextStep = !hasRoom ? 'room' : !layoutDone ? 'layout' : !completed.print ? 'print' : 'done';
 
+  const settledRef = useRef(false);
+  useEffect(() => {
+    // Fold the layout tools away the moment a layout exists, once, so a later
+    // manual re-open is not fought on the next render.
+    if (layoutDone && !settledRef.current) {
+      settledRef.current = true;
+      setKitsOpen(false);
+      setBuildOpen(false);
+    }
+    if (!layoutDone) settledRef.current = false;
+  }, [layoutDone]);
+
   return (
     <div className="section show-setup-section">
       <div className="section-title">
         <span>Setup</span>
-        <span className={`show-setup-chip is-${roomStatus}`}>
-          {roomStatus === 'ready' ? 'Room ready' : roomStatus === 'drawing' ? 'Drawing room' : 'Room needed'}
-        </span>
+        {/* The chip is the room's state in one word. Once the summary card below
+            is showing "60' x 40' x 18' ceiling · 120 seats", it is saying the
+            same thing twice, so it stands down. */}
+        {!layoutDone && (
+          <span className={`show-setup-chip is-${roomStatus}`}>
+            {roomStatus === 'ready' ? 'Room ready' : roomStatus === 'drawing' ? 'Drawing room' : 'Room needed'}
+          </span>
+        )}
       </div>
 
-      <ol className="show-setup-progress" aria-label="Show progress">
-        <li className={hasRoom ? 'is-done' : nextStep === 'room' ? 'is-current' : undefined}>
-          <span>1</span>
-          Room
-        </li>
-        <li className={layoutDone ? 'is-done' : hasRoom ? 'is-current' : undefined}>
-          <span>2</span>
-          Layout
-        </li>
-        <li className={completed.print ? 'is-done' : layoutDone ? 'is-current' : undefined}>
-          <span>3</span>
-          Print
-        </li>
-      </ol>
+      {layoutDone ? (
+        /* What the show IS, and the only thing left to do with it. A finished
+           banquet used to be met by a 1-2-3 ladder with every rung ticked. */
+        <div className="show-setup-summary">
+          <div className="show-setup-summary-facts">
+            <strong>{roomSizeText ?? 'Room ready'}</strong>
+            <span>
+              {chairCount.toLocaleString()} {chairCount === 1 ? 'seat' : 'seats'}
+              {tableCount > 0
+                ? ` · ${tableCount.toLocaleString()} ${tableCount === 1 ? 'table' : 'tables'}`
+                : ''}
+              {completed.stage ? ' · stage' : ''}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="btn-primary show-setup-summary-print"
+            disabled={!hasRoom}
+            onClick={onPrint}
+          >
+            <IconPrint size={13} />
+            {completed.print ? 'Print again' : 'Print to PDF'}
+          </button>
+        </div>
+      ) : (
+        <ol className="show-setup-progress" aria-label="Show progress">
+          <li className={hasRoom ? 'is-done' : nextStep === 'room' ? 'is-current' : undefined}>
+            <span>1</span>
+            Room
+          </li>
+          <li className={hasRoom ? 'is-current' : undefined}>
+            <span>2</span>
+            Layout
+          </li>
+          <li>
+            <span>3</span>
+            Print
+          </li>
+        </ol>
+      )}
 
       <div className="show-setup-phase">
         <div className="show-setup-phase-head">
@@ -529,17 +576,29 @@ export default function ShowSetupPanel({
       </div>
 
       <div className={`show-setup-phase${hasRoom ? '' : ' is-gated'}`}>
-        <div className="show-setup-phase-head">
+        {/* A disclosure now: on a finished plan these are not steps to take,
+            they are ways to change what is already there — and the heading says
+            which of the two situations you are in. */}
+        <button
+          type="button"
+          className={`show-setup-collapse${buildOpen ? ' is-open' : ''}`}
+          aria-expanded={buildOpen}
+          disabled={!hasRoom}
+          onClick={() => setBuildOpen((open) => !open)}
+        >
           <span className="show-setup-phase-index">·</span>
-          <div>
-            <strong>Or build it yourself</strong>
+          <span>
+            <strong>{layoutDone ? 'Change the layout' : 'Or build it yourself'}</strong>
             <small>
               {hasRoom
-                ? 'Stage, objects, and seating if you are not using a kit.'
+                ? layoutDone
+                  ? 'Stage, objects, and seating on the plan you have.'
+                  : 'Stage, objects, and seating if you are not using a kit.'
                 : 'Finish the room outline first.'}
             </small>
-          </div>
-        </div>
+          </span>
+        </button>
+        {buildOpen && (
         <div className="create-flow-steps">
           <button
             type="button"
@@ -569,6 +628,7 @@ export default function ShowSetupPanel({
             <span>Refill the whole floor with aisles and a live count</span>
           </button>
         </div>
+        )}
         {!hasRoom && (
           <p className="hint">
             <IconRuler size={12} /> Production steps unlock once the room boundary is drawn.
@@ -605,11 +665,15 @@ export default function ShowSetupPanel({
         </div>
       </div>
 
+      {/* Only while there is no summary card. Once the layout is done the card
+          at the top carries Print, and two of them on one panel is one too
+          many. */}
+      {!layoutDone && (
       <div className={`show-setup-phase${hasRoom ? '' : ' is-gated'}`}>
         <div className="create-flow-steps">
           <button
             type="button"
-            className={`create-flow-step${completed.print ? ' is-done' : ''}${layoutDone ? ' is-next' : ''}`}
+            className={`create-flow-step${completed.print ? ' is-done' : ''}`}
             disabled={!hasRoom}
             onClick={onPrint}
           >
@@ -620,6 +684,7 @@ export default function ShowSetupPanel({
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }
