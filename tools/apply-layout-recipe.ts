@@ -39,8 +39,22 @@ async function main(): Promise<void> {
   must('recipe format', isLayoutRecipe(raw));
   const recipe = raw;
 
+  // Real inventory first, so items that carry a harvested plan outline keep it.
+  // The stub only fills in whatever the inventory does not already name — it
+  // has sizes but no symbols, which is why a stub-only build draws every piece
+  // of gear as a plain box.
+  const invPath = (() => {
+    const at = process.argv.indexOf('--inventory');
+    return at === -1 ? undefined : process.argv[at + 1];
+  })();
   const inv = emptyInventory();
-  mergeItems(inv, recipeCatalogueStub(recipe));
+  if (invPath) {
+    const loaded = JSON.parse(readFileSync(invPath, 'utf8')) as { items?: unknown[] };
+    mergeItems(inv, (loaded.items ?? []) as never);
+    console.log(`Inventory ${invPath}: ${inv.items.length} items, ${inv.items.filter((i) => i.symbolName || i.symbolPath).length} with a drawn symbol`);
+  }
+  const known = new Set(inv.items.map((i) => i.name.trim().toLowerCase()));
+  mergeItems(inv, recipeCatalogueStub(recipe).filter((i) => !known.has(i.name.trim().toLowerCase())));
   const validated = validateLayoutRecipe(recipe, inv);
   must('recipe validates', validated.ok, validated.ok ? undefined : validated.reason);
 

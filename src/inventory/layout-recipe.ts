@@ -23,6 +23,9 @@ import type { RVDocument } from '../format/rv.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../format/rv.js';
 import { indexDocument, type DocumentIndex } from '../format/edit.js';
 import { placeGear } from '../format/place.js';
+import { importSymbol } from '../format/symbol.js';
+import { readFileSync } from 'node:fs';
+import { loadBuffer } from '../format/index.js';
 import { createLabel, createDimension } from '../format/annotate.js';
 import type { IncomingItem, Inventory } from './model.js';
 
@@ -376,6 +379,40 @@ export function applyLayoutRecipeSeating(
   };
 }
 
+/**
+ * Symbol files are opened once and kept. A recipe places gear item by item, and
+ * a show of this size names the same source file dozens of times.
+ */
+const symbolSourceCache = new Map<string, RVDocument | null>();
+
+function loadSymbolSource(path: string): RVDocument | null {
+  const hit = symbolSourceCache.get(path);
+  if (hit !== undefined) return hit;
+  let doc: RVDocument | null = null;
+  try {
+    doc = loadBuffer(readFileSync(path), path).document;
+  } catch {
+    doc = null;
+  }
+  symbolSourceCache.set(path, doc);
+  return doc;
+}
+
+/** The real outline for a chair name, when the inventory carries one. */
+export function seedChairSymbol(
+  inventory: Inventory | undefined,
+  chair: string,
+): { source: RVDocument; name: string } | null {
+  if (!inventory) return null;
+  const resolved = resolveInventoryQuery(inventory, chair, { requireExact: true });
+  if (resolved.status !== 'exact' && resolved.status !== 'unique') return null;
+  const path = resolved.item.symbolPath;
+  if (!path) return null;
+  const source = loadSymbolSource(path);
+  if (!source) return null;
+  return { source, name: resolved.item.symbolName ?? resolved.item.name };
+}
+
 export function applyLayoutRecipeGear(
   doc: RVDocument,
   index: DocumentIndex,
@@ -387,6 +424,7 @@ export function applyLayoutRecipeGear(
   for (const g of recipe.gear ?? []) {
     let name = g.name;
     let known: { width: number; height: number } | undefined;
+    let symbol: { path: string; name: string } | undefined;
     if (inventory) {
       const resolved = resolveInventoryQuery(inventory, g.name, { requireExact: true });
       if (resolved.status !== 'exact' && resolved.status !== 'unique') {
@@ -401,15 +439,36 @@ export function applyLayoutRecipeGear(
         resolved.item.width && resolved.item.height
           ? { width: resolved.item.width, height: resolved.item.height }
           : undefined;
+      if (resolved.item.symbolPath) {
+        symbol = { path: resolved.item.symbolPath, name: resolved.item.symbolName ?? resolved.item.name };
+      }
     }
-    const placed = placeGear(
-      doc,
-      live,
-      name,
-      g.xFt * UNITS_PER_FOOT,
-      g.yFt * UNITS_PER_FOOT,
-      known,
-    );
+
+    // An inventory item that carries a harvested outline gets the real drawing.
+    // Without this the recipe path only ever reached `placeGear`, which clones a
+    // matching shape already in the document — and on a plan built from a blank
+    // sheet there is nothing to clone, so every piece of gear became a sized
+    // box. The rebuild of a 2,234-seat show came out with 2,395 furniture
+    // primitives against the original's 6,941, and the difference was almost
+    // entirely symbols that were never brought across.
+    const placed =
+      symbol && loadSymbolSource(symbol.path)
+        ? importSymbol(
+            doc,
+            live,
+            loadSymbolSource(symbol.path)!,
+            symbol.name,
+            g.xFt * UNITS_PER_FOOT,
+            g.yFt * UNITS_PER_FOOT,
+          )
+        : placeGear(
+            doc,
+            live,
+            name,
+            g.xFt * UNITS_PER_FOOT,
+            g.yFt * UNITS_PER_FOOT,
+            known,
+          );
     if (!placed.ok) {
       return { ok: false, reason: placed.reason ?? `failed to place ${name}`, gearPlaced };
     }
