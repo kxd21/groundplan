@@ -25,6 +25,23 @@ export function toSvg(
   const inchesPerFoot = SCALE_INCHES_PER_FOOT[scaleId] ?? SCALE_INCHES_PER_FOOT['1/8'];
   const units = (points: number) => pointsToUnits(points, inchesPerFoot);
 
+  // Plan y grows upward, SVG y grows down — see `screenY` in PlanCanvas for why
+  // the drawing was coming out mirrored. Flipping the coordinates once, here,
+  // means the extent, the viewBox and every element below are all computed in
+  // the flipped space and need no further thought. Doing it with an SVG
+  // transform instead would mirror the type as well, and every label on the
+  // sheet would read backwards.
+  scene = {
+    ...scene,
+    primitives: scene.primitives.map((p) => ({
+      ...p,
+      pts: p.pts.map((v, i) => (i % 2 === 1 ? -v : v)),
+      textStyle: p.textStyle
+        ? { ...p.textStyle, angleDegrees: -p.textStyle.angleDegrees }
+        : p.textStyle,
+    })),
+  };
+
   // Frame on drawn geometry only. A single mispositioned annotation would
   // otherwise stretch the page and shrink the plan to a corner of it.
   let extent: { minX: number; minY: number; maxX: number; maxY: number } | null = null;

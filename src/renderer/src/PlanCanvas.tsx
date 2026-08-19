@@ -80,6 +80,26 @@ export interface View {
   offsetY: number;
 }
 
+/**
+ * Plan y grows UPWARD; screen y grows downward.
+ *
+ * Room Viewer stores a plan the way a drafter reads one — the stage at y=-57
+ * sits at the foot of the sheet with the audience above it, which is exactly
+ * how the printed drawing comes out. Feeding those coordinates straight into a
+ * canvas drew every plan mirrored top to bottom: the stage jumped to the head
+ * of the sheet and the raked banks fanned the wrong way. It went unnoticed
+ * because a seating plan is very nearly symmetrical, and the text stayed the
+ * right way up.
+ *
+ * The flip lives here, in the mapping, rather than in a canvas transform. A
+ * `ctx.scale(1, -1)` would mirror the glyphs too, and every label would need
+ * counter-rotating. It also keeps `screenY` and `planY` exact inverses, which
+ * is what lets drags, hit-testing and every write keep working untouched: a
+ * drag measured through `planY` produces a delta already in plan space.
+ */
+export const screenY = (view: View, y: number): number => -y * view.scale + view.offsetY;
+export const planY = (view: View, sy: number): number => -(sy - view.offsetY) / view.scale;
+
 interface Props {
   scene: Scene | null;
   visibleLayers: Set<Layer>;
@@ -808,7 +828,7 @@ export function PlanCanvas({
     setView({
       scale,
       offsetX: (width + RULER) / 2 - cx * scale,
-      offsetY: (height + RULER) / 2 - cy * scale,
+      offsetY: (height + RULER) / 2 + cy * scale,
     });
     return true;
   }, [scene, size.width, size.height]);
@@ -922,17 +942,17 @@ export function PlanCanvas({
       return;
     }
 
-    const { scale, offsetX, offsetY } = view;
+    const { scale, offsetX } = view;
     const tx = (x: number) => x * scale + offsetX;
-    const ty = (y: number) => y * scale + offsetY;
+    const ty = (y: number) => screenY(view, y);
     // Leave a screen-space margin for strokes and labels; everything beyond it
     // is invisible and need not be sent through the canvas drawing pipeline.
     const viewportPad = 36 / scale;
     const viewport = {
       minX: (-offsetX - 36) / scale,
-      minY: (-offsetY - 36) / scale,
+      minY: planY(view, size.height + 36),
       maxX: (size.width - offsetX + 36) / scale,
-      maxY: (size.height - offsetY + 36) / scale,
+      maxY: planY(view, -36),
     };
 
     if (background?.visible && backgroundImage) {
@@ -1282,7 +1302,7 @@ export function PlanCanvas({
     if (sightlineMarkers.length) {
       for (const marker of sightlineMarkers) {
         const sx = marker.x * view.scale + view.offsetX;
-        const sy = marker.y * view.scale + view.offsetY;
+        const sy = screenY(view, marker.y);
         const fill =
           marker.verdict === 'clear'
             ? 'rgba(46, 160, 67, 0.55)'
@@ -1358,7 +1378,7 @@ export function PlanCanvas({
     const longest = Math.max(8, ...textEditor!.value.replace(/\r/g, '').split('\n').map((line) => line.length));
     return {
       left: editingTextPrimitive.pts[0] * view.scale + view.offsetX,
-      top: editingTextPrimitive.pts[1] * view.scale + view.offsetY,
+      top: screenY(view, editingTextPrimitive.pts[1]),
       width: Math.max(180, Math.min(560, longest * fontPx * 0.68 + 42)),
       minHeight: Math.max(42, textEditor!.value.replace(/\r/g, '').split('\n').length * fontPx * 1.25 + 18),
       transform: `translate(-50%, -50%) rotate(${style?.angleDegrees ?? 0}deg)`,
@@ -1378,7 +1398,7 @@ export function PlanCanvas({
     const rect = e.currentTarget.getBoundingClientRect();
     return {
       x: (e.clientX - rect.left - view.offsetX) / view.scale,
-      y: (e.clientY - rect.top - view.offsetY) / view.scale,
+      y: planY(view, e.clientY - rect.top),
     };
   };
 
@@ -2282,7 +2302,7 @@ function drawGuides(
     ctx.lineTo(x, size.height);
   }
   if (guides.y != null) {
-    const y = Math.round(guides.y * view.scale + view.offsetY) + 0.5;
+    const y = Math.round(screenY(view, guides.y)) + 0.5;
     ctx.moveTo(RULER, y);
     ctx.lineTo(size.width, y);
   }
@@ -2297,7 +2317,7 @@ function drawMarquee(
   view: View,
 ): void {
   const x = Math.min(band.x0, band.x1) * view.scale + view.offsetX;
-  const y = Math.min(band.y0, band.y1) * view.scale + view.offsetY;
+  const y = screenY(view, Math.max(band.y0, band.y1));
   const w = Math.abs(band.x1 - band.x0) * view.scale;
   const h = Math.abs(band.y1 - band.y0) * view.scale;
 
@@ -2325,9 +2345,9 @@ function drawShapePreview(
   view: View,
 ): void {
   const x0 = from.x * view.scale + view.offsetX;
-  const y0 = from.y * view.scale + view.offsetY;
+  const y0 = screenY(view, from.y);
   const x1 = to.x * view.scale + view.offsetX;
-  const y1 = to.y * view.scale + view.offsetY;
+  const y1 = screenY(view, to.y);
 
   ctx.save();
   ctx.strokeStyle = 'rgba(77,148,255,0.9)';
@@ -2366,9 +2386,9 @@ function drawRoomPathGuide(
   const hw = guide.width / 2;
   const hd = guide.depth / 2;
   const x0 = (-hw) * view.scale + view.offsetX;
-  const y0 = (-hd) * view.scale + view.offsetY;
+  const y0 = screenY(view, -hd);
   const x1 = hw * view.scale + view.offsetX;
-  const y1 = hd * view.scale + view.offsetY;
+  const y1 = screenY(view, hd);
   ctx.save();
   ctx.beginPath();
   ctx.rect(x0, y0, x1 - x0, y1 - y0);
@@ -2391,7 +2411,7 @@ function drawRoomPathPreview(
 ): void {
   if (!points.length) return;
   const sx = (point: { x: number }) => point.x * view.scale + view.offsetX;
-  const sy = (point: { y: number }) => point.y * view.scale + view.offsetY;
+  const sy = (point: { y: number }) => screenY(view, point.y);
 
   ctx.save();
   ctx.lineJoin = 'round';
@@ -2451,9 +2471,9 @@ function drawMeasurement(
   system: UnitSystem,
 ): void {
   const x0 = from.x * view.scale + view.offsetX;
-  const y0 = from.y * view.scale + view.offsetY;
+  const y0 = screenY(view, from.y);
   const x1 = to.x * view.scale + view.offsetX;
-  const y1 = to.y * view.scale + view.offsetY;
+  const y1 = screenY(view, to.y);
 
   const span = Math.hypot(to.x - from.x, to.y - from.y);
   const label = formatLength(span, system);
@@ -2621,7 +2641,7 @@ function drawTransformFrame(
     const chipH = 20;
     const centre = {
       x: live.cx * view.scale + view.offsetX,
-      y: live.cy * view.scale + view.offsetY,
+      y: screenY(view, live.cy),
     };
     const lowest = Math.max(...corners.map((c) => c.y));
     const chipX = Math.round(centre.x - chipW / 2);
@@ -2649,9 +2669,9 @@ function drawSelectionFrame(
   const dy = nudge?.dy ?? 0;
   const pad = kind === 'group' ? 8 : 5;
   const x0 = (b.minX + dx) * view.scale + view.offsetX - pad;
-  const y0 = (b.minY + dy) * view.scale + view.offsetY - pad;
+  const y0 = screenY(view, b.maxY + dy) - pad;
   const x1 = (b.maxX + dx) * view.scale + view.offsetX + pad;
-  const y1 = (b.maxY + dy) * view.scale + view.offsetY + pad;
+  const y1 = screenY(view, b.minY + dy) + pad;
   const w = Math.round(x1 - x0);
   const h = Math.round(y1 - y0);
   const left = Math.round(x0) + 0.5;
@@ -2699,7 +2719,7 @@ function drawPlaceOnSurface(
 ): void {
   const pad = 10;
   const left = Math.round(b.minX * view.scale + view.offsetX - pad) + 0.5;
-  const top = Math.round(b.minY * view.scale + view.offsetY - pad) + 0.5;
+  const top = Math.round(screenY(view, b.maxY) - pad) + 0.5;
   const w = Math.round((b.maxX - b.minX) * view.scale + pad * 2);
   const h = Math.round((b.maxY - b.minY) * view.scale + pad * 2);
   ctx.save();
@@ -2745,7 +2765,7 @@ function drawStackSetOverlay(
   const dy = nudge?.dy ?? 0;
   const pad = 12;
   const left = Math.round((group.minX + dx) * view.scale + view.offsetX - pad) + 0.5;
-  const top = Math.round((group.minY + dy) * view.scale + view.offsetY - pad) + 0.5;
+  const top = Math.round(screenY(view, group.maxY + dy) - pad) + 0.5;
   const w = Math.round((group.maxX - group.minX) * view.scale + pad * 2);
   const h = Math.round((group.maxY - group.minY) * view.scale + pad * 2);
 
@@ -2781,7 +2801,7 @@ function drawStackSetOverlay(
     const b = objectBounds.get(member.id);
     if (!b) return;
     const cx = ((b.minX + b.maxX) / 2 + dx) * view.scale + view.offsetX;
-    const cy = ((b.minY + b.maxY) / 2 + dy) * view.scale + view.offsetY;
+    const cy = screenY(view, (b.minY + b.maxY) / 2 + dy);
     const elev =
       member.elevation > 0 ? formatLength(member.elevation, units) : 'floor';
     const tag = `${index + 1}  ${elev}`;
@@ -2885,7 +2905,7 @@ function drawRulers(
   // Vertical ruler, labels rotated to read along the edge.
   const firstY = Math.ceil((RULER - view.offsetY) / gap) * gap + view.offsetY;
   for (let y = firstY; y < size.height; y += gap) {
-    const logical = Math.round((y - view.offsetY) / view.scale / step) * step;
+    const logical = Math.round(planY(view, y) / step) * step;
     ctx.beginPath();
     ctx.moveTo(RULER - 5, Math.round(y) + 0.5);
     ctx.lineTo(RULER, Math.round(y) + 0.5);
