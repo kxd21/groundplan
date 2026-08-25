@@ -45,6 +45,13 @@ import {
 import { renderDimensions } from '../format/dimension-render.js';
 import { buildLegend, defaultLayers, summariseLoad, titleBlockFor } from '../format/layers.js';
 import { solveWall, wallBuildList } from '../format/led.js';
+import { planIdentity, setPlanIdentity } from '../format/plan-skeleton.js';
+import {
+  briefFromIdentity,
+  identityFromBrief,
+  patchShowBrief,
+  type ShowBrief,
+} from '../format/show-brief.js';
 import { diffPlans, type PlanDiff } from '../format/versions.js';
 import {
   cableSchedule,
@@ -2040,6 +2047,64 @@ export function addLedWall(
 export function comparePlanWith(session: Session, snapshot: Buffer): PlanDiff {
   const before = loadBuffer(snapshot, session.path);
   return diffPlans(placedItems(before.document), placedItems(session.loaded.document));
+}
+
+/* ── The show brief ──────────────────────────────────────────────────────── */
+
+/** The brief this plan carries, or null when it has never had one. */
+export function planShowBrief(): ShowBrief | null {
+  return state.companion?.showBrief ?? null;
+}
+
+/**
+ * Writes a patch to the brief and keeps the legacy trailer in step.
+ *
+ * The trailer is the only place the original Room Viewer and the title block
+ * can read a show's identity from, so the brief cannot be the sole record. The
+ * sync runs one way — brief to trailer — so there is a single author and the
+ * two can never disagree about which is right.
+ *
+ * Failing to write the trailer does NOT fail the edit: the brief is the record
+ * that matters, and a plan whose geometry is too damaged for a strict trailer
+ * write should still be describable.
+ */
+export function setShowBrief(
+  session: Session,
+  patch: Partial<ShowBrief>,
+  units: UnitSystem,
+): ModelEdit & { brief?: ShowBrief } {
+  const doc = session.loaded.document;
+  if (!state.companion) state.companion = createCompanion(doc, units);
+
+  const next = patchShowBrief(state.companion.showBrief ?? null, patch);
+  state.companion.showBrief = next;
+
+  const identity = identityFromBrief(next);
+  if (Object.keys(identity).length) {
+    const written = setPlanIdentity(doc, identity);
+    if (!written.ok) {
+      return { ok: true, brief: next, note: `Saved. ${written.reason ?? 'Title block not updated.'}` };
+    }
+  }
+
+  return { ok: true, brief: next };
+}
+
+/**
+ * Seeds a brief from what a legacy plan already carries.
+ *
+ * Only ever called for a plan that has no brief, and only writes one when the
+ * trailer actually holds something — opening an old file must not start
+ * inventing sidecars for plans nobody has described.
+ */
+export function seedBriefFromPlan(session: Session, units: UnitSystem): ShowBrief | null {
+  if (state.companion?.showBrief) return state.companion.showBrief;
+  const identity = planIdentity(session.loaded.document);
+  const seeded = briefFromIdentity(identity ?? {});
+  if (!seeded) return null;
+  if (!state.companion) state.companion = createCompanion(session.loaded.document, units);
+  state.companion.showBrief = seeded;
+  return seeded;
 }
 
 /** Weight and power by layer, for the panel and the rigging conversation. */

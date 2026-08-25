@@ -20,6 +20,8 @@ import {
   applySeating,
   createRectangularRoom,
   curveRoomWall,
+  planShowBrief,
+  setShowBrief,
   dimensionOneWall,
   dimensionTheRoom,
   openPlanModel,
@@ -32,6 +34,7 @@ import {
   savePlanModel,
 } from '../src/main/plan-model.js';
 import { companionPathFor } from '../src/main/companion-store.js';
+import { planIdentity } from '../src/format/plan-skeleton.js';
 import { verifyWritable } from '../src/format/write.js';
 import { measureNode } from '../src/format/edit.js';
 import { walk } from '../src/format/rv.js';
@@ -478,6 +481,165 @@ async function main(): Promise<void> {
     const session = await open();
     await savePlanModel(planPath, session.body());
     check('an untouched plan writes no companion', !existsSync(companionPathFor(planPath)));
+  }
+
+  console.log('\nthe show brief survives save, close and reopen\n');
+  {
+    const session = await open();
+    commit(session, () => createRectangularRoom(session, 60 * F, 40 * F, 'imperial'));
+
+    const wrote = commit(session, () =>
+      setShowBrief(
+        session,
+        {
+          name: 'Northwind Kickoff',
+          client: 'Northwind Traders',
+          jobNumber: 'NW-2049',
+          status: 'review',
+          eventStart: '2026-09-14',
+          venue: 'Marriott Marquis',
+          roomName: 'Grand Ballroom East',
+          productionContact: 'Sam Okafor',
+          targetAttendance: 850,
+          layoutType: 'general-session',
+          stageRequired: true,
+          screensRequired: true,
+          accessibleSeats: 12,
+          egressNotes: 'Four exits, none blocked',
+        },
+        'imperial',
+      ),
+    );
+    check('a brief can be written', wrote.ok, wrote.reason);
+
+    // The legacy trailer must move with it, or the title block goes stale.
+    const identity = planIdentity(session.loaded.document);
+    check('the trailer event follows the show name', identity?.event === 'Northwind Kickoff', identity?.event);
+    check(
+      'and the trailer venue includes the room',
+      identity?.venue === 'Marriott Marquis · Grand Ballroom East',
+      identity?.venue,
+    );
+    check('and the trailer date follows the event start', identity?.date === '2026-09-14', identity?.date);
+
+    const bytes = session.file();
+    writeFileSync(planPath, bytes);
+    session.markSaved(bytes, session.body());
+    await savePlanModel(planPath, session.body());
+
+    const stored = JSON.parse(readFileSync(companionPathFor(planPath), 'utf8')) as {
+      showBrief?: Record<string, unknown>;
+    };
+    check('the sidecar holds the brief', !!stored.showBrief);
+    check('with the headcount', stored.showBrief?.targetAttendance === 850, `${stored.showBrief?.targetAttendance}`);
+
+    // Close and reopen exactly as the app does.
+    resetPlanModel();
+    const reopened = new Session(planPath, readFileSync(planPath));
+    await openPlanModel(planPath, reopened.loaded.document, 'imperial');
+    const brief = planShowBrief();
+
+    check('the brief comes back on reopen', !!brief);
+    check('the name', brief?.name === 'Northwind Kickoff', brief?.name);
+    check('the client', brief?.client === 'Northwind Traders', brief?.client);
+    check('the job number', brief?.jobNumber === 'NW-2049', brief?.jobNumber);
+    check('the status', brief?.status === 'review', brief?.status);
+    check('the target attendance', brief?.targetAttendance === 850, `${brief?.targetAttendance}`);
+    check('the layout type', brief?.layoutType === 'general-session', brief?.layoutType);
+    check('the stage requirement', brief?.stageRequired === true);
+    check('the screens requirement', brief?.screensRequired === true);
+    check('the accessible seat count', brief?.accessibleSeats === 12, `${brief?.accessibleSeats}`);
+    check('the egress note', brief?.egressNotes === 'Four exits, none blocked', brief?.egressNotes);
+    check('and the room name', brief?.roomName === 'Grand Ballroom East', brief?.roomName);
+  }
+
+  console.log('\nSave As carries the brief to the new file\n');
+  {
+    const session = await open();
+    commit(session, () => createRectangularRoom(session, 30 * F, 20 * F, 'imperial'));
+    commit(session, () =>
+      setShowBrief(session, { name: 'Breakout A', targetAttendance: 60, venue: 'Hyatt' }, 'imperial'),
+    );
+
+    // Save As is a save to a different path; the sidecar has to follow.
+    const copyPath = join(dir, 'Breakout A copy.rv4');
+    const bytes = session.file();
+    writeFileSync(copyPath, bytes);
+    await savePlanModel(copyPath, session.body());
+
+    check('a sidecar is written beside the copy', existsSync(companionPathFor(copyPath)));
+
+    resetPlanModel();
+    const copy = new Session(copyPath, readFileSync(copyPath));
+    await openPlanModel(copyPath, copy.loaded.document, 'imperial');
+    const copied = planShowBrief();
+    check('the copy carries the brief', copied?.name === 'Breakout A', copied?.name);
+    check('with its headcount', copied?.targetAttendance === 60, `${copied?.targetAttendance}`);
+    check('and its venue', copied?.venue === 'Hyatt', copied?.venue);
+  }
+
+  console.log('\na plan from before the brief existed opens normally\n');
+  {
+    const session = await open();
+    commit(session, () => createRectangularRoom(session, 40 * F, 30 * F, 'imperial'));
+    const bytes = session.file();
+    writeFileSync(planPath, bytes);
+    session.markSaved(bytes, session.body());
+    await savePlanModel(planPath, session.body());
+
+    // Strip the brief the way a sidecar written by an older build would be.
+    const sidecar = companionPathFor(planPath);
+    const raw = JSON.parse(readFileSync(sidecar, 'utf8')) as Record<string, unknown>;
+    delete raw.showBrief;
+    writeFileSync(sidecar, JSON.stringify(raw, null, 2));
+
+    resetPlanModel();
+    const legacy = new Session(planPath, readFileSync(planPath));
+    await openPlanModel(planPath, legacy.loaded.document, 'imperial');
+    const view = planModelView(legacy, 'imperial');
+
+    check('it opens', !!view.room);
+    check('the companion is still fresh', view.companion.freshness === 'fresh', view.companion.freshness);
+    check('with its room intact', view.room?.areaText === '1,200 sq ft', view.room?.areaText);
+    check('and reports no brief rather than an empty one', planShowBrief() === null);
+
+    // A brief can then be added to it without disturbing anything else.
+    const added = commit(legacy, () => setShowBrief(legacy, { name: 'Retrofitted' }, 'imperial'));
+    check('a brief can be added to an old plan', added.ok, added.reason);
+    check('and the room is untouched', planModelView(legacy, 'imperial').room?.areaText === '1,200 sq ft');
+  }
+
+  console.log('\na stale companion keeps the brief\n');
+  {
+    const session = await open();
+    commit(session, () => createRectangularRoom(session, 40 * F, 30 * F, 'imperial'));
+    commit(session, () => setShowBrief(session, { name: 'Stale Show', targetAttendance: 200 }, 'imperial'));
+    const bytes = session.file();
+    writeFileSync(planPath, bytes);
+    session.markSaved(bytes, session.body());
+    await savePlanModel(planPath, session.body());
+
+    // Edit the plan behind Groundplan's back so the sidecar goes stale.
+    const edited = new Session(planPath, readFileSync(planPath));
+    edited.checkpoint();
+    createRectangularRoom(edited, 55 * F, 35 * F, 'imperial');
+    edited.refresh();
+    writeFileSync(planPath, edited.file());
+
+    resetPlanModel();
+    const stale = new Session(planPath, readFileSync(planPath));
+    await openPlanModel(planPath, stale.loaded.document, 'imperial');
+
+    check(
+      'the geometry is reported stale',
+      planModelView(stale, 'imperial').companion.freshness === 'stale',
+    );
+    // The brief describes the SHOW, not the geometry. A wall moving in another
+    // application does not make the client's name wrong, and dropping it would
+    // lose the one record the drawing cannot rebuild.
+    const brief = planShowBrief();
+    check('but the brief is kept', brief?.name === 'Stale Show', brief?.name);
+    check('including its headcount', brief?.targetAttendance === 200, `${brief?.targetAttendance}`);
   }
  } finally {
   rmSync(dir, { recursive: true, force: true });

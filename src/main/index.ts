@@ -234,6 +234,8 @@ import {
   planAllocation,
   addLedWall,
   comparePlanWith,
+  planShowBrief,
+  setShowBrief,
   planCableSchedule,
   planLegend,
   planLoad,
@@ -1451,6 +1453,8 @@ const RESULT_CHANNELS = new Set([
   'plan:wall-dimension',
   'plan:load-summary',
   'plan:cable-schedule',
+  'plan:show-brief',
+  'plan:show-brief-set',
   'plan:led-wall',
   'versions:list',
   'versions:save',
@@ -5026,6 +5030,29 @@ app.whenReady().then(async () => {
   handle('versions:delete', (_event, id: string) =>
     session ? deleteVersion(session.path, String(id)) : false,
   );
+
+  /* ── Show brief ───────────────────────────────────────────────────────── */
+
+  handle('plan:show-brief', () => (session ? planShowBrief() : null));
+
+  handle('plan:show-brief-set', (_event, patch: Record<string, unknown>) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    let brief: unknown = null;
+    // The brief lives in the sidecar, so this is a companion write rather than
+    // a document edit — but the trailer sync inside it IS a document edit, so
+    // it goes through applyEdit to stay undoable and to mark the plan dirty.
+    const reply = applyEdit(
+      (s) => {
+        const result = setShowBrief(s, (patch ?? {}) as never, unitSystem());
+        brief = result.brief ?? null;
+        return result;
+      },
+      // A trailer-only patch must not be refused because an unrelated wall
+      // fails a strict census — same reasoning as plan:identity-set.
+      { skipRoundTripVerify: true },
+    );
+    return { ...reply, brief };
+  });
 
   handle('plan:cable-schedule', () => (session ? planCableSchedule(session) : null));
 

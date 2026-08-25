@@ -34,6 +34,7 @@ import { createHash } from 'node:crypto';
 import type { RVDocument } from './rv.js';
 import type { AspectRatio, InstanceOverride, ItemSpec, Obstruction } from './definition.js';
 import type { RoomModel, WallSegment } from './room.js';
+import { parseShowBrief, type ShowBrief } from './show-brief.js';
 import type { Rail, Ramp, StageBuild, StageLevel, Stair, StairEdge } from './stage.js';
 import type { UnitSystem } from './units.js';
 
@@ -87,6 +88,15 @@ export interface CompanionDocument {
   stage?: StageBuild;
   /** Keeps a traced room labelled as derived when a background alone creates a sidecar. */
   roomIsDerived?: boolean;
+  /**
+   * What the show is meant to be, as somebody described it.
+   *
+   * Optional, and absent on every plan made before it existed. It lives here
+   * rather than in the .rv4 because that format is a 2013 binary the original
+   * Room Viewer still has to open; the four fields it does carry stay in its
+   * trailer and are kept in step from here.
+   */
+  showBrief?: ShowBrief;
 }
 
 /** The sidecar path for a plan. */
@@ -466,6 +476,8 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
 
   const background = parsePlanBackground(value.background);
   const stage = parseStage(value.stage);
+  // Absent on every plan predating the brief, which must still open.
+  const showBrief = parseShowBrief(value.showBrief);
   return {
     format: COMPANION_FORMAT,
     version: COMPANION_VERSION,
@@ -483,5 +495,6 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
     ...(background ? { background } : {}),
     ...(stage ? { stage } : {}),
     ...(value.roomIsDerived === true ? { roomIsDerived: true } : {}),
+    ...(showBrief ? { showBrief } : {}),
   };
 }

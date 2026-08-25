@@ -10,6 +10,7 @@ import type {
   PlanFolderState,
   RecentFile,
 } from '../main/index.js';
+import type { ShowBrief as ShowBriefView } from '../format/show-brief.js';
 import type { ShowLinkState } from '../main/show-project.js';
 import type { RecoveryEntry } from '../main/recovery.js';
 import type {
@@ -662,6 +663,19 @@ const api = {
     ipcRenderer.invoke('versions:rename', id, name),
 
   versionDelete: (id: string): Promise<boolean> => ipcRenderer.invoke('versions:delete', id),
+
+  /* ── The show brief ─────────────────────────────────────────────────────
+   * What the show is meant to be, kept in the companion sidecar. The legacy
+   * .rv4 is untouched; its four trailer fields are kept in step from here so
+   * title blocks and the original Room Viewer keep working. */
+
+  showBrief: (): Promise<ShowBriefView | null> => ipcRenderer.invoke('plan:show-brief'),
+
+  /** Patches the brief. Omitted keys are left alone; empty ones are cleared. */
+  showBriefSet: (
+    patch: Partial<ShowBriefView>,
+  ): Promise<EditReply & { brief?: ShowBriefView | null }> =>
+    ipcRenderer.invoke('plan:show-brief-set', patch),
 
   /** Cable footage by type, drawn and rounded to stock lengths. */
   cableSchedule: (): Promise<{

@@ -24,6 +24,16 @@ export interface LayoutKitInfo {
   venue?: string;
   /** Optional capacity for variant kits. */
   capacityGuests?: number;
+  /**
+   * What the kit's seating actually is, so a recommendation can match a
+   * requested layout instead of pattern-matching the kit's NAME. A kit called
+   * "Card Party" is a banquet whatever it is called.
+   */
+  seatingKinds?: Array<'theatre' | 'schoolroom' | 'round'>;
+  /** True when the kit builds a stage, so a brief that needs one can prefer it. */
+  hasStage?: boolean;
+  /** Footprint the kit occupies in feet, for fitting it to a room. */
+  extentFt?: { width: number; depth: number };
   /** Parent kit id when this is a seating/capacity variant. */
   variantOf?: string;
 }
@@ -59,6 +69,46 @@ export function bankPresetsPath(userDataDir: string): string {
   return join(userDataDir, 'bank-presets.json');
 }
 
+/**
+ * How much floor the kit's own contents cover, in feet.
+ *
+ * Measured from the blocks and stages the recipe places rather than declared,
+ * because a recipe carries no footprint of its own and "does this fit" is the
+ * first question a room asks of a kit.
+ */
+function kitExtentFt(recipe: LayoutRecipe): { width: number; depth: number } | undefined {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  const span = (x: number, y: number, w: number, d: number) => {
+    minX = Math.min(minX, x - w / 2);
+    maxX = Math.max(maxX, x + w / 2);
+    minY = Math.min(minY, y - d / 2);
+    maxY = Math.max(maxY, y + d / 2);
+  };
+
+  for (const stage of recipe.stage ?? []) span(stage.xFt, stage.yFt, stage.widthFt, stage.depthFt);
+  for (const block of recipe.seating) {
+    // A block's own size is not stored, so it is estimated from its rows: 2ft a
+    // seat across and 3ft a row deep are the spacings the seating solver uses.
+    const perRow = block.rowLengths?.length
+      ? Math.max(...block.rowLengths)
+      : (block.perRow ?? 10);
+    const rows = block.rowLengths?.length ?? block.rows ?? 5;
+    span(
+      block.xFt,
+      block.yFt,
+      perRow * (block.seatSpacingFt ?? 2),
+      rows * (block.rowSpacingFt ?? 3),
+    );
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return undefined;
+  return { width: Math.round(maxX - minX), depth: Math.round(maxY - minY) };
+}
+
 function describeKit(id: string, path: string, source: 'bundled' | 'user'): LayoutKitInfo | null {
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8'));
@@ -79,6 +129,11 @@ function describeKit(id: string, path: string, source: 'bundled' | 'user'): Layo
       venue: recipe.identity?.venue,
       capacityGuests: recipe.identity?.capacityGuests,
       variantOf: recipe.identity?.variantOf,
+      seatingKinds: [
+        ...new Set(recipe.seating.map((block) => block.kind ?? 'theatre')),
+      ],
+      hasStage: (recipe.stage?.length ?? 0) > 0,
+      extentFt: kitExtentFt(recipe),
     };
   } catch {
     return null;

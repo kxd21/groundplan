@@ -424,7 +424,9 @@ function trailerPart(doc: RVDocument): { index: number; from: number; strings: s
   const index = doc.parts.length - 1;
   const last = doc.parts[index];
   if (last?.kind !== 'raw') return null;
-  const strings = decodeTrailer(doc.source.subarray(0, last.to), last.from);
+  // Not strict: this is the known-last raw part, not a hunt, so a latin1
+  // venue name must be readable rather than treated as "not a trailer".
+  const strings = decodeTrailer(doc.source.subarray(0, last.to), last.from, false);
   return strings ? { index, from: last.from, strings } : null;
 }
 

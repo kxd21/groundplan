@@ -65,9 +65,40 @@ export function readCString(buf: Buffer, at: number): { text: string; end: numbe
   return { text: buf.toString('latin1', at + 1, at + 1 + len), end: at + 1 + len };
 }
 
+/**
+ * Characters the trailer's single-byte encoding can actually carry.
+ *
+ * The format stores one byte per character, so anything outside latin1 has no
+ * representation at all. `Buffer.from(text, 'latin1')` does not say so — it
+ * silently keeps the low byte, turning an en dash into a stray 0x13 and a CJK
+ * character into noise. Substituting is the honest failure: the name comes back
+ * slightly wrong rather than as bytes that are not the name at all.
+ */
+function toLatin1(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code <= 0xff) {
+      out += ch;
+      continue;
+    }
+    // The punctuation people actually paste in from documents, mapped to the
+    // nearest thing the format can hold.
+    const swap =
+      ch === '\u2013' || ch === '\u2014' ? '-' :
+      ch === '\u2018' || ch === '\u2019' ? "'" :
+      ch === '\u201c' || ch === '\u201d' ? '"' :
+      ch === '\u2026' ? '...' :
+      ch === '\u2022' ? '\u00b7' :
+      '?';
+    out += swap;
+  }
+  return out;
+}
+
 /** Writes one, truncating at the single length byte the format allows. */
 export function writeCString(text: string): Buffer {
-  const encoded = Buffer.from(text.slice(0, 254), 'latin1');
+  const encoded = Buffer.from(toLatin1(text).slice(0, 254), 'latin1');
   return Buffer.concat([Buffer.from([encoded.length]), encoded]);
 }
 
@@ -79,7 +110,7 @@ export function writeCString(text: string): Buffer {
  * string count of exactly eight or nine, and a run that finishes on the last
  * byte of the stream rather than merely somewhere inside it.
  */
-export function decodeTrailer(buf: Buffer, at: number): string[] | null {
+export function decodeTrailer(buf: Buffer, at: number, strict = true): string[] | null {
   if (at < 0 || at + 4 > buf.length || buf.readInt32LE(at) !== LEAD) return null;
 
   const out: string[] = [];
@@ -88,9 +119,28 @@ export function decodeTrailer(buf: Buffer, at: number): string[] | null {
     if (out.length > TRAILER_SLOTS + 1) return null;
     const s = readCString(buf, p);
     if (!s) return null;
-    // Every non-empty string in all 400 plans measured was printable ASCII —
-    // a date, a venue, a person, or a registry GUID.
-    if (!/^[\x20-\x7e]*$/.test(s.text)) return null;
+    /*
+     * Two callers, two needs.
+     *
+     * HUNTING for a trailer at an arbitrary offset (`isTrailerAt`) needs the
+     * tight test: every non-empty string in all 400 plans measured was
+     * printable ASCII, and that is what stops a run of point-array bytes from
+     * being mistaken for a trailer.
+     *
+     * READING a trailer we already know we are standing on does not, and the
+     * tight test actively broke it: `writeCString` encodes latin1, so a venue
+     * called "Café Royal" wrote 0xE9 quite correctly and then failed to decode,
+     * taking the venue, event, date and contact with it. The write reached
+     * disk; the read refused it. Accented names are ordinary in this industry
+     * and must round-trip.
+     *
+     * Control bytes stay rejected either way — they are what actually
+     * distinguishes text from coordinates.
+     */
+    const printable = strict
+      ? /^[\x20-\x7e]*$/.test(s.text)
+      : /^[\x20-\x7e\xa0-\xff]*$/.test(s.text);
+    if (!printable) return null;
     out.push(s.text);
     p = s.end;
   }
