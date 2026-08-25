@@ -43,105 +43,135 @@ const html = `<!doctype html>
   html, body {
     width: ${WIDTH}px; height: ${HEIGHT}px; overflow: hidden;
     font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
-    -webkit-font-smoothing: antialiased; color: #1d1d1f; background: #f2f2f4;
+    -webkit-font-smoothing: antialiased; color: #1d1d1f; background: #f5f6f8;
   }
-  /* A seam separates "put it there" from "then do this": they happen minutes
-     apart and the second is the surprising half. */
+  /* The icon band stays deliberately quiet: Finder draws the application and
+     Applications icons over this artwork at x=170 and x=470. */
   .install {
-    position: absolute; inset: 0 0 auto 0; height: 250px;
-    background: linear-gradient(180deg, #fbfbfc 0%, #f2f2f4 100%);
-    border-bottom: 1px solid #dcdce0;
+    position: absolute; inset: 0 0 auto 0; height: 238px;
+    background:
+      radial-gradient(circle at 50% 8%, rgba(37, 120, 232, .055), transparent 46%),
+      linear-gradient(180deg, #ffffff 0%, #f9fafc 100%);
+    border-bottom: 1px solid #dfe3e8;
   }
   .step-label {
-    position: absolute; left: 0; right: 0; text-align: center;
-    font-size: 12px; font-weight: 590; letter-spacing: 0.04em;
-    text-transform: uppercase; color: #86868b;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: max-content; min-height: 22px; padding: 0 9px;
+    border: 1px solid #d8e8fa; border-radius: 999px;
+    background: #f2f7fd; color: #1669bd;
+    font-size: 10px; font-weight: 700; letter-spacing: .075em;
+    line-height: 1; text-transform: uppercase;
   }
-  .install .step-label { top: 26px; }
+  .install .step-label {
+    position: absolute; top: 23px; left: 50%; transform: translateX(-50%);
+  }
   .headline {
     position: absolute; left: 0; right: 0; text-align: center;
-    font-size: 19px; font-weight: 600; letter-spacing: -0.01em;
+    font-size: 20px; font-weight: 650; letter-spacing: -0.018em;
   }
-  .install .headline { top: 50px; }
+  .install .headline { top: 54px; }
+  .install-sub {
+    position: absolute; top: 84px; left: 0; right: 0;
+    color: #6e7781; font-size: 12px; text-align: center;
+  }
   /* The arrow spans the gap between the icon slots the DMG places at x=170 and
      x=470, both at y=175. Nothing may be drawn inside those slots. */
-  .arrow { position: absolute; top: 168px; left: 258px; width: 124px; height: 18px; }
-  /* Normal flow below the seam, not absolute coordinates. The first attempt
-     positioned this block's label with a page-absolute "top", which put "Step 2"
-     at the very bottom of the window and dropped the footnote on top of the
-     cards. A flex column cannot get that wrong. */
+  .arrow { position: absolute; top: 166px; left: 258px; width: 124px; height: 20px; }
   .gate {
-    position: absolute; inset: 250px 0 0 0; padding: 20px 30px 12px;
+    position: absolute; inset: 238px 0 0 0; padding: 18px 30px 11px;
     display: flex; flex-direction: column;
   }
-  .gate .step-label { position: static; }
+  .gate .step-label { position: static; align-self: center; }
   .gate-headline {
-    margin-top: 9px; text-align: center;
-    font-size: 17px; font-weight: 600; letter-spacing: -0.01em;
+    margin-top: 7px; text-align: center;
+    font-size: 18px; font-weight: 650; letter-spacing: -0.014em;
   }
   .gate-sub {
-    margin-top: 5px; text-align: center;
-    font-size: 12.5px; line-height: 1.45; color: #6e6e73;
+    margin: 4px auto 0; max-width: 540px; text-align: center;
+    font-size: 11.5px; line-height: 1.42; color: #69727d;
   }
-  .routes { display: flex; gap: 14px; margin-top: 16px; }
+  .routes { display: flex; gap: 12px; margin-top: 13px; }
   .route {
-    flex: 1; min-width: 0; padding: 12px 13px 13px;
-    background: #ffffff; border: 1px solid #dcdce0; border-radius: 9px;
+    flex: 1; min-width: 0; min-height: 136px; padding: 11px 12px 10px;
+    background: #ffffff; border: 1px solid #d9dee5; border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(26, 38, 54, .04);
   }
-  .route h3 { font-size: 11px; font-weight: 640; letter-spacing: 0.02em; }
-  .route .ver {
-    display: block; margin-top: 1px;
-    font-size: 10px; font-weight: 500; color: #86868b;
+  .route-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding-bottom: 8px; border-bottom: 1px solid #eceff3;
   }
-  .route p { margin-top: 8px; font-size: 11.5px; line-height: 1.5; color: #3a3a3c; }
-  .route b { font-weight: 600; color: #1d1d1f; }
-  /* Amber, not red: a step to follow, not a failure to fear. */
-  .route.primary { border-color: #e0b45c; background: #fffdf7; }
-  .route.primary h3 { color: #8a5a00; }
-  /* "margin-top: auto" pins this to the bottom of the flex column without
-     needing a coordinate that has to be kept in step with the cards above. */
+  .route h3 { font-size: 11.5px; font-weight: 700; letter-spacing: -.005em; }
+  .version {
+    flex: none; padding: 2px 6px; border-radius: 999px;
+    background: #f1f3f6; color: #69727d;
+    font-size: 8.5px; font-weight: 700; letter-spacing: .035em;
+  }
+  .route ol { display: grid; gap: 5px; margin-top: 8px; list-style: none; }
+  .route li {
+    display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 6px;
+    align-items: start; color: #454b53; font-size: 10.5px; line-height: 1.34;
+  }
+  .route li > span {
+    display: grid; width: 16px; height: 16px; place-items: center;
+    border-radius: 50%; background: #eef1f5; color: #5f6873;
+    font-size: 8.5px; font-weight: 750;
+  }
+  .route b { font-weight: 650; color: #1d1d1f; }
+  .route.primary {
+    border-color: #a9cdf2;
+    background: linear-gradient(180deg, #f8fbff 0%, #f3f8fe 100%);
+    box-shadow: 0 1px 2px rgba(11, 110, 203, .06);
+  }
+  .route.primary h3 { color: #0b5fab; }
+  .route.primary .route-head { border-bottom-color: #d9e9f9; }
+  .route.primary .version { background: #dfeefd; color: #0b5fab; }
+  .route.primary li > span { background: #dcecff; color: #0b5fab; }
   .footnote {
-    margin-top: auto; padding-top: 12px;
-    text-align: center; font-size: 10.5px; line-height: 1.45; color: #86868b;
+    margin-top: auto; padding-top: 9px;
+    text-align: center; font-size: 9.5px; line-height: 1.45; color: #858c95;
   }
+  .footnote strong { color: #5f6873; font-weight: 600; }
 </style></head>
 <body>
   <div class="install">
-    <div class="step-label">Step 1</div>
-    <div class="headline">Drag Groundplan into Applications</div>
-    <svg class="arrow" viewBox="0 0 124 18" fill="none">
-      <path d="M2 9 H108" stroke="#b8b8bd" stroke-width="2" stroke-linecap="round" stroke-dasharray="7 6"/>
-      <path d="M104 3 L114 9 L104 15" stroke="#b8b8bd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <div class="step-label">1 &middot; Install</div>
+    <div class="headline">Move Groundplan to Applications</div>
+    <div class="install-sub">Drag the Groundplan icon onto the Applications folder.</div>
+    <svg class="arrow" viewBox="0 0 124 20" fill="none">
+      <path d="M2 10 H108" stroke="#91a4b7" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 6"/>
+      <path d="M104 4 L114 10 L104 16" stroke="#4f86bd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
   </div>
 
   <div class="gate">
-    <div class="step-label">Step 2 &middot; first launch only</div>
-    <div class="gate-headline">macOS will refuse to open it. This is expected.</div>
+    <div class="step-label">2 &middot; First open</div>
+    <div class="gate-headline">Allow Groundplan once</div>
     <div class="gate-sub">
-      You will see &ldquo;Apple could not verify Groundplan is free of malware.&rdquo;<br>
-      macOS says that about any app not put through Apple&rsquo;s paid notarisation
-      service. Approve it once &mdash; it opens normally ever after.
+      If macOS says it cannot verify Groundplan, use the route for your version.
+      This one-time approval applies only to Groundplan.
     </div>
     <div class="routes">
       <div class="route primary">
-        <h3>Open System Settings<span class="ver">macOS 15 Sequoia, macOS 26 Tahoe, newer</span></h3>
-        <p>Double-click Groundplan, click <b>Done</b>, then open
-        <b>System&nbsp;Settings &rsaquo; Privacy&nbsp;&amp;&nbsp;Security</b>.
-        Scroll to <b>Security</b>, click <b>Open&nbsp;Anyway</b>, authenticate,
-        then click <b>Open&nbsp;Anyway</b> once more.</p>
+        <div class="route-head"><h3>System Settings</h3><span class="version">macOS 15+</span></div>
+        <ol>
+          <li><span>1</span><div>Open Groundplan once, then click <b>Done</b>.</div></li>
+          <li><span>2</span><div>Go to <b>Privacy &amp; Security</b> in System Settings.</div></li>
+          <li><span>3</span><div>Under Security, click <b>Open Anyway</b>, authenticate, and confirm.</div></li>
+        </ol>
       </div>
       <div class="route">
-        <h3>Control-click the app<span class="ver">macOS 14 Sonoma and older</span></h3>
-        <p><b>Control-click</b> Groundplan in Applications and choose <b>Open</b>,
-        then <b>Open</b> again. The Control-click is the part that matters &mdash;
-        double-clicking will only ever refuse.</p>
+        <div class="route-head"><h3>Control-click to open</h3><span class="version">macOS 14 or earlier</span></div>
+        <ol>
+          <li><span>1</span><div>Open the <b>Applications</b> folder.</div></li>
+          <li><span>2</span><div><b>Control-click</b> Groundplan and choose <b>Open</b>.</div></li>
+          <li><span>3</span><div>Click <b>Open</b> once more to confirm.</div></li>
+        </ol>
       </div>
     </div>
     <div class="footnote">
-      Not sure which macOS you have? Apple menu &rsaquo; About This Mac.
-      Approving Groundplan does not turn off Gatekeeper.<br>
-      Stuck, or it says &ldquo;damaged&rdquo;? &nbsp;kxd21.github.io/groundplan/download
+      Check your version in <strong>Apple menu &rsaquo; About This Mac</strong>.
+      This does not disable Gatekeeper.<br>
+      Need help? &nbsp;<strong>kxd21.github.io/groundplan/download</strong>
     </div>
   </div>
 </body></html>`;

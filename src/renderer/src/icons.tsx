@@ -605,3 +605,71 @@ export function IconClose({ size = 16, className }: IconProps) {
     </svg>
   );
 }
+
+/*
+ * Five icons that exist because eight rail buttons were drawing four glyphs.
+ *
+ * Room and Signal run were both the polygon, Stage and Rectangle were both the
+ * rectangle, Line and Power run were both the line, and Measure and Dimension
+ * were both the ruler. In a rail whose lower half carries no labels that is not
+ * a cosmetic problem: two adjacent tools that look identical cannot be told
+ * apart without hovering each one.
+ *
+ * Each of these says what the tool does rather than what shape it draws.
+ */
+
+/** A room: walls with a door swing, not a generic polygon. */
+export function IconRoomOutline({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.25 13.25V3.75a.5.5 0 0 1 .5-.5h10.5a.5.5 0 0 1 .5.5v9.5" />
+      <path d="M2.25 13.25h3.5M9.75 13.25h4" />
+      <path d="M5.75 13.25a4 4 0 0 0 4-4" />
+    </svg>
+  );
+}
+
+/** A stage: a deck on legs, not a generic rectangle. */
+export function IconStageDeck({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M1.75 6.25h12.5v3.5H1.75z" />
+      <path d="M3.75 9.75v3.5M12.25 9.75v3.5" />
+      <path d="M6 3.5h4" />
+    </svg>
+  );
+}
+
+/** A power run: angular, like the bolt it carries. */
+export function IconCablePower({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M1.75 11.5h2.5l2-6 2.5 9 2-3h3.5" />
+    </svg>
+  );
+}
+
+/** A signal run: a smooth wave, so it never reads as the power run. */
+export function IconCableSignal({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M1.75 8c1.6-4.5 3.2 4.5 4.8 0s3.2-4.5 4.8 0 1.6 4.5 2.9 2.2" />
+    </svg>
+  );
+}
+
+/**
+ * A dimension: extension lines and arrowheads, the drafting convention.
+ *
+ * Measure keeps the ruler — it answers "how far is that" and never marks the
+ * drawing. A dimension is a thing you place, and the two are different jobs.
+ */
+export function IconDimension({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.75 2.75v10.5M13.25 2.75v10.5" />
+      <path d="M2.75 8h10.5" />
+      <path d="M5.1 6.1 2.9 8l2.2 1.9M10.9 6.1 13.1 8l-2.2 1.9" />
+    </svg>
+  );
+}

@@ -18915,3 +18915,14 @@ a,
   opacity: 0.45;
   text-decoration: line-through;
 }
+
+/*
+ * The recovery panel sits on an amber ground of its own, and inherits its ink
+ * from the surface underneath rather than from that ground. In the dark theme
+ * the tertiary tone landed at 4.48:1 against it — under AA, and invisible to
+ * the contrast gate until its colour parser learned to read the composited
+ * background. A warmer, lighter tertiary suits the amber and clears the bar.
+ */
+.app[data-theme='dark'] .recovery-panel {
+  --ink-3: #cdc3b2;
+}
