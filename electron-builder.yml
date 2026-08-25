@@ -65,6 +65,27 @@ mac:
   # what Apple Silicon needs in order to launch it at all.
   identity: null
 
+# The first thing somebody sees when they mount the image is the window below.
+# Gatekeeper is going to stop them a minute later, so the instructions for
+# getting past it are IN that window rather than on a web page they have
+# already navigated away from.
+dmg:
+  title: ${productName} ${version}
+  window:
+    width: 560
+    height: 420
+  contents:
+    - x: 150
+      y: 170
+    - x: 410
+      y: 170
+      type: link
+      path: /Applications
+    - x: 280
+      y: 320
+      type: file
+      path: build/dmg/READ ME FIRST - opening on macOS.txt
+
 win:
   icon: build/icon.ico
   target:

@@ -240,6 +240,19 @@
         max-width: 40rem;
         font-size: 0.95rem;
       }
+      /* The two version-specific routes read as steps, not prose: somebody
+         blocked by Gatekeeper is looking for what to click, not an argument. */
+      .callout-steps {
+        margin: 12px 0 0;
+        line-height: 1.55;
+      }
+      .callout-steps strong {
+        color: var(--paper);
+      }
+      .callout-note {
+        margin: 12px 0 0;
+        font-size: 0.9rem;
+      }
       .callout strong {
         color: var(--warn);
         font-weight: 600;
@@ -295,9 +308,32 @@
               <li>Eject the disk image, then open Groundplan from Applications.</li>
             </ol>
             <div class="callout">
-              <strong>First open on Mac.</strong> If Gatekeeper blocks it, right-click the app →
-              <em>Open</em> → <em>Open</em> again. You only do this once. Builds are ad-hoc signed;
-              Apple notarization is not applied yet.
+              <strong>macOS will block the first open. This is expected.</strong>
+              You will see <em>&ldquo;Apple could not verify Groundplan is free of
+              malware.&rdquo;</em> Apple shows that for any app that has not been through
+              their paid notarization service. Approve it once and it opens normally
+              from then on.
+
+              <p class="callout-steps">
+                <strong>macOS&nbsp;15 Sequoia, macOS&nbsp;26 Tahoe and later</strong><br>
+                Double-click Groundplan &rarr; <em>Done</em> &rarr; open
+                <strong>System Settings &rarr; Privacy &amp; Security</strong> &rarr; scroll to
+                <strong>Security</strong> &rarr; <em>Open Anyway</em> &rarr; authenticate &rarr;
+                <em>Open Anyway</em> once more.
+              </p>
+
+              <p class="callout-steps">
+                <strong>macOS&nbsp;14 Sonoma and earlier</strong><br>
+                Control-click (right-click) Groundplan &rarr; <em>Open</em> &rarr;
+                <em>Open</em>. Control-clicking is what turns the block into a choice;
+                double-clicking only ever refuses.
+              </p>
+
+              <p class="callout-note">
+                Not sure which you have? <strong>Apple menu &rarr; About This Mac</strong>.
+                Full steps in the
+                <a href="https://github.com/kxd21/groundplan/blob/main/docs/installation.md#macos">installation guide</a>.
+              </p>
             </div>
             <div class="links" id="mac-links"></div>
           </div>

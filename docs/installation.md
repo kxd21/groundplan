@@ -31,17 +31,67 @@ will not open.
 2. Eject the disk image.
 3. Open Groundplan from Applications.
 
-**"Groundplan can't be opened because Apple cannot check it for malicious
-software."** This appears when the build has not been notarised by Apple.
-Right-click (or Control-click) the app and choose **Open**, then **Open** again
-in the dialog. You only have to do this once.
+### The first open needs one extra step
 
-**"Groundplan is damaged and can't be opened."** macOS shows this for a
-downloaded app whose quarantine flag it cannot resolve. Remove the flag:
+macOS will refuse to open Groundplan the first time, with a message like
+**"Apple could not verify 'Groundplan' is free of malware that may harm your
+Mac or compromise your privacy."**
+
+This is expected, and it is not a warning about Groundplan specifically. Apple
+shows it for any app that has not been through their paid notarisation service.
+Groundplan is distributed without it, so the message appears for every copy.
+
+**You approve the app once. It opens normally forever after.**
+
+Which steps you follow depends on your macOS version — Apple changed this in
+macOS 15. Check with **Apple menu → About This Mac**.
+
+#### macOS 15 (Sequoia), macOS 26 (Tahoe) and later
+
+Control-clicking no longer works on these versions. Use System Settings:
+
+1. Double-click **Groundplan**. A dialog says it cannot be opened. Click
+   **Done**.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll down to the **Security** section. You will see
+   *"Groundplan" was blocked to protect your Mac.*
+4. Click **Open Anyway**.
+5. Authenticate with Touch ID or your password.
+6. A final dialog appears. Click **Open Anyway** again.
+
+Groundplan opens, and opens directly from then on.
+
+> The Security section only shows the message for about an hour after the app
+> was blocked. If it is not there, double-click Groundplan again and go
+> straight back to Privacy & Security.
+
+#### macOS 14 (Sonoma) and earlier
+
+1. **Control-click** (or right-click) **Groundplan** in Applications.
+2. Choose **Open**.
+3. Click **Open** in the dialog.
+
+The Control-click matters: it is what turns the block into a choice.
+Double-clicking will only ever refuse.
+
+### If it says "damaged and can't be opened"
+
+macOS shows this for a downloaded app whose quarantine flag it cannot resolve —
+usually after the file was moved between machines. Remove the flag:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Groundplan.app
 ```
+
+Then open the app normally.
+
+### Why not just sign it?
+
+Removing the prompt requires an Apple Developer Program membership and a
+"Developer ID Application" certificate, which carries an annual fee. The
+project is not enrolled, so the one-time approval above is the trade. The
+build **is** signed — ad-hoc, which is what lets it run on Apple silicon at all
+— it is simply not notarised by Apple.
 
 ---
 

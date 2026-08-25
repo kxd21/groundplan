@@ -26,10 +26,18 @@ installer for your Mac, Windows, or Linux machine — or grab a file from
 | Windows, no admin | `Groundplan-Portable-<version>-win-x64.exe` |
 | Linux (x64) | `Groundplan-<version>-linux-x64.AppImage` |
 
-Gatekeeper / SmartScreen will warn on first open (builds are not Apple-notarised
-or Authenticode-signed yet). Right-click → Open on Mac, or More info → Run
-anyway on Windows — once. Step-by-step:
-[docs/installation.md](docs/installation.md).
+**macOS and Windows will both block the first open.** The builds are not
+Apple-notarised or Authenticode-signed, so this happens to every copy. You
+approve it once.
+
+- **macOS 15 Sequoia / 26 Tahoe and later** — double-click, click *Done*, then
+  **System Settings → Privacy & Security → Open Anyway**, authenticate, and
+  *Open Anyway* once more. Control-clicking no longer works on these versions.
+- **macOS 14 Sonoma and earlier** — Control-click the app → *Open* → *Open*.
+- **Windows** — *More info* → *Run anyway*.
+
+Step-by-step, with the exact wording macOS uses:
+[docs/installation.md](docs/installation.md#macos).
 
 Already installed? **Help → Check for Updates…**, or
 **Help → Install Update from USB…** when the venue network is useless.
@@ -200,12 +208,23 @@ with isolated user data, and uploads the installers.
 
 ### Running it on another machine
 
-Current macOS builds are **ad-hoc signed**, not Developer ID signed or
-notarised. Current Windows builds are not Authenticode signed. They are suitable
-for controlled internal testing, but they are not production distribution
-artifacts: Gatekeeper or SmartScreen will warn on another machine. Production
-release requires Developer ID signing/notarisation on macOS and Authenticode
-signing on Windows. Do not train customers to bypass those protections.
+macOS builds are **ad-hoc signed**, not Developer ID signed or notarised, and
+Windows builds are not Authenticode signed. This is a deliberate choice, not an
+oversight: notarisation needs a paid Apple Developer Program membership and a
+Developer ID certificate, and the project is not enrolled.
+
+The consequence is that Gatekeeper and SmartScreen warn on first open, on every
+machine, for every copy. The install guide says so plainly and walks through the
+one-time approval rather than pretending it will not happen — a user who is
+surprised by that dialog assumes the download is broken or hostile, and a user
+who was told to expect it does not.
+
+Two things this does not mean. It is not advice to disable Gatekeeper: the
+approval is per-app and leaves every other protection where it was. And it is
+not permanent — `npm run dist:mac:signed` produces a signed, notarised build the
+moment a Developer ID certificate is available, and
+`npm run verify:mac-signature` reports whether a build will open without the
+prompt.
 
 Only one production copy of Groundplan runs at a time, so opening a second plan
 hands it to the existing window instead of starting a competing writer.
