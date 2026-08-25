@@ -104,6 +104,23 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Electron/WebKit can retain a stale native text fill when a control moves
+   between the dark editor and one of the light planning workspaces. Keep the
+   glyph paint and insertion caret tied to the control's computed text colour;
+   this also prevents typed values from disappearing while the field remains
+   otherwise correctly themed. */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']),
+textarea,
+select {
+  -webkit-text-fill-color: currentColor;
+  caret-color: currentColor;
+}
+
+input::placeholder,
+textarea::placeholder {
+  -webkit-text-fill-color: currentColor;
+}
+
 /* Measurements and counts never reflow as digits change. */
 .num {
   font-variant-numeric: tabular-nums;
@@ -124,6 +141,7 @@ body {
 
 button {
   font: inherit;
+  line-height: 1.2;
   color: var(--ink-2);
   background: transparent;
   border: 1px solid transparent;
@@ -138,6 +156,15 @@ button {
     color var(--fast),
     border-color var(--fast);
   white-space: nowrap;
+}
+
+/* SVGs are inline elements by default, so Chromium reserves a text-baseline
+   descender beneath them. Treat interface glyphs as blocks: their box now
+   shares the same optical centre as the adjacent label in every control. */
+.app button > svg,
+.app [role='button'] > svg {
+  display: block;
+  flex: 0 0 auto;
 }
 
 button:hover:not(:disabled) {
@@ -741,7 +768,7 @@ button:disabled {
   width: 100%;
   padding: 6px 8px;
   color: var(--ink);
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   font: inherit;
@@ -918,7 +945,7 @@ button:disabled {
 
 .search input {
   width: 100%;
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   border: 1px solid var(--line);
   border-radius: var(--radius);
   color: var(--ink);
@@ -1834,7 +1861,7 @@ button.text-action.is-danger:hover:not(:disabled) {
   padding: 9px 10px;
   border: 1px solid var(--line-strong, var(--line));
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   color: var(--ink);
   font: inherit;
   line-height: 1.45;
@@ -2012,7 +2039,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 
 .field input,
 .field textarea {
-  background: var(--bg);
+  background: var(--surface-1, var(--bg));
   border: 1px solid var(--line);
   border-radius: var(--radius);
   color: var(--ink);
@@ -2030,6 +2057,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 .field textarea:focus {
   outline: none;
   border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .field input:disabled,
@@ -2091,7 +2119,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 .colour-row > input:not([type='color']) {
   min-width: 0;
   flex: 1;
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   border: 1px solid var(--line);
   border-radius: var(--radius);
   color: var(--ink);
@@ -3285,7 +3313,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 }
 
 .gear-qty-input {
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   border-color: var(--accent-line);
   color: var(--ink);
   font: inherit;
@@ -3322,7 +3350,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 }
 
 .gear-desc-input {
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   border-color: var(--accent-line);
   font: inherit;
   outline: none;
@@ -3764,7 +3792,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 .size-row input {
   flex: 1;
   min-width: 0;
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   border: 1px solid var(--line);
   border-radius: var(--radius);
   color: var(--ink);
@@ -3848,7 +3876,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 }
 
 .field select {
-  background: var(--bg);
+  background: var(--surface-1, var(--bg));
   border: 1px solid var(--line);
   border-radius: var(--radius);
   color: var(--ink);
@@ -3859,6 +3887,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 .field select:focus {
   outline: none;
   border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .seat-kinds {
@@ -10083,7 +10112,10 @@ a,
 
 .toolbar.is-plan-toolbar .ribbon-action > span,
 .toolbar.is-plan-toolbar .ribbon-group .tool-button > span {
+  display: inline-flex;
+  min-height: 16px;
   max-width: 96px;
+  align-items: center;
   max-height: none;
   white-space: nowrap;
   overflow: hidden;
@@ -13403,10 +13435,16 @@ a,
   width: 100%;
   min-height: 36px;
   justify-content: flex-start;
+  gap: 9px;
   padding: 7px 10px;
   color: var(--home-ink-2);
   border-radius: var(--radius-sm);
   font-size: 12.5px;
+}
+.welcome-nav > button > svg {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
 }
 .welcome-nav > button:hover { color: var(--home-ink); background: var(--home-panel-2); }
 .welcome-nav > button.is-current { color: #0a5ea8; background: #e9f4ff; font-weight: 700; }
@@ -15956,8 +15994,28 @@ a,
 }
 
 .show-setup-kit-select {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
   max-width: 100%;
+  padding: 0 30px 0 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.2;
+  background-color: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   text-overflow: ellipsis;
+}
+
+.show-setup-kit-select:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+}
+
+.show-setup-kit-select:focus-visible {
+  outline: 2px solid var(--ring, var(--accent-line));
+  outline-offset: 1px;
 }
 
 .show-setup-kit-meta {
@@ -16094,7 +16152,7 @@ a,
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--bg);
+  background: var(--surface-1, var(--surface, var(--bg)));
   color: var(--ink);
   font: inherit;
 }
@@ -16502,8 +16560,9 @@ a,
   justify-self: start;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
+  gap: 7px;
+  min-height: 28px;
+  padding: 5px 8px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -16514,6 +16573,11 @@ a,
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.welcome-recent-duplicate > svg {
+  width: 14px;
+  height: 14px;
 }
 
 .welcome-recent-duplicate:hover {
@@ -17260,9 +17324,11 @@ a,
 }
 
 .editor-workspace-action {
-  min-height: 48px;
-  padding: 5px 2px 4px;
-  gap: 3px;
+  grid-template-rows: 20px 12px;
+  min-height: 50px;
+  align-content: center;
+  padding: 4px 2px;
+  gap: 4px;
 }
 
 .editor-workspace-action::before {
@@ -17278,17 +17344,22 @@ a,
 
 .editor-rail-icon {
   display: grid;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   place-items: center;
+}
+
+.editor-rail-icon > svg {
+  width: 18px;
+  height: 18px;
 }
 
 .editor-rail-label {
   max-width: 60px;
   overflow: hidden;
-  font-size: 9.5px;
-  font-weight: 580;
-  line-height: 1.1;
+  font-size: 10px;
+  font-weight: 620;
+  line-height: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -17344,15 +17415,69 @@ a,
 }
 
 .editor-tool-action {
-  width: 29px;
-  min-height: 29px;
+  width: 31px;
+  min-height: 31px;
+  padding: 0;
   justify-self: center;
+}
+
+.editor-tool-action .editor-rail-icon,
+.editor-tool-action .editor-rail-icon > svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* The pointer path carries most of its visual weight on the left side of its
+   square viewBox. A one-pixel optical correction makes it read centred inside
+   the active tool tile without moving the neighbouring direct-select tool. */
+.editor-tool-action[data-tool-id='select'] .editor-rail-icon {
+  transform: translateX(1px);
 }
 
 .editor-tool-action.is-active {
   color: #fff;
   background: var(--accent-fill);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+/* Laptop-height windows keep the complete tool set reachable without hiding
+   the lower drawing tools below the status bar. The full-height rail remains
+   more relaxed; only its vertical rhythm tightens here. */
+@media (max-height: 760px) {
+  .editor-workspace-actions {
+    padding-block: 4px;
+    gap: 1px;
+  }
+
+  .editor-workspace-action {
+    grid-template-rows: 18px 10px;
+    min-height: 42px;
+    gap: 2px;
+  }
+
+  .editor-workspace-action::before {
+    top: 7px;
+    bottom: 7px;
+  }
+
+  .editor-rail-label {
+    font-size: 9.5px;
+    line-height: 10px;
+  }
+
+  .editor-tools-label {
+    padding-block: 6px 4px;
+  }
+
+  .editor-tool-actions {
+    gap: 2px;
+    padding-bottom: 5px;
+  }
+
+  .editor-tool-action {
+    width: 28px;
+    min-height: 28px;
+  }
 }
 
 /* One scroll container per dock panel, under a titlebar that does not scroll.
@@ -17381,8 +17506,8 @@ a,
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
-  min-height: 40px;
-  padding: 0 8px 0 12px;
+  min-height: 44px;
+  padding: 0 8px 0 13px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
@@ -17397,8 +17522,8 @@ a,
 }
 
 .dock-titlebar-title {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 650;
   letter-spacing: 0.01em;
   color: var(--ink);
   white-space: nowrap;
@@ -17420,8 +17545,8 @@ a,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;

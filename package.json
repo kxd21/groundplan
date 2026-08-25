@@ -17,11 +17,11 @@
     "check": "npm run typecheck && npm test && npm run test:ui && npm run build",
     "audit:release": "tsx tools/audit-release.ts",
     "usb": "tsx tools/usb-release.ts",
-    "dist": "npm run build:starter-inventory && npm run build && electron-builder --publish never",
-    "dist:mac": "npm run build:starter-inventory && npm run build && electron-builder --mac --publish never",
+    "dist": "npm run build:starter-inventory && npm run build:dmg-background && npm run build && electron-builder --publish never",
+    "dist:mac": "npm run build:starter-inventory && npm run build:dmg-background && npm run build && electron-builder --mac --publish never",
     "dist:win": "npm run build:starter-inventory && npm run build && electron-builder --win --publish never",
     "dist:linux": "npm run build:starter-inventory && npm run build && electron-builder --linux --publish never",
-    "dist:all": "npm run build:starter-inventory && npm run build && electron-builder --mac --win --linux --publish never",
+    "dist:all": "npm run build:starter-inventory && npm run build:dmg-background && npm run build && electron-builder --mac --win --linux --publish never",
     "package:dir": "npm run build:starter-inventory && npm run build && electron-builder --dir --config.directories.output=release-smoke",
     "smoke:packaged": "tsx tools/package-smoke.ts",
     "scan": "tsx tools/scan-corpus.ts",
@@ -49,8 +49,9 @@
     "test:workspace": "tsx tools/workspace-test.ts",
     "test:ui": "node tools/ui-gate.mjs",
     "gear:harvest": "tsx tools/harvest-plan-symbols.ts",
-    "dist:mac:signed": "npm run build:starter-inventory && npm run build && GROUNDPLAN_SIGNED=1 electron-builder --mac --config electron-builder.signed.yml --publish never",
-    "verify:mac-signature": "bash tools/verify-mac-signature.sh"
+    "dist:mac:signed": "npm run build:starter-inventory && npm run build:dmg-background && npm run build && GROUNDPLAN_SIGNED=1 electron-builder --mac --config electron-builder.signed.yml --publish never",
+    "verify:mac-signature": "bash tools/verify-mac-signature.sh",
+    "build:dmg-background": "electron tools/make-dmg-background.cjs"
   },
   "dependencies": {
     "cfb": "^1.2.2",

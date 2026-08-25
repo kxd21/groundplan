@@ -16,6 +16,7 @@ interface IconProps {
 const base = (size: number) => ({
   width: size,
   height: size,
+  style: { display: 'block', flexShrink: 0 },
   viewBox: '0 0 16 16',
   fill: 'none',
   stroke: 'currentColor',
