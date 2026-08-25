@@ -27,6 +27,17 @@ interface Props {
   /** Start canvas two-point calibrate (closes studio; App owns the clicks). */
   onStartTwoPointScale?: () => void;
   expanded?: boolean;
+  /**
+   * The plan already has something drawn on it.
+   *
+   * Tracing a site plan is the FIRST thing you do on a blank sheet and never
+   * the thing you do to a finished one, but the empty state pitched it the
+   * same way either way: a 340px illustrated card, three lines of copy and a
+   * button, permanently occupying the top third of the Layers tab on plans
+   * that were finished years ago. On a drawing that already has content the
+   * offer collapses to one line, and still opens the same picker.
+   */
+  planHasContent?: boolean;
 }
 
 function fitRect(
@@ -58,6 +69,7 @@ export default function BackgroundLayerPanel({
   onError,
   onStartTwoPointScale,
   expanded = false,
+  planHasContent = false,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
@@ -309,7 +321,17 @@ export default function BackgroundLayerPanel({
         onChange={(event) => void upload(event.target.files?.[0])}
       />
 
-      {!background ? (
+      {!background && planHasContent ? (
+        <button
+          type="button"
+          className="background-add-compact"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+        >
+          <IconFile size={14} />
+          <span>{busy ? 'Preparing drawing…' : 'Add a site plan or CAD export…'}</span>
+        </button>
+      ) : !background ? (
         <div className="background-empty-state">
           <span className="background-empty-visual"><IconFile size={24} /></span>
           <strong>Start from a site plan or CAD export</strong>

@@ -7,6 +7,7 @@ import {
   useState,
   type FocusEvent as ReactFocusEvent,
   type FormEvent,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -54,6 +55,7 @@ import {
   IconFolder,
   IconEye,
   IconChair,
+  IconCalculator,
   IconDirectSelect,
   IconLock,
   IconPlus,
@@ -96,12 +98,13 @@ import {
   IconHand,
   IconStar,
 } from './icons.js';
-import type { Layer, Scene } from '../../format/scene.js';
+import type { Scene } from '../../format/scene.js';
 import type { PlanBackground } from '../../format/companion.js';
 import RoomPanel from './RoomPanel.js';
 import { countFurniture } from './furniture-counts.js';
 import ObjectPalette from './ObjectPalette.js';
 import PlanToolDock, { type PlanToolDockSide } from './PlanToolDock.js';
+import EditorToolRail from './EditorToolRail.js';
 import InsertPicker from './InsertPicker.js';
 import ShapeEditorWizard from './ShapeEditorWizard.js';
 import BuildStageDialog from './BuildStageDialog.js';
@@ -111,6 +114,8 @@ import RoomRefineWorkspace from './RoomRefineWorkspace.js';
 import WallEditHud from './WallEditHud.js';
 import WallEditToolbar from './WallEditToolbar.js';
 import CreateDialog from './CreateDialog.js';
+import DockTitlebar from './DockTitlebar.js';
+import PlanContextMenu, { type PlanMenuEntry } from './PlanContextMenu.js';
 import InventoryItemEditor, { type EditableInventoryItem } from './InventoryItemEditor.js';
 import BackgroundLayerPanel from './BackgroundLayerPanel.js';
 import BackgroundImageDialog from './BackgroundImageDialog.js';
@@ -126,7 +131,6 @@ import { ScrubLabel } from './ScrubLabel.js';
 import { CommandPalette, type RunnableCommand } from './CommandPalette.js';
 import {
   COMMAND_CATALOG,
-  SHELL_MODES,
   shortcutCheatSheet,
   type CommandContext,
   type CommandId,
@@ -159,7 +163,7 @@ const api = window.groundplan;
 
 type LayerGroupId = 'structure' | 'content' | 'markup';
 type SelectionScope =
-  | { kind: 'layer'; id: Layer }
+  | { kind: 'layer'; id: string }
   | { kind: 'group'; id: LayerGroupId };
 
 interface LayerListItem {
@@ -191,46 +195,101 @@ const LAYER_GROUPS: Array<{
   { id: 'markup', label: 'Markup', description: 'Dimensions and plan notes' },
 ];
 
+/**
+ * The layers a production actually works in.
+ *
+ * These replace the five GEOMETRY layers the panel used to show — walls,
+ * regions, furniture, annotation, other — which describe how the file stores a
+ * shape and tell a user nothing about what the shape is for. Nobody switches
+ * off "furniture"; they switch off everything that is not Video.
+ *
+ * The ids, order and match rules are `DEFAULT_LAYERS` in `format/layers.ts`,
+ * which has carried this taxonomy since before the panel could show it. What
+ * is added here is what the interface needs and the format does not care
+ * about: a tint for the swatch, and a plain description.
+ */
 const LAYERS: Array<{
-  id: Layer;
+  id: string;
   label: string;
   description: string;
   tint: string;
   group: LayerGroupId;
 }> = [
   {
-    id: 'walls',
-    label: 'Walls & structure',
+    id: 'architecture',
+    label: 'Architecture',
     description: 'Walls, doors, columns, and room edges',
     tint: '#8796a8',
     group: 'structure',
   },
   {
-    id: 'region',
-    label: 'Regions',
-    description: 'Named areas and planning zones',
-    tint: '#51b879',
+    id: 'staging',
+    label: 'Staging',
+    description: 'Stages, risers, decks, and stairs',
+    tint: '#a9743c',
     group: 'structure',
   },
   {
-    id: 'furniture',
-    label: 'Tables & equipment',
-    description: 'Placed inventory and gear items',
+    id: 'seating',
+    label: 'Seating',
+    description: 'Chairs, tables, and banquet rounds',
     tint: '#438fe8',
     group: 'content',
   },
   {
-    id: 'other',
-    label: 'Other geometry',
-    description: 'Imported and free-drawn shapes',
+    id: 'video',
+    label: 'Video',
+    description: 'Screens, projectors, LED, and cameras',
+    tint: '#2f9e8f',
+    group: 'content',
+  },
+  {
+    id: 'lighting',
+    label: 'Lighting',
+    description: 'Fixtures, truss, and washes',
+    tint: '#d99a29',
+    group: 'content',
+  },
+  {
+    id: 'rigging',
+    label: 'Rigging',
+    description: 'Truss, motors, hoists, and points',
+    tint: '#7a6a5d',
+    group: 'content',
+  },
+  {
+    id: 'audio',
+    label: 'Audio',
+    description: 'Speakers, subs, consoles, and mics',
     tint: '#9173cf',
     group: 'content',
   },
   {
+    id: 'power',
+    label: 'Power & data',
+    description: 'Cable runs, feeders, distros, and DMX',
+    tint: '#c2504a',
+    group: 'content',
+  },
+  {
+    id: 'drape',
+    label: 'Drape & scenic',
+    description: 'Masking, pipe, backdrops, and scenic',
+    tint: '#6b7f52',
+    group: 'content',
+  },
+  {
+    id: 'catering',
+    label: 'Catering',
+    description: 'Bars, buffets, and service points',
+    tint: '#b5763f',
+    group: 'content',
+  },
+  {
     id: 'annotation',
-    label: 'Dimensions & labels',
+    label: 'Annotation',
     description: 'Measurements, dimensions, and text',
-    tint: '#d99a29',
+    tint: '#51b879',
     group: 'markup',
   },
 ];
@@ -356,6 +415,18 @@ interface PlanTab {
 }
 
 /** One foot in logical units — duplicate offset and coarse layout. */
+/**
+ * Dock width bounds.
+ *
+ * The floor is what the Inspect panel's three-up tab strip and its widest
+ * layer row need before they start clipping words; the old 252px column was
+ * below it, which is why "Plan struct…", "Walls & str…" and the plan's own
+ * name were all truncated. The ceiling keeps the drawing the larger half of
+ * the window on a 1280px laptop screen.
+ */
+const DOCK_MIN_WIDTH = 280;
+const DOCK_MAX_WIDTH = 560;
+
 const FOOT = 120;
 const UNITS_PER_INCH = 10;
 
@@ -441,7 +512,24 @@ export function App() {
   >(null);
   const [planFolderDraft, setPlanFolderDraft] = useState('');
   const [recoveries, setRecoveries] = useState<RecoveryEntry[]>([]);
-  const [visible, setVisible] = useState<Set<Layer>>(new Set(LAYERS.map((l) => l.id)));
+  const [visible, setVisible] = useState<Set<string>>(new Set(LAYERS.map((l) => l.id)));
+  /**
+   * Layers that are drawn but not touchable.
+   *
+   * `LayerDefinition.locked` has existed in the format since the layer system
+   * was written, and `itemEditable()` has been enforcing it for just as long —
+   * against a layer set no user could reach. This is that flag, finally
+   * connected to a checkbox.
+   */
+  const [lockedLayers, setLockedLayers] = useState<Set<string>>(new Set(['architecture']));
+  /** Layers left off the printed sheet, by id. */
+  const [unprintedLayers, setUnprintedLayers] = useState<Set<string>>(new Set());
+
+  /** The layers that reach a sheet: visible, and not held back from print. */
+  const printableLayers = useMemo(
+    () => new Set([...visible].filter((id) => !unprintedLayers.has(id))),
+    [visible, unprintedLayers],
+  );
   const [paper, setPaper] = useState(true);
   const [appearance, setAppearance] = useState<SettingsAppPreferences['appearance']>(() => {
     const saved = localStorage.getItem('groundplan:appearance');
@@ -496,6 +584,19 @@ export function App() {
     (focus: 'walls' | 'room') => dispatchWorkspace({ type: 'room-focus', focus }),
     [],
   );
+  /**
+   * One width for every Plan dock panel.
+   *
+   * Browse, Place, Inspect and Setup used to be 216px, 216px, 252px and
+   * 320-400px respectively — four widths for four panels that are never on
+   * screen together, so switching mode resized the drawing. The user sets this
+   * once by dragging the dock edge and every panel honours it.
+   */
+  const [dockWidth, setDockWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('groundplan:dock-width'));
+    return Number.isFinite(saved) && saved >= DOCK_MIN_WIDTH && saved <= DOCK_MAX_WIDTH ? saved : 340;
+  });
+  const dockResizeRef = useRef<HTMLButtonElement | null>(null);
   const [toolDockCompact, setToolDockCompact] = useState(
     () => localStorage.getItem('groundplan:tool-dock-compact') === 'true',
   );
@@ -550,6 +651,11 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  /** An open right-click menu, and what it was opened on. */
+  const [contextMenu, setContextMenu] = useState<{
+    at: { x: number; y: number };
+    nodeId: number | null;
+  } | null>(null);
   const [selectionScope, setSelectionScope] = useState<SelectionScope | null>(null);
   /** The details panel describes one object; with a group, that is the first. */
   const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
@@ -856,8 +962,8 @@ export function App() {
       return new Set<LayerGroupId>(['structure']);
     }
   });
-  const [openItemLayers, setOpenItemLayers] = useState<Set<Layer>>(new Set());
-  const [layerItemLimits, setLayerItemLimits] = useState<Partial<Record<Layer, number>>>({});
+  const [openItemLayers, setOpenItemLayers] = useState<Set<string>>(new Set());
+  const [layerItemLimits, setLayerItemLimits] = useState<Record<string, number>>({});
   const [inventory, setInventory] = useState<InventoryState | null>(null);
   /** Full inventory for Insert/ObjectPalette matching — never filtered by palette search. */
   const [catalogInventory, setCatalogInventory] = useState<InventoryState | null>(null);
@@ -895,6 +1001,17 @@ export function App() {
   const [printPaper, setPrintPaper] = useState('Tabloid');
   const [printLandscape, setPrintLandscape] = useState(true);
   const [printSubtitle, setPrintSubtitle] = useState('');
+  /**
+   * Who drew the sheet, and which revision it is.
+   *
+   * Both belong on a drawing that gets issued: without a revision there is no
+   * way to say "we are working to Rev C" in a production meeting, and without
+   * a name there is nobody to ask about it. They persist because "drawn by" is
+   * effectively constant for one operator and a revision carries between
+   * reissues of the same plan.
+   */
+  const [printDrawnBy, setPrintDrawnBy] = useState('');
+  const [printRevision, setPrintRevision] = useState('');
   const [dxfIncludeSchedule, setDxfIncludeSchedule] = useState(true);
   const [dxfVisibleOnly, setDxfVisibleOnly] = useState(true);
   const [libDept, setLibDept] = useState<string | null>(null);
@@ -1094,6 +1211,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('groundplan:recent-inventory', JSON.stringify(recentInventory));
   }, [recentInventory]);
+
+  useEffect(() => {
+    localStorage.setItem('groundplan:dock-width', String(Math.round(dockWidth)));
+  }, [dockWidth]);
 
   useEffect(() => {
     localStorage.setItem('groundplan:tool-dock-compact', String(toolDockCompact));
@@ -1450,13 +1571,13 @@ export function App() {
 
   const exportSvg = useCallback(async () => {
     if (!doc) return;
-    const svg = toSvg(doc.scene, visible, printScale, planBackground);
+    const svg = toSvg(doc.scene, printableLayers, printScale, planBackground, { paper: printPaper, landscape: printLandscape });
     const saved = await api.exportSvg(doc.name.replace(/\.[^.]+$/, '') + '.svg', svg);
     if (saved) {
       setStatus(`Exported ${saved.split(/[\\/]/).pop()}`);
       window.setTimeout(() => setStatus(null), 2600);
     }
-  }, [doc, planBackground, printScale, visible]);
+  }, [doc, planBackground, printScale, printableLayers, printPaper, printLandscape]);
 
   // Preferences seed the export and drawing defaults, and are re-read whenever
   // the settings window closes.
@@ -1467,7 +1588,14 @@ export function App() {
       .then((value) => {
         if (!live || !value) return;
         const s = value as {
-          print: { scale: string; paper: string; landscape: boolean; subtitle: string };
+          print: {
+            scale: string;
+            paper: string;
+            landscape: boolean;
+            subtitle: string;
+            drawnBy?: string;
+            revision?: string;
+          };
           dxf: { includeSchedule: boolean; visibleLayersOnly: boolean };
           drawing: {
             snapStep: number;
@@ -1488,6 +1616,8 @@ export function App() {
         setPrintPaper(s.print.paper);
         setPrintLandscape(s.print.landscape);
         setPrintSubtitle(s.print.subtitle);
+        setPrintDrawnBy(s.print.drawnBy ?? '');
+        setPrintRevision(s.print.revision ?? '');
         setDxfIncludeSchedule(s.dxf.includeSchedule);
         setDxfVisibleOnly(s.dxf.visibleLayersOnly);
         setSnapStep(s.drawing.snapStep);
@@ -2672,7 +2802,7 @@ export function App() {
    */
   const exportDxf = useCallback(async () => {
     if (!doc) return;
-    const reply = await api.exportDxf(dxfVisibleOnly ? [...visible] : undefined, dxfIncludeSchedule);
+    const reply = await api.exportDxf(dxfVisibleOnly ? [...printableLayers] : undefined, dxfIncludeSchedule);
     if (reply.cancelled) return;
     if (reply.ok) {
       showStatus(
@@ -2680,7 +2810,7 @@ export function App() {
         4200,
       );
     } else if (reply.reason) notify(reply.reason);
-  }, [doc, visible, notify, showStatus]);
+  }, [doc, printableLayers, dxfVisibleOnly, dxfIncludeSchedule, notify, showStatus]);
 
   /**
    * Select All, which means two different things.
@@ -2689,6 +2819,27 @@ export function App() {
    * object. The menu owns the shortcut on macOS, so the decision has to be made
    * here rather than left to whichever handler happens to see the key first.
    */
+  /**
+   * Dimension every wall of the room in one step.
+   *
+   * The engine has done this since the room builder shipped — it is the same
+   * pass the New Plan dialog's "Dimension the room automatically" runs — but
+   * once a plan was open there was no way to ask for it again, so a room that
+   * grew a wall could not be re-dimensioned without drawing each one by hand.
+   */
+  const dimensionRoomAutomatically = useCallback(
+    async (options: { corners?: boolean } = {}) => {
+      const reply = await api.roomDimension(options);
+      if (!reply.ok) {
+        notify(reply.reason ?? 'The room could not be dimensioned');
+        return;
+      }
+      if (reply.doc) setDoc(reply.doc as Doc);
+      showStatus(reply.note ?? 'Room dimensioned');
+    },
+    [notify, showStatus],
+  );
+
   const selectAll = useCallback(() => {
     const focused = document.activeElement as HTMLElement | null;
     if (
@@ -2702,7 +2853,7 @@ export function App() {
     setSelectedIds([
       ...new Set(doc.scene.primitives.filter((p) => visible.has(p.layer)).map((p) => p.selectId)),
     ]);
-  }, [doc, visible]);
+  }, [doc, printableLayers]);
 
   const printPdf = useCallback(async () => {
     if (!doc || printBusy || visible.size === 0) return;
@@ -2710,7 +2861,7 @@ export function App() {
     try {
       const extent = doc.scene.roomExtent ?? doc.scene.extent;
       const reply = await api.printPdf({
-        svg: toSvg(doc.scene, visible, printScale, planBackground),
+        svg: toSvg(doc.scene, printableLayers, printScale, planBackground, { paper: printPaper, landscape: printLandscape }),
         title: doc.scene.title ?? doc.name.replace(/\.[^.]+$/, ''),
         subtitle: gear?.lists[gearIndex]?.jobNumber
           ? `Job ${gear.lists[gearIndex].jobNumber}`
@@ -2720,6 +2871,8 @@ export function App() {
         venue: planIdentityFields.venue || undefined,
         event: planIdentityFields.event || undefined,
         contact: planIdentityFields.contact || undefined,
+        drawnBy: printDrawnBy.trim() || undefined,
+        revision: printRevision.trim() || undefined,
         roomWidth: extent ? extent.maxX - extent.minX : undefined,
         roomHeight: extent ? extent.maxY - extent.minY : undefined,
         ceilingHeight: roomCeilingHeight > 0 ? roomCeilingHeight : undefined,
@@ -2739,6 +2892,8 @@ export function App() {
             paper: printPaper,
             landscape: printLandscape,
             subtitle: printSubtitle,
+            drawnBy: printDrawnBy,
+            revision: printRevision,
           },
         });
         const name = reply.path?.split(/[\\/]/).pop();
@@ -2758,7 +2913,7 @@ export function App() {
     } finally {
       setPrintBusy(false);
     }
-  }, [doc, printBusy, visible, printScale, printPaper, printLandscape, printSubtitle, gear, gearIndex, notify, showStatus, planBackground, planIdentityFields, roomCeilingHeight]);
+  }, [doc, printBusy, printableLayers, printScale, printPaper, printLandscape, printSubtitle, printDrawnBy, printRevision, gear, gearIndex, notify, showStatus, planBackground, planIdentityFields, roomCeilingHeight]);
 
   /** Places a inventory item where it was dropped on the drawing. */
   const dropItem = useCallback(
@@ -3475,10 +3630,13 @@ export function App() {
       notify(unitSystem === 'metric' ? 'Enter X and Y as lengths (for example 3.6m).' : 'Enter X and Y as lengths (for example 12\' 6").');
       return;
     }
-    const dx = x - selection.x;
-    const dy = y - selection.y;
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
-    applied((await api.batch('move', [selection.nodeId], dx, dy)) as { ok: boolean; reason?: string; doc?: Doc });
+    if (Math.abs(x - selection.x) < 0.5 && Math.abs(y - selection.y) < 0.5) return;
+    // Absolute placement rather than a delta computed here. `selection` is a
+    // cached snapshot, so subtracting from it puts the object in the wrong
+    // place whenever it moved between the read and the commit — a scrub, a
+    // nudge, or a partner in a linked stack. The main process owns the live
+    // bounds and does the arithmetic there, in one undoable step.
+    applied((await api.moveTo(selection.nodeId, x, y)) as { ok: boolean; reason?: string; doc?: Doc });
   }, [selection, selectedId, doc?.editable, unitSystem, notify, applied]);
 
   const commitSelectionAngle = useCallback(async () => {
@@ -3995,7 +4153,7 @@ export function App() {
     [planFolders, selectedPlanFolder],
   );
 
-  const toggleLayer = (id: Layer) => {
+  const toggleLayer = (id: string) => {
     setVisible((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -4029,7 +4187,7 @@ export function App() {
     });
   }, []);
 
-  const toggleLayerItemsOpen = useCallback((layer: Layer) => {
+  const toggleLayerItemsOpen = useCallback((layer: string) => {
     setOpenItemLayers((current) => {
       const next = new Set(current);
       if (next.has(layer)) next.delete(layer);
@@ -4039,8 +4197,33 @@ export function App() {
     setLayerItemLimits((current) => (current[layer] ? current : { ...current, [layer]: 50 }));
   }, []);
 
+  const toggleLayerLock = useCallback((id: string) => {
+    setLockedLayers((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  /**
+   * Whether a layer reaches paper.
+   *
+   * Separate from visibility on purpose: a cable run you need on screen while
+   * routing is not something a client wants on the seating plan, and hiding it
+   * to print would mean turning it back on afterwards and remembering to.
+   */
+  const toggleLayerPrinted = useCallback((id: string) => {
+    setUnprintedLayers((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const showOnlyLayer = useCallback(
-    (id: Layer) => {
+    (id: string) => {
       const layer = LAYERS.find((candidate) => candidate.id === id);
       setVisible(new Set([id]));
       showStatus(`Showing only ${layer?.label ?? id}`);
@@ -4049,19 +4232,19 @@ export function App() {
   );
 
   const layerCounts = useMemo(() => {
-    const idsByLayer = new Map<Layer, Set<number>>(LAYERS.map((layer) => [layer.id, new Set()]));
+    const idsByLayer = new Map<string, Set<number>>(LAYERS.map((layer) => [layer.id, new Set()]));
     for (const primitive of doc?.scene.primitives ?? []) {
-      idsByLayer.get(primitive.layer)?.add(primitive.selectId);
+      idsByLayer.get(primitive.discipline)?.add(primitive.selectId);
     }
     return new Map(LAYERS.map((layer) => [layer.id, idsByLayer.get(layer.id)?.size ?? 0]));
   }, [doc?.scene.primitives]);
 
   const layerItems = useMemo(() => {
-    const itemsByLayer = new Map<Layer, Map<number, LayerListItem>>(
+    const itemsByLayer = new Map<string, Map<number, LayerListItem>>(
       LAYERS.map((layer) => [layer.id, new Map()]),
     );
     for (const primitive of doc?.scene.primitives ?? []) {
-      const items = itemsByLayer.get(primitive.layer);
+      const items = itemsByLayer.get(primitive.discipline);
       if (!items || items.has(primitive.selectId)) continue;
       const kind = LAYER_ITEM_KINDS[primitive.cls] ?? primitive.cls.replace(/^RV/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
       const owner = primitive.owner?.trim();
@@ -4106,7 +4289,7 @@ export function App() {
   }, [layerItems, layerQuery]);
 
   const selectLayerSet = useCallback(
-    (layerIds: Layer[], scope: SelectionScope, label: string) => {
+    (layerIds: string[], scope: SelectionScope, label: string) => {
       if (!doc) return;
       const ids = [
         ...new Set(
@@ -4136,7 +4319,7 @@ export function App() {
   );
 
   const selectLayer = useCallback(
-    (id: Layer) => {
+    (id: string) => {
       const layer = LAYERS.find((candidate) => candidate.id === id);
       selectLayerSet([id], { kind: 'layer', id }, layer?.label ?? id);
     },
@@ -4156,7 +4339,7 @@ export function App() {
   );
 
   const selectLayerItem = useCallback(
-    (layer: Layer, item: LayerListItem) => {
+    (layer: string, item: LayerListItem) => {
       setVisible((current) => new Set(current).add(layer));
       dispatchTool({ type: 'pick', choice: SELECT });
       setSelectionScope(null);
@@ -4242,11 +4425,11 @@ export function App() {
   const printPreviewSvg = useMemo(() => {
     if (!printOpen || !doc) return null;
     try {
-      return toSvg(doc.scene, visible, printScale, planBackground);
+      return toSvg(doc.scene, printableLayers, printScale, planBackground, { paper: printPaper, landscape: printLandscape });
     } catch {
       return null;
     }
-  }, [printOpen, doc, visible, printScale, planBackground]);
+  }, [printOpen, doc, printableLayers, printScale, planBackground, printPaper, printLandscape]);
 
   const printPreview = useMemo(() => {
     if (!doc) return null;
@@ -4319,7 +4502,7 @@ export function App() {
       alternateFits: alternate.fits,
       alternateOrientation: printLandscape ? 'Portrait' : 'Landscape',
     };
-  }, [doc, printLandscape, printPaper, printScale, visible]);
+  }, [doc, printLandscape, printPaper, printScale, printableLayers]);
   const furnitureCounts = useMemo(
     () => countFurniture(doc?.scene.inventory ?? []),
     [doc?.scene.inventory],
@@ -4514,9 +4697,10 @@ export function App() {
    * What the canvas needs to draw live transform handles.
    *
    * Same gates as the Properties fields, so a grip never offers an edit the
-   * panel would refuse. `width`/`height` are the object's OWN rectangle
-   * (`measureNode` reads local geometry), which is what makes handles on a
-   * rotated riser land on its real corners.
+   * panel would refuse. `width`/`height`/`angleDegrees` are the object's OWN
+   * rectangle, recovered from its outline by `orientedExtent` — which is what
+   * makes handles on a rotated riser land on its real corners. The axis-aligned
+   * box would put a chair drawn at -120 degrees in an upright 30.4x29.4in frame.
    */
   const transformTarget = useMemo(
     () =>
@@ -4552,6 +4736,70 @@ export function App() {
   const shortcut = (key: string, shift = false) =>
     api.platform === 'darwin' ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
   const welcomeMode = view === 'plan' && !doc;
+
+  /**
+   * The Plan workspace's single dock.
+   *
+   * Only Plan collapses to one column. Gear and Inventory are real
+   * master-detail screens — a list on the left, the selected record on the
+   * right — and folding those into one panel would cost the relationship the
+   * layout is there to show.
+   *
+   * `dockOpen` is deliberately an OR over the four panel booleans rather than
+   * a fifth piece of state: they are already derived from one mode, so any
+   * separate flag could only ever disagree with them.
+   */
+  const planDock = view === 'plan' && !welcomeMode && !refineRoomOpen;
+  const dockOpen = planDock && (railOpen || inspectorOpen || createDialogOpen || toolDockOpen);
+  /**
+   * Whether the contextual second row has anything to say.
+   *
+   * The ribbon reserves the row's 42px with bottom padding, so the answer has
+   * to be known by the container as well as by the row itself — otherwise the
+   * row goes away and leaves its empty band behind.
+   */
+  const quickbarVisible = textEditingId != null || wallEditLive || selectedIds.length > 0;
+
+  /**
+   * The plan has something drawn on it besides the room itself.
+   *
+   * Same rule as `landingModeFor`: four walls and nothing else is an empty
+   * room, not a drawing. Used to decide whether a first-run offer still has a
+   * first run to be part of.
+   */
+  const planHasDrawnContent = useMemo(
+    () => (doc?.scene.primitives ?? []).some((primitive) => isContentLayer(primitive.layer)),
+    [doc?.scene.primitives],
+  );
+  const [dockResizing, setDockResizing] = useState(false);
+
+  /**
+   * Drag the dock edge.
+   *
+   * Pointer capture rather than window listeners: the drag must keep tracking
+   * when the cursor crosses onto the canvas, which swallows pointer events of
+   * its own while a tool is armed.
+   */
+  const beginDockResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    setDockResizing(true);
+
+    const onMove = (move: PointerEvent) => {
+      const next = window.innerWidth - move.clientX;
+      setDockWidth(Math.min(DOCK_MAX_WIDTH, Math.max(DOCK_MIN_WIDTH, next)));
+    };
+    const onUp = () => {
+      setDockResizing(false);
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  }, []);
 
   const commandContext = useMemo<CommandContext>(
     () => ({
@@ -4714,6 +4962,57 @@ export function App() {
         case 'edit.ungroup':
           void ungroupPlanSelection();
           return;
+        case 'edit.copy':
+          void copyPlanSelection();
+          return;
+        case 'edit.paste':
+          void pastePlanSelection();
+          return;
+        case 'edit.rotate-cw':
+          void rotateSelection(90);
+          return;
+        case 'edit.rotate-ccw':
+          void rotateSelection(-90);
+          return;
+        case 'edit.flip-horizontal':
+          void flipSelection('horizontal');
+          return;
+        case 'edit.flip-vertical':
+          void flipSelection('vertical');
+          return;
+        case 'edit.align-left':
+        case 'edit.align-center':
+        case 'edit.align-right':
+        case 'edit.align-top':
+        case 'edit.align-middle':
+        case 'edit.align-bottom':
+        case 'edit.distribute-horizontal':
+        case 'edit.distribute-vertical':
+          // The command id and the arrange mode are the same word after the
+          // prefix, so there is nothing to keep in step by hand.
+          void arrangeSelection(id.slice('edit.'.length) as Parameters<typeof arrangeSelection>[0]);
+          return;
+        case 'edit.bring-to-front':
+          void reorderSelection('bring-to-front');
+          return;
+        case 'edit.send-to-back':
+          void reorderSelection('send-to-back');
+          return;
+        case 'plan.dimension-room':
+          void dimensionRoomAutomatically();
+          return;
+        case 'plan.dimension-room-corners':
+          void dimensionRoomAutomatically({ corners: true });
+          return;
+        case 'view.layers-show-all':
+          setAllLayersVisible(true);
+          return;
+        case 'view.layers-hide-all':
+          setAllLayersVisible(false);
+          return;
+        case 'view.snap':
+          toggleSnap();
+          return;
         default:
           return;
       }
@@ -4744,6 +5043,15 @@ export function App() {
       deleteSelection,
       groupPlanSelection,
       ungroupPlanSelection,
+      copyPlanSelection,
+      pastePlanSelection,
+      rotateSelection,
+      flipSelection,
+      arrangeSelection,
+      reorderSelection,
+      dimensionRoomAutomatically,
+      setAllLayersVisible,
+      toggleSnap,
     ],
   );
 
@@ -5179,7 +5487,7 @@ export function App() {
         </div>
       )}
       <header
-        className={`toolbar${view === 'plan' ? ' is-plan-toolbar' : ''}${welcomeMode ? ' is-welcome-toolbar' : ''}${view === 'plan' && toolDockOpen ? ' is-tool-dock-open' : ''}`}
+        className={`toolbar${view === 'plan' ? ' is-plan-toolbar' : ''}${welcomeMode ? ' is-welcome-toolbar' : ''}${view === 'plan' && toolDockOpen ? ' is-tool-dock-open' : ''}${!welcomeMode && (view !== 'plan' || !quickbarVisible) ? ' is-single-row' : ''}`}
       >
         <div className="ribbon-titlebar">
           <div className="brand">
@@ -5264,7 +5572,7 @@ export function App() {
           </div>
         </div>
 
-        <div className="ribbon-panel">
+        <div className={`ribbon-panel${quickbarVisible ? '' : ' is-single-row'}`}>
         <div className="seg ribbon-group file-controls" aria-label="File">
           <div className="ribbon-create">
             <button
@@ -5343,27 +5651,6 @@ export function App() {
           </button>
         </div>
 
-        <div className="seg ribbon-group shell-mode-strip" role="toolbar" aria-label="Workspace modes">
-          {SHELL_MODES.map((mode) => {
-            const on = shellMode === mode.id;
-            const disabled = view !== 'plan' || !doc;
-            return (
-              <button
-                key={mode.id}
-                type="button"
-                className={`icon-btn ribbon-action${on ? ' is-on' : ''}`}
-                disabled={disabled}
-                aria-pressed={on}
-                data-tooltip={`${mode.label}: ${mode.hint}`}
-                aria-label={`${on ? 'Hide' : 'Show'} ${mode.label} mode`}
-                onClick={() => runCommand(on ? 'mode.none' : mode.commandId)}
-              >
-                <span>{mode.label}</span>
-              </button>
-            );
-          })}
-        </div>
-
             {view === 'plan' && (
           <>
             <div className="seg ribbon-group history-controls" aria-label="Plan history">
@@ -5387,19 +5674,33 @@ export function App() {
                 <IconRedo />
                 <span>Redo</span>
               </button>
+              {/* Paste is the one clipboard action that works with nothing
+                  selected, so it belongs with the other always-available edit
+                  controls rather than in the contextual row below, which is
+                  now only on screen when there IS a selection. */}
+              <button
+                className="icon-btn ribbon-action"
+                onClick={() => void pastePlanSelection()}
+                disabled={!doc?.editable}
+                data-tooltip={
+                  planClipboard
+                    ? `Paste ${planClipboard.count} copied item${planClipboard.count === 1 ? '' : 's'} (${shortcut('V')})`
+                    : `Paste copied shapes (${shortcut('V')})`
+                }
+                aria-label="Paste copied shapes"
+              >
+                <IconPaste />
+                <span>Paste</span>
+              </button>
             </div>
 
             <div className="seg ribbon-group plan-view-controls" aria-label="Plan view controls">
-              <button
-                className="icon-btn ribbon-action"
-                onClick={() => setFitToken((t) => t + 1)}
-                disabled={!doc}
-                data-tooltip={`Zoom to fit (${shortcut('0')})`}
-                aria-label="Zoom plan to fit"
-              >
-                <IconFit />
-                <span>Fit</span>
-              </button>
+              {/* Zoom to fit is not here any more. The floating zoom control
+                  over the plan already carries it, right next to the zoom
+                  percentage it changes, and this copy was 64px of a row that
+                  had run out of room — "More" was being cut off at the window
+                  edge to keep a second Fit button. It is still on the zoom
+                  control, still on the command palette, and still on ⌘0. */}
               <button
                 className="icon-btn ribbon-action"
                 onClick={() => setPaper((p) => !p)}
@@ -5525,6 +5826,16 @@ export function App() {
 
             {/* Event layout, drawing tools, and wall edit live in Setup / Draw / room.edit — not the ribbon. */}
 
+            {/* The second row is contextual or it is not there.
+                It used to be permanent, and permanently mixed: selection
+                actions that were all disabled, three export buttons, a layer
+                strip, a Show grid checkbox duplicating the Grid button above
+                it, and an Advanced link. Thirty-eight pixels of the drawing,
+                every second the application was open, for a row that answered
+                no question. Now it appears when there is something for it to
+                act on — text being edited, a wall being moved, or a selection —
+                and the plan gets those pixels back the rest of the time. */}
+            {quickbarVisible && (
             <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}${wallEditLive && textEditingId == null ? ' is-room-layout' : ''}`}>
             {textEditingId != null ? (
               <div className="text-context-toolbar" aria-label="Quick text formatting">
@@ -5758,46 +6069,24 @@ export function App() {
             ) : (
               <>
             <div className="seg object-tools" aria-label="Arrange and transform">
-              <button
-                className="icon-btn"
-                onClick={selectAll}
-                disabled={!doc}
-                data-tooltip={`Select all visible shapes (${shortcut('A')})`}
-                aria-label="Select all visible shapes"
-              >
-                <IconPointer />
-              </button>
-              <button
-                className="icon-btn"
-                onClick={() => {
-                  enterMode('inspect');
-                  setInspectorTab('properties');
-                }}
-                disabled={!doc}
-                data-tooltip="Open shape properties"
-                aria-label="Open shape properties"
-              >
-                <IconEdit />
-              </button>
-              {/* Paste is the one clipboard action that works on an empty
-                  selection, so it stays out of the contextual run below. */}
-              <button
-                className="icon-btn"
-                onClick={() => void pastePlanSelection()}
-                disabled={!doc?.editable}
-                data-tooltip={planClipboard ? `Paste ${planClipboard.count} copied item${planClipboard.count === 1 ? '' : 's'} (${shortcut('V')})` : `Paste copied shapes (${shortcut('V')})`}
-                aria-label="Paste copied shapes"
-              >
-                <IconPaste />
-              </button>
               {/* Rotate, flip, align, distribute, order, group, duplicate and
-                  delete all act ON a selection — nineteen controls that did
-                  nothing until one existed, yet held the second row at full
-                  width every second the app was open. They now appear with the
-                  selection they operate on, which also means the row reads as
-                  an answer to "what can I do with this?" rather than a wall. */}
-              {selectedIds.length > 0 && (
-                <>
+                  delete all act ON a selection. Select all, Open properties and
+                  Paste used to sit in front of them so that the row was never
+                  empty — which meant the row was never meaningful either: six
+                  unlabelled icons, a layer strip, a Show grid checkbox that
+                  duplicated the Grid button one row above it, and an
+                  "Advanced…" link, all held at full width whether or not
+                  anything was selected.
+                  Those five have gone to the places they belong (Paste to the
+                  history group, the layer strip to Inspect, which already lists
+                  every layer by name and count, Show grid to the Grid button it
+                  duplicated, Advanced and the two exports to the More menu),
+                  and what is left is genuinely contextual: the row appears with
+                  the selection it acts on and reads as an answer to "what can I
+                  do with this?" */}
+              <span className="object-tools-count" aria-live="polite">
+                {selectedIds.length} selected
+              </span>
               <span className="seg-divider" aria-hidden />
               <button
                 className="icon-btn"
@@ -5972,86 +6261,11 @@ export function App() {
               >
                 <IconTrash />
               </button>
-                </>
-              )}
             </div>
-
-            <div className="seg plan-output-controls" aria-label="Plan output">
-              <button
-                className={`icon-btn${printOpen ? ' is-on' : ''}`}
-                onClick={() => setPrintOpen((v) => !v)}
-                disabled={!doc}
-                data-tooltip={`Print plan to PDF (${shortcut('P')})`}
-                aria-label="Print plan to PDF"
-              >
-                <IconPrint />
-              </button>
-              <button
-                className="icon-btn"
-                onClick={exportSvg}
-                disabled={!doc}
-                data-tooltip={`Export plan as SVG (${shortcut('E')})`}
-                aria-label="Export plan as SVG"
-              >
-                <IconExport />
-              </button>
-              <button
-                className="icon-btn"
-                onClick={() => void exportDxf()}
-                disabled={!doc}
-                data-tooltip="Export as DXF for Vectorworks and other CAD"
-                aria-label="Export plan as DXF"
-              >
-                <IconFile />
-              </button>
-            </div>
-            <div className="seg layer-tools" aria-label="Layer visibility">
-              <button
-                className={`icon-btn layer-overview${visible.size === LAYERS.length ? ' is-on' : ''}`}
-                onClick={() => setAllLayersVisible(visible.size !== LAYERS.length)}
-                disabled={!doc}
-                data-tooltip={visible.size === LAYERS.length ? 'Hide all layers' : 'Show all layers'}
-                aria-label={visible.size === LAYERS.length ? 'Hide all layers' : 'Show all layers'}
-                aria-pressed={visible.size === LAYERS.length}
-              >
-                <IconLayers />
-                <span className="layer-count">{visible.size}/{LAYERS.length}</span>
-              </button>
-              {LAYERS.map((layer) => (
-                <button
-                  key={layer.id}
-                  className={`icon-btn layer-toggle${visible.has(layer.id) ? ' is-on' : ''}`}
-                  onClick={() => toggleLayer(layer.id)}
-                  disabled={!doc}
-                  data-tooltip={`${visible.has(layer.id) ? 'Hide' : 'Show'} ${layer.label} layer · ${layerCounts.get(layer.id) ?? 0} objects`}
-                  aria-label={`${visible.has(layer.id) ? 'Hide' : 'Show'} ${layer.label} layer`}
-                  aria-pressed={visible.has(layer.id)}
-                >
-                  <span className="layer-dot" style={{ background: layer.tint }} />
-                </button>
-              ))}
-            </div>
-            <div className="spacer" />
-            <label className="ribbon-check">
-              <input
-                type="checkbox"
-                checked={showGrid}
-                disabled={!doc}
-                onChange={() => void toggleGrid()}
-              />
-              Show grid
-            </label>
-            <button
-              className="ribbon-advanced"
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              data-tooltip="Open advanced drawing settings"
-            >
-              Advanced…
-            </button>
               </>
             )}
             </div>
+            )}
           </>
         )}
 
@@ -6113,6 +6327,60 @@ export function App() {
                 >
                   <span>Settings…</span>
                 </button>
+                {/* Everything the second row used to hold that is not about a
+                    selection. SVG and DXF were two unlabelled icons there; here
+                    they are named, and next to the Print they belong with. */}
+                {view === 'plan' && (
+                  <>
+                    <div className="ribbon-menu-divider" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!doc}
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        setPrintOpen(true);
+                      }}
+                    >
+                      <span>Print to PDF…</span>
+                      <kbd>{shortcut('P')}</kbd>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!doc}
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        exportSvg();
+                      }}
+                    >
+                      <span>Export as SVG…</span>
+                      <kbd>{shortcut('E')}</kbd>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!doc}
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        void exportDxf();
+                      }}
+                    >
+                      <span>Export as DXF…</span>
+                    </button>
+                    <div className="ribbon-menu-divider" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        setSettingsOpen(true);
+                      }}
+                    >
+                      <span>Advanced drawing settings…</span>
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -6223,9 +6491,237 @@ export function App() {
           inspectorOpen && !welcomeMode && !refineRoomOpen && !createDialogOpen ? '' : ' is-inspector-hidden'
         }${createDialogOpen && doc && !welcomeMode ? ' is-create-open' : ''}${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}${
           refineRoomOpen ? ' is-refine-open' : ''
-        }`}
+        }${planDock ? ' is-plan-dock' : ''}${planDock && !dockOpen ? ' is-dock-closed' : ''}`}
+        style={planDock ? ({ '--dock-w': `${Math.round(dockWidth)}px` } as CSSProperties) : undefined}
       >
+        {planDock && dockOpen && (
+          <button
+            ref={dockResizeRef}
+            type="button"
+            className={`dock-resize${dockResizing ? ' is-dragging' : ''}`}
+            aria-label="Resize panel"
+            data-tooltip="Drag to resize · arrow keys adjust"
+            onPointerDown={beginDockResize}
+            onKeyDown={(event) => {
+              // The drag is a pointer gesture, so the width needs a keyboard
+              // route too or the panel size is mouse-only.
+              const step = event.shiftKey ? 32 : 8;
+              if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                setDockWidth((w) => Math.min(DOCK_MAX_WIDTH, w + step));
+              } else if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                setDockWidth((w) => Math.max(DOCK_MIN_WIDTH, w - step));
+              }
+            }}
+          />
+        )}
+        {planDock && doc && (
+          <EditorToolRail
+            workspaces={[
+              {
+                id: 'files',
+                label: 'Files',
+                icon: <IconFolder size={17} />,
+                active: workspace.mode === 'browse',
+                onClick: () => runCommand(workspace.mode === 'browse' ? 'mode.none' : 'mode.browse'),
+              },
+              {
+                id: 'assets',
+                label: 'Assets',
+                icon: <IconPlus size={17} />,
+                active: workspace.mode === 'place',
+                disabled: !doc.editable,
+                onClick: () => runCommand(workspace.mode === 'place' ? 'mode.none' : 'mode.place'),
+              },
+              {
+                id: 'room-workspace',
+                label: 'Room',
+                icon: <IconDrawPolygon size={17} />,
+                active: workspace.mode === 'room-layout' || wallsEditArmed,
+                disabled: !doc.editable,
+                onClick: () => {
+                  if (doc.hasRoom) openRoomEditWorkspace('room');
+                  else {
+                    enterMode('canvas');
+                    setAwaitingRoomOutline(true);
+                    const { refusal } = dispatchTool({ type: 'pick', choice: roomOutlineChoice });
+                    if (refusal) notify(refusal);
+                    else showStatus('Click each room corner, then press Enter', 4500);
+                  }
+                },
+              },
+              {
+                id: 'stage-workspace',
+                label: 'Stage',
+                icon: <IconDrawRect size={17} />,
+                active: buildStageOpen,
+                disabled: !doc.editable || !doc.hasRoom,
+                onClick: () => setBuildStageOpen(true),
+              },
+              {
+                id: 'seating-workspace',
+                label: 'Seating',
+                icon: <IconChair size={17} />,
+                active: seatingOpen,
+                disabled: !doc.editable || !doc.hasRoom,
+                onClick: () => openOverlay('seating'),
+              },
+              {
+                id: 'layouts',
+                label: 'Layouts',
+                icon: <IconGrid size={17} />,
+                active: workspace.mode === 'setup',
+                disabled: !doc.hasRoom,
+                onClick: () => runCommand(workspace.mode === 'setup' ? 'mode.none' : 'mode.setup'),
+              },
+              {
+                id: 'properties',
+                label: 'Properties',
+                icon: <IconSidebarRight size={17} />,
+                active: workspace.mode === 'inspect',
+                onClick: () => runCommand(workspace.mode === 'inspect' ? 'mode.none' : 'mode.inspect'),
+              },
+              {
+                id: 'calculator',
+                label: 'Calculate',
+                icon: <IconCalculator size={17} />,
+                active: calculatorOpen,
+                onClick: () => calculatorOpen ? closeOverlay('calculator') : openOverlay('calculator'),
+              },
+            ]}
+            tools={[
+              {
+                id: 'select',
+                label: 'Select / move',
+                shortcut: 'Esc',
+                icon: <IconPointer size={16} />,
+                active: isPressed(tool, SELECT),
+                onClick: () => {
+                  enterMode('canvas');
+                  setLastCommandId('tool.select');
+                  dispatchTool({ type: 'pick', choice: SELECT });
+                },
+              },
+              {
+                id: 'direct-select',
+                label: 'Edit points',
+                shortcut: 'A',
+                icon: <IconDirectSelect size={16} />,
+                active: isPressed(tool, DIRECT_SELECT),
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
+                  if (refusal) notify(refusal);
+                },
+              },
+              {
+                id: 'hand',
+                label: 'Pan canvas',
+                shortcut: 'H',
+                icon: <IconHand size={16} />,
+                active: isPressed(tool, HAND),
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: HAND });
+                  if (refusal) notify(refusal);
+                },
+              },
+              ...(
+                [
+                  ['line', 'Line', IconDrawLine],
+                  ['rect', 'Rectangle', IconDrawRect],
+                  ['ellipse', 'Ellipse', IconDrawEllipse],
+                ] as const
+              ).map(([shape, label, Icon]) => ({
+                id: shape,
+                label,
+                icon: <Icon size={16} />,
+                active: isPressed(tool, drawChoice(shape)),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
+                  if (refusal) notify(refusal);
+                },
+              })),
+              {
+                id: 'add-text',
+                label: 'Text',
+                shortcut: 'T',
+                icon: <IconText size={16} />,
+                active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  activateTextTool();
+                },
+              },
+              {
+                id: 'power-cable',
+                label: 'Power run',
+                icon: <IconDrawLine size={16} />,
+                active: isPressed(tool, powerCableChoice),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
+                  if (refusal) notify(refusal);
+                  else showStatus('Click bends along the power run. Enter finishes', 4500);
+                },
+              },
+              {
+                id: 'signal-cable',
+                label: 'Signal run',
+                icon: <IconDrawPolygon size={16} />,
+                active: isPressed(tool, signalCableChoice),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
+                  if (refusal) notify(refusal);
+                  else showStatus('Click bends along the signal run. Enter finishes', 4500);
+                },
+              },
+              {
+                id: 'measure',
+                label: 'Measure',
+                shortcut: 'M',
+                icon: <IconRuler size={16} />,
+                active: isPressed(tool, MEASURE),
+                onClick: () => {
+                  enterMode('canvas');
+                  toggleMeasure();
+                },
+              },
+              {
+                id: 'dimension',
+                label: 'Dimension',
+                shortcut: 'D',
+                icon: <IconRuler size={16} />,
+                active: isPressed(tool, DIMENSION),
+                disabled: !canCreateDimension,
+                onClick: () => {
+                  enterMode('canvas');
+                  toggleDimension();
+                },
+              },
+            ]}
+          />
+        )}
         <aside className="rail" aria-hidden={!railOpen || refineRoomOpen}>
+          {planDock && (
+            <DockTitlebar
+              title={workspace.mode === 'place' ? 'Assets' : 'Files'}
+              sub={
+                workspace.mode === 'place'
+                  ? 'Stamp inventory and gear onto the plan'
+                  : 'Recent plans, collections, and folders'
+              }
+              onClose={() => enterMode('canvas')}
+            />
+          )}
+          <div className="dock-body">
           {view === 'inventory' ? (
             <>
               <div className="search">
@@ -6949,6 +7445,7 @@ export function App() {
               )}
             </>
           )}
+          </div>
         </aside>
 
         <main
@@ -7024,177 +7521,6 @@ export function App() {
             )
           ) : doc ? (
             <div className="canvas-with-palette">
-              {toolDockOpen && (
-                <PlanToolDock
-                  compact={toolDockCompact}
-                  foreground={colorDraft}
-                  paper={paper}
-                  side={toolDockSide}
-                  position={toolDockPosition}
-                  order={toolDockOrder}
-                  hidden={toolDockHidden}
-                  onSide={setToolDockSide}
-                  onPosition={setToolDockPosition}
-                  onOrder={setToolDockOrder}
-                  onHidden={setToolDockHidden}
-                  onToggleCompact={() => setToolDockCompact((compact) => !compact)}
-                  onClose={() => enterMode('canvas')}
-                  onForeground={() => {
-                    enterMode('inspect');
-                    setInspectorTab('properties');
-                  }}
-                  onBackground={() => setPaper((current) => !current)}
-                  groups={[
-                    [
-                      {
-                        id: 'select',
-                        label: 'Select / move',
-                        shortcut: 'Esc',
-                        icon: <IconPointer />,
-                        active: isPressed(tool, SELECT),
-                        disabled: !doc,
-                        onClick: () => {
-                          setLastCommandId('tool.select');
-                          dispatchTool({ type: 'pick', choice: SELECT });
-                        },
-                      },
-                      {
-                        id: 'direct-select',
-                        label: 'Direct selection / edit points',
-                        shortcut: 'A',
-                        icon: <IconDirectSelect />,
-                        active: isPressed(tool, DIRECT_SELECT),
-                        disabled: !doc,
-                        onClick: () => {
-                          const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
-                          if (refusal) notify(refusal);
-                          else {
-                            setLastCommandId('mode.inspect');
-                            setShellMode('inspect');
-                            setInspectorTab('properties');
-                          }
-                        },
-                      },
-                      {
-                        id: 'hand',
-                        label: 'Hand / pan',
-                        shortcut: 'H',
-                        icon: <IconHand />,
-                        active: isPressed(tool, HAND),
-                        disabled: !doc,
-                        onClick: () => {
-                          setLastCommandId('tool.hand');
-                          const { refusal } = dispatchTool({ type: 'toggle', choice: HAND });
-                          if (refusal) notify(refusal);
-                        },
-                      },
-                    ],
-                    [
-                      ...(
-                        [
-                          ['line', 'Line', IconDrawLine],
-                          ['rect', 'Rectangle', IconDrawRect],
-                          ['ellipse', 'Ellipse', IconDrawEllipse],
-                        ] as const
-                      ).map(([shape, label, Icon]) => ({
-                        id: shape,
-                        label,
-                        icon: <Icon />,
-                        active: isPressed(tool, drawChoice(shape)),
-                        disabled: !doc.editable,
-                        onClick: () => {
-                          const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
-                          if (refusal) notify(refusal);
-                        },
-                      })),
-                      {
-                        id: 'power-cable',
-                        label: 'Power run',
-                        icon: <IconDrawLine />,
-                        active: isPressed(tool, powerCableChoice),
-                        disabled: !doc.editable,
-                        onClick: () => {
-                          const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
-                          if (refusal) notify(refusal);
-                          else showStatus('Click bends along the power run. Enter finishes', 4500);
-                        },
-                      },
-                      {
-                        id: 'signal-cable',
-                        label: 'Signal run',
-                        icon: <IconDrawPolygon />,
-                        active: isPressed(tool, signalCableChoice),
-                        disabled: !doc.editable,
-                        onClick: () => {
-                          const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
-                          if (refusal) notify(refusal);
-                          else showStatus('Click bends along the signal run. Enter finishes', 4500);
-                        },
-                      },
-                      {
-                        id: 'room',
-                        label: 'Room outline',
-                        icon: <IconDrawPolygon />,
-                        active: isPressed(tool, roomOutlineChoice),
-                        disabled: !doc.editable,
-                        onClick: () => {
-                          setLastCommandId('room.outline');
-                          const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
-                          if (refusal) notify(refusal);
-                          else {
-                            setSelectedIds([]);
-                            showStatus('Click each room corner, then press Enter', 4500);
-                          }
-                        },
-                      },
-                    ],
-                    [
-                      {
-                        id: 'add-text',
-                        label: 'Add text',
-                        shortcut: 'T',
-                        icon: <IconText />,
-                        active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
-                        disabled: !doc.editable,
-                        onClick: () => {
-                          setLastCommandId('tool.text');
-                          activateTextTool();
-                        },
-                      },
-                      {
-                        id: 'measure',
-                        label: 'Measure',
-                        shortcut: 'M',
-                        icon: <IconRuler />,
-                        active: isPressed(tool, MEASURE),
-                        disabled: !doc,
-                        onClick: () => {
-                          setLastCommandId('tool.measure');
-                          toggleMeasure();
-                        },
-                      },
-                      {
-                        id: 'dimension',
-                        label: 'Dimension',
-                        shortcut: 'D',
-                        icon: <IconRuler />,
-                        active: isPressed(tool, DIMENSION),
-                        disabled: !canCreateDimension,
-                        onClick: () => {
-                          setLastCommandId('tool.dimension');
-                          toggleDimension();
-                        },
-                      },
-                    ],
-                    /* Undo / redo / duplicate / delete / rotate and the eight
-                       align-and-distribute tools used to live here too — all
-                       fourteen of them a second copy of the strip directly
-                       above the canvas, which is where a user reaching for
-                       "undo" actually looks. The shelf is now what its name
-                       says: the tools you draw with. */
-                  ]}
-                />
-              )}
               {shellMode === 'place' && (!railOpen || planRailSource !== 'equipment') && (
                 <ObjectPalette
                   items={inventoryRows}
@@ -7287,6 +7613,21 @@ export function App() {
                 </div>
               )}
               <PlanCanvas
+              lockedLayers={lockedLayers}
+              onContextMenu={(info) => {
+                // Right-clicking an object that is not in the selection selects
+                // it first. Anything else means the menu acts on something the
+                // user cannot see highlighted, which is how people delete the
+                // wrong thing.
+                if (info.nodeId != null && !selectedIds.includes(info.nodeId)) {
+                  setSelectedIds([info.nodeId]);
+                }
+                if (info.nodeId == null && selectedIds.length) setSelectedIds([]);
+                setContextMenu({
+                  at: { x: info.clientX, y: info.clientY },
+                  nodeId: info.nodeId,
+                });
+              }}
               scene={doc.scene}
               visibleLayers={visible}
               paper={paper}
@@ -7814,9 +8155,31 @@ export function App() {
                           id="p-subtitle"
                           value={printSubtitle}
                           onChange={(event) => setPrintSubtitle(event.target.value)}
-                          placeholder="Job number, issue, or revision"
+                          placeholder="Job number or issue note"
                           maxLength={80}
                         />
+                      </div>
+                      <div className="print-issue-row">
+                        <div className="field">
+                          <label htmlFor="p-drawn-by">Drawn by</label>
+                          <input
+                            id="p-drawn-by"
+                            value={printDrawnBy}
+                            onChange={(event) => setPrintDrawnBy(event.target.value)}
+                            placeholder="Name or company"
+                            maxLength={60}
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor="p-revision">Revision</label>
+                          <input
+                            id="p-revision"
+                            value={printRevision}
+                            onChange={(event) => setPrintRevision(event.target.value)}
+                            placeholder="A"
+                            maxLength={12}
+                          />
+                        </div>
                       </div>
                     </div>
 
@@ -8314,6 +8677,242 @@ export function App() {
         />
       )}
 
+        {toolDockOpen && doc && (
+              <PlanToolDock
+                docked
+                compact={toolDockCompact}
+                groupLabels={['Navigate', 'Build the show', 'Draw', 'Systems', 'Room', 'Measure & annotate']}
+                foreground={colorDraft}
+                paper={paper}
+                side={toolDockSide}
+                position={toolDockPosition}
+                order={toolDockOrder}
+                hidden={toolDockHidden}
+                onSide={setToolDockSide}
+                onPosition={setToolDockPosition}
+                onOrder={setToolDockOrder}
+                onHidden={setToolDockHidden}
+                onToggleCompact={() => setToolDockCompact((compact) => !compact)}
+                onClose={() => enterMode('canvas')}
+                onForeground={() => {
+                  enterMode('inspect');
+                  setInspectorTab('properties');
+                }}
+                onBackground={() => setPaper((current) => !current)}
+                groups={[
+                  [
+                    {
+                      id: 'select',
+                      label: 'Select / move',
+                      shortcut: 'Esc',
+                      icon: <IconPointer />,
+                      active: isPressed(tool, SELECT),
+                      disabled: !doc,
+                      onClick: () => {
+                        setLastCommandId('tool.select');
+                        dispatchTool({ type: 'pick', choice: SELECT });
+                      },
+                    },
+                    {
+                      id: 'direct-select',
+                      label: 'Direct selection / edit points',
+                      shortcut: 'A',
+                      icon: <IconDirectSelect />,
+                      active: isPressed(tool, DIRECT_SELECT),
+                      disabled: !doc,
+                      onClick: () => {
+                        const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
+                        if (refusal) notify(refusal);
+                        else {
+                          setLastCommandId('mode.inspect');
+                          setShellMode('inspect');
+                          setInspectorTab('properties');
+                        }
+                      },
+                    },
+                    {
+                      id: 'hand',
+                      label: 'Hand / pan',
+                      shortcut: 'H',
+                      icon: <IconHand />,
+                      active: isPressed(tool, HAND),
+                      disabled: !doc,
+                      onClick: () => {
+                        setLastCommandId('tool.hand');
+                        const { refusal } = dispatchTool({ type: 'toggle', choice: HAND });
+                        if (refusal) notify(refusal);
+                      },
+                    },
+                  ],
+                  [
+                    {
+                      id: 'build-stage',
+                      label: 'Build stage',
+                      icon: <IconDrawRect />,
+                      disabled: !doc.editable || !doc.hasRoom,
+                      onClick: () => runCommand('stage.build'),
+                    },
+                    {
+                      id: 'place-equipment',
+                      label: 'Place equipment',
+                      shortcut: 'P',
+                      icon: <IconPlus />,
+                      disabled: !doc.editable,
+                      onClick: () => runCommand('insert.open'),
+                    },
+                    {
+                      id: 'seating-planner',
+                      label: 'Seating planner',
+                      icon: <IconChair />,
+                      disabled: !doc.editable || !doc.hasRoom,
+                      onClick: () => runCommand('seating.planner'),
+                    },
+                    {
+                      id: 'shape-library',
+                      label: 'Create reusable shape',
+                      icon: <IconStar />,
+                      disabled: !doc.editable,
+                      onClick: () => runCommand('shape.wizard'),
+                    },
+                  ],
+                  [
+                    ...(
+                      [
+                        ['line', 'Line', IconDrawLine],
+                        ['rect', 'Rectangle', IconDrawRect],
+                        ['ellipse', 'Ellipse', IconDrawEllipse],
+                      ] as const
+                    ).map(([shape, label, Icon]) => ({
+                      id: shape,
+                      label,
+                      icon: <Icon />,
+                      active: isPressed(tool, drawChoice(shape)),
+                      disabled: !doc.editable,
+                      onClick: () => {
+                        const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
+                        if (refusal) notify(refusal);
+                      },
+                    })),
+                    {
+                      id: 'add-text',
+                      label: 'Add text',
+                      shortcut: 'T',
+                      icon: <IconText />,
+                      active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
+                      disabled: !doc.editable,
+                      onClick: () => {
+                        setLastCommandId('tool.text');
+                        activateTextTool();
+                      },
+                    },
+                  ],
+                  [
+                    {
+                      id: 'power-cable',
+                      label: 'Power run',
+                      icon: <IconDrawLine />,
+                      active: isPressed(tool, powerCableChoice),
+                      disabled: !doc.editable,
+                      onClick: () => {
+                        const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
+                        if (refusal) notify(refusal);
+                        else showStatus('Click bends along the power run. Enter finishes', 4500);
+                      },
+                    },
+                    {
+                      id: 'signal-cable',
+                      label: 'Signal run',
+                      icon: <IconDrawPolygon />,
+                      active: isPressed(tool, signalCableChoice),
+                      disabled: !doc.editable,
+                      onClick: () => {
+                        const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
+                        if (refusal) notify(refusal);
+                        else showStatus('Click bends along the signal run. Enter finishes', 4500);
+                      },
+                    },
+                    {
+                      id: 'av-pair',
+                      label: 'Projector + screen',
+                      icon: <IconStar />,
+                      active: isPressed(tool, avPairChoice),
+                      disabled: !doc.editable,
+                      onClick: () => {
+                        const { refusal } = dispatchTool({ type: 'pick', choice: avPairChoice });
+                        if (refusal) notify(refusal);
+                        else showStatus('Click where the screen should sit; projector and throw follow', 5000);
+                      },
+                    },
+                  ],
+                  [
+                    {
+                      id: 'edit-room',
+                      label: 'Edit room geometry',
+                      icon: <IconEdit />,
+                      disabled: !doc.editable || !doc.hasRoom,
+                      onClick: () => runCommand('room.edit'),
+                    },
+                    {
+                      id: 'room',
+                      label: 'Draw room outline',
+                      icon: <IconDrawPolygon />,
+                      active: isPressed(tool, roomOutlineChoice),
+                      disabled: !doc.editable,
+                      onClick: () => {
+                        setLastCommandId('room.outline');
+                        const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
+                        if (refusal) notify(refusal);
+                        else {
+                          setSelectedIds([]);
+                          showStatus('Click each room corner, then press Enter', 4500);
+                        }
+                      },
+                    },
+                    {
+                      id: 'site-plan',
+                      label: planBackground?.dataUrl ? 'Edit site plan' : 'Import site plan',
+                      icon: <IconLayers />,
+                      disabled: !doc.editable,
+                      onClick: () => setBackgroundOpen(true),
+                    },
+                  ],
+                  [
+                    {
+                      id: 'measure',
+                      label: 'Measure',
+                      shortcut: 'M',
+                      icon: <IconRuler />,
+                      active: isPressed(tool, MEASURE),
+                      disabled: !doc,
+                      onClick: () => {
+                        setLastCommandId('tool.measure');
+                        toggleMeasure();
+                      },
+                    },
+                    {
+                      id: 'dimension',
+                      label: 'Dimension',
+                      shortcut: 'D',
+                      icon: <IconRuler />,
+                      active: isPressed(tool, DIMENSION),
+                      disabled: !canCreateDimension,
+                      onClick: () => {
+                        setLastCommandId('tool.dimension');
+                        toggleDimension();
+                      },
+                    },
+                    {
+                      id: 'space-calculator',
+                      label: 'Space calculator',
+                      icon: <IconCalculator />,
+                      disabled: !doc.hasRoom,
+                      onClick: () => runCommand('calc.open'),
+                    },
+                  ],
+                ]}
+              />
+        )}
+
         <aside
           ref={inspectorRef}
           className="inspector"
@@ -8321,6 +8920,21 @@ export function App() {
           aria-label="Properties and layers inspector"
           tabIndex={inspectorOpen && !welcomeMode ? 0 : -1}
         >
+          {planDock && (
+            <DockTitlebar
+              title="Inspect"
+              sub="Layers and properties"
+              trailing={
+                doc ? (
+                  <span className={`inspector-access${doc.editable ? '' : ' is-readonly'}`}>
+                    {doc.editable ? 'Editable' : 'Read only'}
+                  </span>
+                ) : null
+              }
+              onClose={() => enterMode('canvas')}
+            />
+          )}
+          <div className="dock-body">
           {view === 'inventory' ? (
             <>
               <div className="section">
@@ -8440,19 +9054,13 @@ export function App() {
           ) : doc ? (
             <>
               <div className="inspector-chrome">
-                <header className="inspector-heading">
-                  <span className="inspector-heading-icon" aria-hidden>
-                    <IconSidebarRight size={16} />
-                  </span>
-                  <span className="inspector-heading-copy">
-                    <small>Inspector</small>
-                    <strong title={doc.name}>{doc.name.replace(/\.[^.]+$/, '') || 'Untitled plan'}</strong>
-                  </span>
-                  <span className={`inspector-access${doc.editable ? '' : ' is-readonly'}`}>
-                    {doc.editable ? 'Editable' : 'Read only'}
-                  </span>
-                </header>
-
+                {/* The heading that used to sit here said "Inspector" under a
+                    titlebar that now says "Inspect", and repeated the plan's
+                    name a third time — the window title and the ribbon both
+                    carry it already. At 252px it was also the widest thing in
+                    the panel, so the name it repeated was the one piece of
+                    text guaranteed to be truncated. The editable badge it
+                    carried moved to the titlebar's trailing slot. */}
                 <nav className="inspector-tabs" aria-label="Plan inspector">
                   {([
                     { id: 'layers', label: 'Layers', icon: <IconLayers size={14} /> },
@@ -10207,6 +10815,7 @@ export function App() {
                   onPreview={setPlanBackground}
                   onCommit={(background, message) => void commitPlanBackground(background, message)}
                   onError={notify}
+                  planHasContent={planHasDrawnContent}
                 />
               </div>
               <div className="section layer-manager">
@@ -10332,10 +10941,12 @@ export function App() {
                                       <span className="layer-thumbnail" style={{ color: layer.tint }} aria-hidden>
                                         {layer.id === 'annotation' ? (
                                           <IconText size={15} />
-                                        ) : layer.id === 'walls' || layer.id === 'region' ? (
+                                        ) : layer.id === 'architecture' ? (
                                           <IconDrawPolygon size={15} />
-                                        ) : layer.id === 'other' ? (
+                                        ) : layer.id === 'staging' ? (
                                           <IconDrawRect size={15} />
+                                        ) : layer.id === 'seating' ? (
+                                          <IconChair size={15} />
                                         ) : (
                                           <IconLayers size={15} />
                                         )}
@@ -10345,6 +10956,36 @@ export function App() {
                                         <small>{layer.description}</small>
                                       </span>
                                       <span className="layer-object-count num" title={`${count} objects`}>{count}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`layer-lock${lockedLayers.has(layer.id) ? ' is-on' : ''}`}
+                                      onClick={() => toggleLayerLock(layer.id)}
+                                      disabled={!doc}
+                                      aria-pressed={lockedLayers.has(layer.id)}
+                                      title={
+                                        lockedLayers.has(layer.id)
+                                          ? `Unlock ${layer.label} — it can be selected and moved again`
+                                          : `Lock ${layer.label} — still drawn and still snapped to, but not selectable`
+                                      }
+                                      aria-label={`${lockedLayers.has(layer.id) ? 'Unlock' : 'Lock'} ${layer.label}`}
+                                    >
+                                      <IconLock size={13} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`layer-print${unprintedLayers.has(layer.id) ? '' : ' is-on'}`}
+                                      onClick={() => toggleLayerPrinted(layer.id)}
+                                      disabled={!doc}
+                                      aria-pressed={!unprintedLayers.has(layer.id)}
+                                      title={
+                                        unprintedLayers.has(layer.id)
+                                          ? `${layer.label} is left off printed sheets and exports`
+                                          : `${layer.label} is included on printed sheets and exports`
+                                      }
+                                      aria-label={`${unprintedLayers.has(layer.id) ? 'Include' : 'Leave'} ${layer.label} ${unprintedLayers.has(layer.id) ? 'on' : 'off'} printed sheets`}
+                                    >
+                                      <IconPrint size={13} />
                                     </button>
                                     <button
                                       type="button"
@@ -10465,7 +11106,123 @@ export function App() {
               </ul>
             </div>
           )}
+          </div>
         </aside>
+        {contextMenu && doc && (
+          <PlanContextMenu
+            at={contextMenu.at}
+            onClose={() => setContextMenu(null)}
+            items={((): PlanMenuEntry[] => {
+              const has = selectedIds.length > 0;
+              const many = selectedIds.length > 1;
+              const editable = !!doc.editable;
+              const entries: PlanMenuEntry[] = [];
+
+              if (has) {
+                entries.push(
+                  {
+                    id: 'properties',
+                    label: many ? `Properties of ${selectedIds.length} items` : 'Properties',
+                    icon: <IconEdit size={14} />,
+                    onSelect: () => {
+                      enterMode('inspect');
+                      setInspectorTab('properties');
+                    },
+                  },
+                  { id: 'sep-1', separator: true },
+                  {
+                    id: 'copy',
+                    label: 'Copy',
+                    shortcut: shortcut('C'),
+                    icon: <IconCopy size={14} />,
+                    onSelect: () => void copyPlanSelection(),
+                  },
+                  {
+                    id: 'duplicate',
+                    label: 'Duplicate',
+                    shortcut: shortcut('D'),
+                    icon: <IconDuplicate size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void duplicateSelection(),
+                  },
+                  { id: 'sep-2', separator: true },
+                  {
+                    id: 'group',
+                    label: 'Group',
+                    shortcut: shortcut('G'),
+                    icon: <IconGroup size={14} />,
+                    disabled: !editable || !many,
+                    onSelect: () => void groupPlanSelection(),
+                  },
+                  {
+                    id: 'ungroup',
+                    label: 'Ungroup',
+                    shortcut: shortcut('G', true),
+                    icon: <IconUngroup size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void ungroupPlanSelection(),
+                  },
+                  { id: 'sep-3', separator: true },
+                  {
+                    id: 'front',
+                    label: 'Bring to front',
+                    icon: <IconBringFront size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void reorderSelection('bring-to-front'),
+                  },
+                  {
+                    id: 'back',
+                    label: 'Send to back',
+                    icon: <IconSendBack size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void reorderSelection('send-to-back'),
+                  },
+                  { id: 'sep-4', separator: true },
+                  {
+                    id: 'delete',
+                    label: many ? `Delete ${selectedIds.length} items` : 'Delete',
+                    shortcut: '⌫',
+                    icon: <IconTrash size={14} />,
+                    disabled: !editable,
+                    danger: true,
+                    onSelect: () => void deleteSelection(),
+                  },
+                );
+              } else {
+                entries.push(
+                  {
+                    id: 'paste',
+                    label: planClipboard
+                      ? `Paste ${planClipboard.count} item${planClipboard.count === 1 ? '' : 's'}`
+                      : 'Paste',
+                    shortcut: shortcut('V'),
+                    icon: <IconPaste size={14} />,
+                    disabled: !editable || !planClipboard,
+                    onSelect: () => void pastePlanSelection(),
+                  },
+                  { id: 'sep-1', separator: true },
+                  {
+                    id: 'select-all',
+                    label: 'Select all',
+                    shortcut: shortcut('A'),
+                    icon: <IconPointer size={14} />,
+                    onSelect: selectAll,
+                  },
+                  {
+                    id: 'dimension-room',
+                    label: 'Dimension the room',
+                    icon: <IconRuler size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void dimensionRoomAutomatically(),
+                  },
+                );
+              }
+
+              return entries;
+            })()}
+          />
+        )}
+
         <SpaceCalculator
           open={calculatorOpen}
           units={unitSystem}

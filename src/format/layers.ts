@@ -44,10 +44,14 @@ export const DEFAULT_LAYERS: Array<Omit<LayerDefinition, 'id'> & { id: string; m
   { id: 'architecture', name: 'Architecture', visible: true, locked: true, order: 0, printed: true },
   { id: 'staging', name: 'Staging', visible: true, locked: false, order: 10, printed: true, match: /\b(stage|riser|deck|platform|stair)\b/i },
   { id: 'seating', name: 'Seating', visible: true, locked: false, order: 20, printed: true, match: /\b(chair|table|round|banquet|stool|bench)\b/i },
-  { id: 'video', name: 'Video', visible: true, locked: false, order: 30, printed: true, match: /\b(screen|projector|led|monitor|tv|display|camera)\b/i },
-  { id: 'lighting', name: 'Lighting', visible: true, locked: false, order: 40, printed: true, match: /\b(light|leko|par|fixture|wash|moving|truss)\b/i },
-  { id: 'audio', name: 'Audio', visible: true, locked: false, order: 50, printed: true, match: /\b(speaker|sub|mic|console|line array|monitor wedge)\b/i },
-  { id: 'power', name: 'Power & data', visible: true, locked: false, order: 55, printed: true, match: /\b(cable|feeder|distro|power run|signal|dmx|soca|data run)\b/i },
+  { id: 'video', name: 'Video', visible: true, locked: false, order: 30, printed: true, match: /\b(screen|projector|led|monitor|tv|display|camera|ptz|dsm|confidence|switcher|video)\b/i },
+  { id: 'lighting', name: 'Lighting', visible: true, locked: false, order: 40, printed: true, match: /\b(light|leko|par|fixture|wash|moving)\b/i },
+  // Rigging is its own discipline and its own conversation: what flies, from
+  // where, and how much it weighs. Truss and motors used to land on Lighting,
+  // which is who hangs the fixtures but never who signs off the points.
+  { id: 'rigging', name: 'Rigging', visible: true, locked: false, order: 45, printed: true, match: /\b(truss|motor|hoist|rigging|rig point|pick point|chain|span ?set|shackle)\b/i },
+  { id: 'audio', name: 'Audio', visible: true, locked: false, order: 50, printed: true, match: /\b(speaker|subwoofer|sub|mic|console|line array|monitor wedge|foh|amp rack)\b/i },
+  { id: 'power', name: 'Power & data', visible: true, locked: false, order: 55, printed: true, match: /\b(cable|feeder|distro|power|signal|dmx|soca|data|network|switch|ethernet)\b/i },
   { id: 'drape', name: 'Drape and scenic', visible: true, locked: false, order: 60, printed: true, match: /\b(drape|pipe|masking|scenic|backdrop)\b/i },
   { id: 'catering', name: 'Catering', visible: true, locked: false, order: 70, printed: true, match: /\b(buffet|bar|catering|service|beverage)\b/i },
   { id: 'annotation', name: 'Annotation', visible: true, locked: false, order: 100, printed: true },
@@ -70,12 +74,66 @@ export type LayerAssignment = Record<string, string>;
  * A suggestion, not a decision: it fills in a plan that has never been
  * organised, and any explicit assignment beats it.
  */
+/**
+ * Which layer wins when a name matches more than one.
+ *
+ * "Buffet Table" matches Catering on "buffet" and Seating on "table", and
+ * testing in draw order handed it to Seating — so a buffet ended up counted as
+ * furniture and missing from the catering plan. Draw order is about what paints
+ * on top of what; it says nothing about which word in a name is the more
+ * telling one.
+ *
+ * This is that second question, answered explicitly. The rule is specific
+ * before generic: a name that says "buffet" is about catering whatever else it
+ * also says, and Seating goes last because "table" and "round" are the words
+ * most likely to appear in a name that is really about something else.
+ */
+const MATCH_PRECEDENCE: readonly string[] = [
+  'catering',
+  'rigging',
+  'video',
+  'audio',
+  'lighting',
+  'power',
+  'drape',
+  'staging',
+  'seating',
+];
+
 export function suggestLayer(name: string): string {
-  for (const layer of DEFAULT_LAYERS) {
-    if (layer.match?.test(name)) return layer.id;
+  const byId = new Map(DEFAULT_LAYERS.map((layer) => [layer.id, layer]));
+  for (const id of MATCH_PRECEDENCE) {
+    if (byId.get(id)?.match?.test(name)) return id;
   }
+  // Anything still unmatched in an event plan is furniture more often than it
+  // is anything else. A guess, and labelled as one: the layer is editable.
   return 'seating';
 }
+
+/**
+ * The production layer a drawn primitive belongs to.
+ *
+ * `suggestLayer` answers for a NAMED placement — a chair, a projector — and
+ * falls back to seating, which is the right guess for an unrecognised piece of
+ * furniture and the wrong one for a wall. Room geometry and annotation are not
+ * named placements at all, so they are decided by what the file says they are
+ * before the name is ever consulted.
+ */
+export function disciplineFor(
+  primitiveLayer: 'walls' | 'furniture' | 'annotation' | 'region' | 'other',
+  owner?: string,
+): string {
+  if (primitiveLayer === 'walls' || primitiveLayer === 'region') return 'architecture';
+  if (primitiveLayer === 'annotation') return 'annotation';
+  if (owner) return suggestLayer(owner);
+  // Free geometry with no owner is scenery until somebody says otherwise: it is
+  // drawn linework rather than equipment, and filing it under seating would put
+  // the room's own detail in with the chairs.
+  return 'drape';
+}
+
+/** Every layer id, in draw order. */
+export const LAYER_IDS: readonly string[] = DEFAULT_LAYERS.map((layer) => layer.id);
 
 /** The layer a placement belongs to, explicit assignment first. */
 export function layerOf(item: PlacedItem, assignment: LayerAssignment): string {
@@ -200,4 +258,89 @@ export interface TitleBlock {
 /** The fields a title block carries, with the ones the plan already knows filled. */
 export function titleBlockFor(planName: string, scale: string, extra: Partial<TitleBlock> = {}): TitleBlock {
   return { plan: planName, scale, ...extra };
+}
+
+/** A weight and power total for one production layer. */
+export interface LoadLine {
+  layer: string;
+  /** Items counted. Items with no figure are excluded and reported separately. */
+  counted: number;
+  /** Items on this layer with no weight or power figure on their definition. */
+  unknown: number;
+  weightLb: number;
+  powerW: number;
+}
+
+export interface LoadSummary {
+  lines: LoadLine[];
+  totalWeightLb: number;
+  totalPowerW: number;
+  /** Items across the whole plan carrying no figure at all. */
+  unknown: number;
+  /**
+   * Amps at 120V, single phase, for the whole plan.
+   *
+   * A distro conversation happens in amps, not watts, and 120V single phase is
+   * what a US corporate ballroom runs unless somebody says otherwise. This is a
+   * planning figure for sizing a service, not a substitute for an electrician:
+   * it is a straight sum with no derating, no power factor and no allowance for
+   * inrush.
+   */
+  ampsAt120V: number;
+}
+
+/**
+ * What the plan weighs and what it draws, by layer.
+ *
+ * `weightLb` and `powerW` have been on every item definition since the
+ * catalogue was written, and nothing has ever read them. A TD sizing rigging
+ * points and an electrician sizing a distro have both been rebuilding these
+ * numbers in a spreadsheet from a drawing that already held them.
+ *
+ * Items with no figure are counted separately rather than treated as zero. A
+ * total that quietly assumes the unknowns weigh nothing is worse than no total,
+ * because it looks like an answer.
+ */
+export function summariseLoad(
+  items: PlacedItem[],
+  layers: LayerDefinition[],
+  assignment: LayerAssignment,
+): LoadSummary {
+  const lines: LoadLine[] = [];
+  let totalWeightLb = 0;
+  let totalPowerW = 0;
+  let unknown = 0;
+
+  for (const { layer, items: group } of groupByLayer(items, layers, assignment)) {
+    let weightLb = 0;
+    let powerW = 0;
+    let counted = 0;
+    let missing = 0;
+
+    for (const item of group) {
+      const w = item.spec.weightLb;
+      const p = item.spec.powerW;
+      if (w == null && p == null) {
+        missing++;
+        continue;
+      }
+      counted++;
+      weightLb += w ?? 0;
+      powerW += p ?? 0;
+    }
+
+    if (!counted && !missing) continue;
+    lines.push({ layer: layer.name, counted, unknown: missing, weightLb, powerW });
+    totalWeightLb += weightLb;
+    totalPowerW += powerW;
+    unknown += missing;
+  }
+
+  return {
+    lines,
+    totalWeightLb,
+    totalPowerW,
+    unknown,
+    ampsAt120V: totalPowerW / 120,
+  };
 }

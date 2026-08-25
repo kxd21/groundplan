@@ -116,6 +116,28 @@ export class Session {
     return this.savedBody;
   }
 
+  /**
+   * Replaces the whole document with a saved snapshot.
+   *
+   * Used by version restore. The caller checkpoints first, so this lands on the
+   * undo stack like any other edit — restoring last week's layout must itself
+   * be undoable, or the feature is a trap.
+   *
+   * Returns false rather than throwing when the snapshot will not parse: a
+   * corrupted version file should report itself, not take the session down.
+   */
+  restoreFrom(file: Buffer): boolean {
+    try {
+      const loaded = loadBuffer(file, this.path);
+      this.adopt(loaded);
+      this.dirtyFlag = true;
+      this.revision++;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Call before mutating, so the change can be undone. */
   checkpoint(): void {
     if (this.redoBeforeCheckpoint) {

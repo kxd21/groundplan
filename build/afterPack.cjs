@@ -14,6 +14,14 @@ const { join } = require('node:path');
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') return;
 
+  // A signed build gets a real Developer ID signature from electron-builder
+  // after this hook. Ad-hoc signing here would overwrite it and put the app
+  // straight back to "Apple could not verify this software".
+  if (process.env.GROUNDPLAN_SIGNED === '1') {
+    console.log('  • skipping ad-hoc signature: Developer ID build');
+    return;
+  }
+
   const app = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
   try {
     execFileSync('codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'pipe' });

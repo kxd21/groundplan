@@ -596,3 +596,11 @@ export function IconMore({ size = 16, className }: IconProps) {
     </svg>
   );
 }
+
+export function IconClose({ size = 16, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  );
+}

@@ -1,0 +1,52 @@
+# Overlay for a signed, Apple-notarised macOS build.
+#
+#   npm run dist:mac:signed
+#
+# The default `electron-builder.yml` deliberately produces an ad-hoc signed app
+# with no Developer ID, because that is the only thing a machine without a
+# certificate can make. That build launches, but Gatekeeper tells the user
+# "Apple could not verify this software is free of malware", and on macOS 15 and
+# later they have to go to System Settings to let it open at all. Right-click →
+# Open stopped being a way round that.
+#
+# This overlay is what removes the warning. It needs three things that cannot
+# live in a file:
+#
+#   1. An Apple Developer Program membership, and a "Developer ID Application"
+#      certificate installed in the login keychain. `security find-identity -v
+#      -p codesigning` should list it.
+#   2. APPLE_TEAM_ID — the 10-character team id from the developer account.
+#   3. Credentials for the notary service, as environment variables:
+#        APPLE_ID                 the developer account email
+#        APPLE_APP_SPECIFIC_PASSWORD  generated at appleid.apple.com, NOT the
+#                                     account password
+#        APPLE_TEAM_ID
+#      or, preferably, an App Store Connect API key:
+#        APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER
+#
+# electron-builder reads all of those from the environment on its own. Nothing
+# here stores a secret, and nothing should.
+
+extends: electron-builder.yml
+
+mac:
+  # This MUST be set to something. The base config says `identity: null`, which
+  # electron-builder reads as "do not sign", and an overlay that leaves it alone
+  # inherits that and silently ships another unsigned app — the exact bug this
+  # file exists to fix.
+  #
+  # The value is matched as a substring against the certificates in the login
+  # keychain, so the generic name finds "Developer ID Application: Name (TEAM)"
+  # without pinning a team id that changes when the certificate is renewed. With
+  # more than one Developer ID installed, name the full one here or pass
+  # CSC_NAME in the environment.
+  identity: Developer ID Application
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+
+# The ad-hoc afterPack signature must not run on a signed build: it would
+# replace the Developer ID signature with an ad-hoc one and undo the whole
+# point. `build/afterPack.cjs` checks GROUNDPLAN_SIGNED for exactly this.

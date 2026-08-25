@@ -8,6 +8,14 @@
  */
 
 import { isBrokenPipe } from './ignore-epipe.js';
+import type { CableKind } from '../format/cable.js';
+import {
+  deleteVersion,
+  listVersions,
+  readVersion,
+  renameVersion,
+  saveVersion,
+} from './version-store.js';
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, type MenuItemConstructorOptions } from 'electron';
 import { join, dirname, basename, extname } from 'node:path';
 import { readdir, readFile, stat, mkdir, unlink } from 'node:fs/promises';
@@ -81,6 +89,7 @@ import {
   nodeCentre,
   resizeNode,
   measureNode,
+  orientedExtent,
   setPoints,
   flipNode,
   setLabelStyle,
@@ -213,7 +222,9 @@ import {
   curveRoomWall,
   curveRoomWallThrough,
   drawShape,
+  dimensionOneWall,
   dimensionTheRoom,
+  type WallDimensionKind,
   lengthenRoomWall,
   moveRoomCorner,
   offsetRoomWall,
@@ -221,6 +232,11 @@ import {
   placeScreenProjectorPair,
   placementElevations,
   planAllocation,
+  addLedWall,
+  comparePlanWith,
+  planCableSchedule,
+  planLegend,
+  planLoad,
   planModelView,
   resolvePlanRoom,
   planReport,
@@ -1358,6 +1374,7 @@ const RESULT_CHANNELS = new Set([
   'plan-folders:update-plan',
   'plan-folders:cleanup-missing',
   'edit:move',
+  'edit:move-to',
   'edit:delete',
   'edit:duplicate',
   'edit:recolor',
@@ -1431,6 +1448,16 @@ const RESULT_CHANNELS = new Set([
   'plan:room-wall-length',
   'plan:room-wall-offset',
   'plan:room-dimension',
+  'plan:wall-dimension',
+  'plan:load-summary',
+  'plan:cable-schedule',
+  'plan:led-wall',
+  'versions:list',
+  'versions:save',
+  'versions:restore',
+  'versions:compare',
+  'versions:rename',
+  'versions:delete',
   'plan:identity-set',
   'plan:seating-apply',
   'plan:stage-add',
@@ -2877,13 +2904,13 @@ function buildMenu(): void {
         { label: 'Zoom to Fit', accelerator: 'CmdOrCtrl+0', click: () => mainWindow?.webContents.send('menu:fit') },
         { type: 'separator' },
         {
-          label: 'Workspace Mode',
+          label: 'Panels & Tools',
           submenu: [
-            { label: 'Browse', click: () => mainWindow?.webContents.send('menu:mode-browse') },
-            { label: 'Place', click: () => mainWindow?.webContents.send('menu:mode-place') },
-            { label: 'Inspect', click: () => mainWindow?.webContents.send('menu:mode-inspect') },
-            { label: 'Setup', click: () => mainWindow?.webContents.send('menu:mode-setup') },
-            { label: 'Draw', click: () => mainWindow?.webContents.send('menu:mode-draw') },
+            { label: 'Files', click: () => mainWindow?.webContents.send('menu:mode-browse') },
+            { label: 'Assets', click: () => mainWindow?.webContents.send('menu:mode-place') },
+            { label: 'Properties', click: () => mainWindow?.webContents.send('menu:mode-inspect') },
+            { label: 'Layout Library', click: () => mainWindow?.webContents.send('menu:mode-setup') },
+            { label: 'All Canvas Tools', click: () => mainWindow?.webContents.send('menu:mode-draw') },
           ],
         },
         ...(!app.isPackaged
@@ -3441,6 +3468,42 @@ app.whenReady().then(async () => {
     scheduleObjectLinkPersist();
     return { ok: true, text: `Detached ${removed} stack link${removed === 1 ? '' : 's'}` };
   });
+
+  /**
+   * Puts an object at a stated position, rather than nudging it by an offset.
+   *
+   * `edit:move` is relative, which is the right primitive for a drag but the
+   * wrong one for a drawing: a plan says "the podium is at 32ft, 18ft", never
+   * "the podium is 4ft left of wherever it happens to be". The centre is
+   * already reported by `edit:selection`, so this closes the loop — the same
+   * number a user reads back is the one they can type.
+   *
+   * The delta is computed here rather than in the renderer so the whole thing
+   * is one undoable step and cannot drift if the selection moved in between.
+   */
+  handle('edit:move-to', (_event, nodeId: number, x: number | null, y: number | null) =>
+    applyEdit((s) => {
+      const node = s.index.byId.get(nodeId);
+      if (!node) return { ok: false, reason: 'object no longer exists' };
+      const centreX = (node.bounds.left + node.bounds.right) / 2;
+      const centreY = (node.bounds.top + node.bounds.bottom) / 2;
+      // A null axis is "leave this one alone", so X and Y can be committed
+      // independently as the user tabs between the two fields.
+      const dx = x == null ? 0 : x - centreX;
+      const dy = y == null ? 0 : y - centreY;
+      if (dx === 0 && dy === 0) return { ok: true };
+      const partners = expandLinkedIds([nodeId]).filter((id) => id !== nodeId);
+      const moved = moveNode(s.loaded.document, node, dx, dy);
+      if (!moved.ok) return moved;
+      for (const id of partners) {
+        const partner = s.index.byId.get(id);
+        if (!partner) continue;
+        const next = moveNode(s.loaded.document, partner, dx, dy);
+        if (!next.ok) return next;
+      }
+      return { ok: true };
+    }),
+  );
 
   handle('edit:move', (_event, nodeId: number, dx: number, dy: number) =>
     applyEdit((s) => {
@@ -4602,7 +4665,14 @@ app.whenReady().then(async () => {
     applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
       if (!node) return { ok: false, reason: 'object no longer exists' };
-      const current = measureNode(node);
+      // Measure the same rectangle Properties reports, or the scale is taken
+      // against a different number than the one the user edited: a chair shown
+      // as 20.5in wide but divided by its 30.4in box grows by 1.35x when asked
+      // for 2x. `resizeNode` scales on the object's own axes to match.
+      // (`repeat-across` deliberately keeps the axis-aligned box — it spaces
+      // copies along world directions, where the footprint is what matters.)
+      const own = node.cls === 'RVShape' ? orientedExtent(node) : null;
+      const current = own ?? measureNode(node);
       if (current.width <= 0 || current.height <= 0) {
         return { ok: false, reason: 'this item has no size to change' };
       }
@@ -4897,7 +4967,76 @@ app.whenReady().then(async () => {
     applyEdit((s) => offsetRoomWall(s, wallIndex, Number(distance), unitSystem())),
   );
 
-  handle('plan:room-dimension', () => applyEdit((s) => dimensionTheRoom(s, unitSystem())));
+  handle('plan:room-dimension', (_event, options?: { corners?: boolean }) =>
+    applyEdit((s) => dimensionTheRoom(s, unitSystem(), options ?? {})),
+  );
+
+  handle(
+    'plan:led-wall',
+    (_event, x: number, y: number, request: { panel: string; columns: number; rows: number; name?: string }) => {
+      let extra: { wall?: unknown; buildList?: unknown; warnings?: string[] } = {};
+      const reply = applyEdit((s) => {
+        const result = addLedWall(s, x, y, request);
+        extra = { wall: result.wall, buildList: result.buildList, warnings: result.warnings };
+        return result;
+      });
+      return { ...reply, ...extra };
+    },
+  );
+
+  /* ── Named versions ───────────────────────────────────────────────────── */
+
+  handle('versions:list', () => (session ? listVersions(session.path) : []));
+
+  handle('versions:save', (_event, name: string) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    // The snapshot is the plan as it stands, including unsaved edits: a version
+    // you have to save the file to take is a version you will forget to take.
+    const result = saveVersion(session.path, session.file(), String(name ?? ''));
+    return result.ok ? { ok: true, version: result.version } : result;
+  });
+
+  handle('versions:restore', async (_event, id: string) => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const bytes = readVersion(session.path, String(id));
+    if (!bytes) return { ok: false, reason: 'that version is no longer on disk' };
+    // Restoring is an edit, not a file swap: it goes on the undo stack like
+    // anything else, so a restore can be taken back.
+    return applyEdit((s) => {
+      const ok = s.restoreFrom(bytes);
+      return ok ? { ok: true } : { ok: false, reason: 'that version could not be opened' };
+    });
+  });
+
+  handle('versions:compare', (_event, id: string) => {
+    if (!session) return null;
+    const bytes = readVersion(session.path, String(id));
+    if (!bytes) return null;
+    try {
+      return comparePlanWith(session, bytes);
+    } catch {
+      return null;
+    }
+  });
+
+  handle('versions:rename', (_event, id: string, name: string) =>
+    session ? renameVersion(session.path, String(id), String(name ?? '')) : false,
+  );
+
+  handle('versions:delete', (_event, id: string) =>
+    session ? deleteVersion(session.path, String(id)) : false,
+  );
+
+  handle('plan:cable-schedule', () => (session ? planCableSchedule(session) : null));
+
+  handle('plan:load-summary', () => {
+    if (!session) return null;
+    return planLoad(session);
+  });
+
+  handle('plan:wall-dimension', (_event, index: number, kind: WallDimensionKind) =>
+    applyEdit((s) => dimensionOneWall(s, index, kind, unitSystem())),
+  );
 
   handle('plan:room-meta', async (_event, patch: { name?: string; ceilingHeight?: number }) => {
     if (!session) return { ok: false, reason: 'no plan is open' };
@@ -5135,12 +5274,24 @@ app.whenReady().then(async () => {
       height: number,
       back?: { depth: number; height: number },
       stairs?: Array<'front' | 'back' | 'left' | 'right'>,
+      more?: {
+        levels?: Array<{ depth: number; height: number; label?: string }>;
+        ramps?: Array<'front' | 'back' | 'left' | 'right'>;
+        rails?: Array<'front' | 'back' | 'left' | 'right'>;
+        deckSize?: string;
+        skirted?: boolean;
+      },
     ) => {
       let extra: { buildList?: unknown; warnings?: string[] } = {};
       const reply = applyEdit((s) => {
         const result = addStage(s, x, y, width, depth, height, {
           back: back && back.depth > 0 && back.height > 0 ? back : undefined,
           stairs: Array.isArray(stairs) ? stairs : undefined,
+          levels: Array.isArray(more?.levels) ? more.levels : undefined,
+          ramps: Array.isArray(more?.ramps) ? more.ramps : undefined,
+          rails: Array.isArray(more?.rails) ? more.rails : undefined,
+          deckSize: typeof more?.deckSize === 'string' ? more.deckSize : undefined,
+          skirted: more?.skirted,
         });
         extra = { buildList: result.buildList, warnings: result.warnings };
         return result;
@@ -5156,8 +5307,15 @@ app.whenReady().then(async () => {
     applyEdit((s) => drawShape(s, tool, x1, y1, x2, y2)),
   );
 
-  handle('plan:add-cable-path', (_event, name: string, points: Array<{ x: number; y: number }>) =>
-    applyEdit((s) => addCablePath(s, typeof name === 'string' ? name : 'Power run', Array.isArray(points) ? points : [])),
+  handle('plan:add-cable-path', (_event, name: string, points: Array<{ x: number; y: number }>, kind?: CableKind) =>
+    applyEdit((s) =>
+      addCablePath(
+        s,
+        typeof name === 'string' ? name : 'Power run',
+        Array.isArray(points) ? points : [],
+        typeof kind === 'string' ? kind : undefined,
+      ),
+    ),
   );
 
   handle('plan:place-av-pair', (_event, x: number, y: number) =>
@@ -5903,6 +6061,19 @@ app.whenReady().then(async () => {
         ? node.labels[1]
         : node.labels.find((s) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(s));
     const measured = measureNode(node);
+    // Prefer the object's own rectangle. `measureNode` returns the axis-aligned
+    // box, and `node.angle` is a running total of turns applied rather than an
+    // absolute facing, so a 20.5x23.2in chair drawn at -120 degrees reported
+    // "0 degrees, 30.4 x 29.4in" — three numbers, none of them the ones on screen.
+    const own = node.cls === 'RVShape' ? orientedExtent(node) : null;
+    /** Degrees clockwise, normalised to [-180, 180) so nothing shows "512". */
+    const normalise = (degrees: number): number =>
+      Math.round(((((degrees + 180) % 360) + 360) % 360 - 180) * 10) / 10;
+    const facing = own
+      ? normalise((own.angleRadians * 180) / Math.PI)
+      : node.angle != null && Number.isFinite(node.angle)
+        ? normalise((node.angle * 180) / Math.PI)
+        : null;
     const info: SelectionInfo = {
       nodeId,
       cls: node.cls,
@@ -5912,14 +6083,11 @@ app.whenReady().then(async () => {
       canDelete: !session.index.shared.has(node),
       canRelabel:
         (node.cls === 'RVLabel' && node.fields.textAt != null) || node.fields.nameAt != null,
-      widthUnits: measured.width,
-      heightUnits: measured.height,
+      widthUnits: own?.width ?? measured.width,
+      heightUnits: own?.height ?? measured.height,
       x: (node.bounds.left + node.bounds.right) / 2,
       y: (node.bounds.top + node.bounds.bottom) / 2,
-      angleDegrees:
-        node.angle != null && Number.isFinite(node.angle)
-          ? Math.round(((node.angle * 180) / Math.PI) * 10) / 10
-          : null,
+      angleDegrees: facing,
       textStyle:
         node.cls === 'RVLabel'
           ? {
@@ -6345,7 +6513,14 @@ app.whenReady().then(async () => {
       let fit: { fits: boolean; overBy: number };
       try {
         fit = await printPlanToPdf(
-          { ...payload, printedOn: new Date().toLocaleDateString() },
+          {
+            ...payload,
+            // The legend comes from the drawing, not from the window: the main
+            // process is the one holding the document, so it is the one that
+            // can answer "what is on this sheet".
+            legend: session ? planLegend(session) : undefined,
+            printedOn: new Date().toLocaleDateString(),
+          },
           result.filePath,
         );
       } catch (err) {

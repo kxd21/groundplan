@@ -22,7 +22,7 @@
  * default to writing under ~/Downloads, which is nobody's idea of a test
  * fixture directory.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -48,10 +48,43 @@ const cdpUp = () =>
     .then((pages) => pages.some((p) => p.type === 'page'))
     .catch(() => false);
 
+/**
+ * Decides what to do about a CDP session that is already listening.
+ *
+ * Reusing one is how this used to behave, and it is why the gate could report a
+ * dozen failures that had nothing to do with the code: a leftover Electron from
+ * an earlier run — possibly a different build, possibly parked on the welcome
+ * screen — was driven as though the gate had put it there. A gate that does not
+ * know what state it is testing is not a gate.
+ *
+ * So the default is to refuse and say which processes are in the way. Reuse is
+ * still available for the attach workflow, but it has to be asked for, because
+ * asking for it is the moment you take responsibility for the state.
+ */
 async function freePort() {
   if (!(await cdpUp())) return;
-  console.log('· a CDP session is already up — reusing it');
-  return 'reused';
+
+  if (process.env.GROUNDPLAN_REUSE_CDP === '1') {
+    console.log('· a CDP session is already up — reusing it (GROUNDPLAN_REUSE_CDP=1)');
+    return 'reused';
+  }
+
+  let owners = '';
+  try {
+    owners = execFileSync('lsof', ['-ti', `:${PORT}`], { encoding: 'utf8' }).trim();
+  } catch {
+    /* lsof is best-effort; the message is still useful without it. */
+  }
+
+  console.error(
+    `\nui gate: something is already serving CDP on ${PORT}.\n` +
+      (owners ? `  process ${owners.split('\n').join(', ')}\n` : '') +
+      '  This is usually a Groundplan left running from an earlier session, and\n' +
+      '  driving it would test whatever state it happens to be in.\n\n' +
+      `  Close it — pkill -f "Groundplan/node_modules/electron" — and run again,\n` +
+      '  or set GROUNDPLAN_REUSE_CDP=1 to drive it deliberately.',
+  );
+  process.exit(2);
 }
 
 function run(cmd, args, env) {

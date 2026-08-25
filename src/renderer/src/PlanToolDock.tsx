@@ -1,5 +1,6 @@
-import { useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
+import { Fragment, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 
+import DockTitlebar from './DockTitlebar.js';
 import { IconEdit, IconMore, IconSidebarLeft, IconSidebarRight } from './icons.js';
 
 export interface PlanDockTool {
@@ -16,7 +17,18 @@ export type PlanToolDockSide = 'left' | 'right' | 'floating';
 
 interface Props {
   compact: boolean;
+  /**
+   * Rendered as a panel in the Plan dock rather than floated over the sheet.
+   *
+   * The shelf used to be the only dark surface in a light application, sat on
+   * top of the ruler it was covering, and carried four unlabelled window
+   * controls of its own. Docked it is one of five panels that all look and
+   * close the same way, and it can afford to label its tools.
+   */
+  docked?: boolean;
   groups: PlanDockTool[][];
+  /** Short scan labels for the groups above. Hidden by the compact floating shelf. */
+  groupLabels?: string[];
   foreground: string;
   paper: boolean;
   side: PlanToolDockSide;
@@ -48,7 +60,9 @@ interface DragState {
  */
 export default function PlanToolDock({
   compact,
+  docked = false,
   groups,
+  groupLabels = [],
   foreground,
   paper,
   side,
@@ -69,6 +83,9 @@ export default function PlanToolDock({
   const dragRef = useRef<DragState | null>(null);
   const allTools = groups.flat();
   const toolById = new Map(allTools.map((tool) => [tool.id, tool]));
+  const groupById = new Map(
+    groups.flatMap((group, groupIndex) => group.map((tool) => [tool.id, groupIndex] as const)),
+  );
   const canonicalOrder = allTools.map((tool) => tool.id);
   const orderedIds = [
     ...order.filter((id, index) => toolById.has(id) && order.indexOf(id) === index),
@@ -76,6 +93,7 @@ export default function PlanToolDock({
   ];
   const hiddenSet = new Set(hidden.filter((id) => toolById.has(id)));
   const visibleTools = orderedIds.map((id) => toolById.get(id)!).filter((tool) => !hiddenSet.has(tool.id));
+  const activeTool = visibleTools.find((tool) => tool.active);
 
   const moveTool = (id: string, delta: -1 | 1) => {
     const from = orderedIds.indexOf(id);
@@ -151,17 +169,44 @@ export default function PlanToolDock({
   };
 
   const style =
-    side === 'floating'
+    !docked && side === 'floating'
       ? ({ left: `${position.x}px`, top: `${position.y}px` } satisfies CSSProperties)
       : undefined;
+
+  // Docked, the panel is as wide as every other one in the dock, so hiding the
+  // tool names to save room would be saving room that is already there.
+  const showLabels = docked || !compact;
+
+  const customizeButton = (
+    <button
+      type="button"
+      className={`plan-tool-customize${customizing ? ' is-active' : ''}`}
+      onClick={() => setCustomizing((open) => !open)}
+      aria-label="Customize toolbar"
+      aria-expanded={customizing}
+      title="Customize toolbar"
+      data-tooltip="Customize toolbar"
+    >
+      <IconEdit size={12} />
+    </button>
+  );
 
   return (
     <aside
       ref={dockRef}
-      className={`plan-tool-dock is-${side}${compact ? ' is-compact' : ''}`}
+      className={`plan-tool-dock ${docked ? 'is-docked' : `is-${side}`}${compact && !docked ? ' is-compact' : ''}`}
       style={style}
       aria-label="Plan tools"
     >
+      {docked ? (
+        <DockTitlebar
+          title="Tools"
+          sub={activeTool ? `${activeTool.label}${activeTool.shortcut ? ` · ${activeTool.shortcut}` : ''}` : 'Build, draw, place, and measure'}
+          trailing={customizeButton}
+          onClose={onClose}
+          closeLabel="Close Tools"
+        />
+      ) : (
       <header
         className="plan-tool-dock-head"
         onPointerDown={beginDrag}
@@ -171,17 +216,7 @@ export default function PlanToolDock({
         title="Drag to move the toolbar"
       >
         <span className="plan-tool-grip" aria-hidden>••••</span>
-        <button
-          type="button"
-          className={customizing ? 'is-active' : ''}
-          onClick={() => setCustomizing((open) => !open)}
-          aria-label="Customize toolbar"
-          aria-expanded={customizing}
-          title="Customize toolbar"
-          data-tooltip="Customize toolbar"
-        >
-          <IconEdit size={12} />
-        </button>
+        {customizeButton}
         <button
           type="button"
           onClick={cycleSide}
@@ -210,6 +245,7 @@ export default function PlanToolDock({
           ×
         </button>
       </header>
+      )}
 
       <div
         className="plan-tool-dock-groups"
@@ -227,24 +263,32 @@ export default function PlanToolDock({
         }}
       >
         <div className="plan-tool-dock-group is-custom-order">
-          {visibleTools.map((item) => {
+          {visibleTools.map((item, index) => {
             const tip = `${item.label}${item.shortcut ? ` (${item.shortcut})` : ''}`;
+            const groupIndex = groupById.get(item.id) ?? -1;
+            const previousGroupIndex = index > 0 ? groupById.get(visibleTools[index - 1]!.id) ?? -1 : -2;
+            const groupLabel = groupLabels[groupIndex];
             return (
-              <button
-                type="button"
-                key={item.id}
-                className={item.active ? 'is-active' : ''}
-                onClick={item.onClick}
-                disabled={item.disabled}
-                data-tool-id={item.id}
-                aria-label={tip}
-                aria-pressed={item.active || undefined}
-                title={tip}
-                data-tooltip={tip}
-              >
-                {item.icon}
-                {!compact && <span>{item.label}</span>}
-              </button>
+              <Fragment key={item.id}>
+                {docked && groupLabel && groupIndex !== previousGroupIndex ? (
+                  <div className="plan-tool-group-label">{groupLabel}</div>
+                ) : null}
+                <button
+                  type="button"
+                  className={item.active ? 'is-active' : ''}
+                  onClick={item.onClick}
+                  disabled={item.disabled}
+                  data-tool-id={item.id}
+                  aria-label={tip}
+                  aria-pressed={!!item.active}
+                  title={tip}
+                  data-tooltip={tip}
+                >
+                  <span className="plan-tool-icon" aria-hidden="true">{item.icon}</span>
+                  {showLabels && <span className="plan-tool-label">{item.label}</span>}
+                  {showLabels && item.shortcut ? <kbd>{item.shortcut}</kbd> : null}
+                </button>
+              </Fragment>
             );
           })}
         </div>
@@ -253,21 +297,35 @@ export default function PlanToolDock({
       <footer className="plan-tool-colours" aria-label="Drawing colours">
         <button
           type="button"
+          className="plan-tool-colour-action"
           onClick={onForeground}
           title="Selection line colour"
           data-tooltip="Selection line colour"
           aria-label="Selection line colour"
         >
-          <span className="plan-tool-colour is-foreground" style={{ background: foreground }} />
+          <span className="plan-tool-colour" style={{ background: foreground }} />
+          {docked ? (
+            <span className="plan-tool-colour-copy">
+              <small>Stroke</small>
+              <strong>{foreground.toUpperCase()}</strong>
+            </span>
+          ) : null}
         </button>
         <button
           type="button"
+          className="plan-tool-colour-action"
           onClick={onBackground}
           title="Plan sheet colour"
           data-tooltip="Plan sheet colour"
           aria-label="Plan sheet colour"
         >
-          <span className="plan-tool-colour is-background" style={{ background: paper ? '#ffffff' : '#20252b' }} />
+          <span className="plan-tool-colour" style={{ background: paper ? '#ffffff' : '#20252b' }} />
+          {docked ? (
+            <span className="plan-tool-colour-copy">
+              <small>Sheet</small>
+              <strong>{paper ? 'Paper' : 'Dark'}</strong>
+            </span>
+          ) : null}
         </button>
       </footer>
 

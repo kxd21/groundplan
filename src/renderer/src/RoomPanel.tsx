@@ -1511,9 +1511,9 @@ export default function RoomPanel({
           <IconChair size={20} />
         </span>
         <span className="seating-panel-hero-copy">
-          <small>Event layout</small>
+          <small>Seating generator</small>
           <strong>Seating planner</strong>
-          <span>Configure the room, preview capacity, then place one or more seating sections.</span>
+          <span>Design full-room seating with a live capacity preview.</span>
         </span>
         {preview && (
           <span className="seating-panel-hero-count">
@@ -1521,12 +1521,6 @@ export default function RoomPanel({
             <small>seats</small>
           </span>
         )}
-      </div>
-
-      <div className="seating-workflow" aria-label="Seating workflow">
-        <span className={room ? 'is-complete' : 'is-current'}><b>1</b> Room</span>
-        <span className={room && chair ? 'is-complete' : room ? 'is-current' : ''}><b>2</b> Layout</span>
-        <span className={room && chair && preview?.seats ? 'is-current' : ''}><b>3</b> Place</span>
       </div>
 
       {/* ---------------------------------------------------------------- */}
@@ -1541,56 +1535,27 @@ export default function RoomPanel({
           )}
         </div>
 
-        <div className="field-row">
-          <div className="field">
-            <label htmlFor="erd-room-name">Room name</label>
-            <input
-              id="erd-room-name"
-              type="text"
-              value={roomName}
-              disabled={!editable}
-              onChange={(e) => setRoomName(e.target.value)}
-              onBlur={() => void saveRoomMeta()}
-            />
-          </div>
-        </div>
-        <div className="field-row">
-          <LengthField id="room-ceiling" label="Ceiling height" field={ceiling} units={units} disabled={!editable} />
-          <div className="field" style={{ justifyContent: 'flex-end' }}>
-            <button type="button" className="btn-outline" disabled={!editable} onClick={() => void saveRoomMeta()}>
-              Save room
+        <div className="seating-settings-tabs" role="tablist" aria-label="Seating settings">
+          {(
+            [
+              ['seating', 'Layout'],
+              ['spacing', 'Spacing'],
+              ['av', 'A/V'],
+              ['design', 'Advanced'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={erdTab === id}
+              className={erdTab === id ? 'active' : ''}
+              onClick={() => setErdTab(id)}
+            >
+              {label}
             </button>
-          </div>
+          ))}
         </div>
-        <p className="erd-meta-hint">
-          Outline size is set above with Draw / Redraw or the Outline editor — not here.
-        </p>
-
-        <label className="seating-section-picker" htmlFor="seating-settings-section">
-          <span>
-            <small>Settings section</small>
-            <strong>
-              {erdTab === 'seating'
-                ? 'Layout and equipment'
-                : erdTab === 'spacing'
-                  ? 'Spacing and clearances'
-                  : erdTab === 'av'
-                    ? 'A/V sightline review'
-                    : 'Advanced sectioning'}
-            </strong>
-          </span>
-          <select
-            id="seating-settings-section"
-            value={erdTab}
-            onChange={(event) => setErdTab(event.target.value as ErdTab)}
-            aria-label="Choose seating settings section"
-          >
-            <option value="seating">Layout</option>
-            <option value="spacing">Spacing</option>
-            <option value="av">A/V review</option>
-            <option value="design">Advanced</option>
-          </select>
-        </label>
 
         {erdTab === 'seating' && (
           <>
@@ -1599,7 +1564,7 @@ export default function RoomPanel({
               {(
                 [
                   ['schoolroom', 'Schoolroom'],
-                  ['theatre', 'Theater'],
+                  ['theatre', 'Theatre'],
                   ['banquet', 'Banquet'],
                   ['hollow-square', 'Hollow Square'],
                   ['u-shape', 'U-Shape'],

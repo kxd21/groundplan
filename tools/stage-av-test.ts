@@ -8,6 +8,7 @@ import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../src/format/rv.js';
 import {
   DECK_SIZES,
   deckOutlines,
+  multiLevelStage,
   simpleStage,
   solveStage,
   stageBuildList,
@@ -292,6 +293,94 @@ console.log('\nsightlines\n');
 
   check('an empty house summarises without complaint', summariseSightlines([]).total === 0);
   check('a good house says so', summariseSightlines(checkSightlines([{ x: 30 * F, y: 40 * F, rotation: 0, row: 0, seat: 0, section: 0 }], screen)).notes[0].includes('clear'));
+}
+
+
+// ── Stage builds beyond two tiers ───────────────────────────────────────────
+console.log('\nstages with more than two levels, ramps and rails\n');
+{
+  const FT = 120;
+  const IN = 10;
+
+  // A keynote set: downstage thrust, main deck, upstage band riser.
+  const build = multiLevelStage(0, 0, 40 * FT, [
+    { depth: 8 * FT, height: 16 * IN, label: 'Thrust' },
+    { depth: 24 * FT, height: 32 * IN, label: 'Main deck' },
+    { depth: 8 * FT, height: 48 * IN, label: 'Band riser' },
+  ], { stairEdges: ['left', 'right'], rampEdges: ['front'], railEdges: ['back'] });
+
+  check('three levels build', build.levels.length === 3, `${build.levels.length}`);
+  check(
+    'levels stack front to back without overlapping',
+    build.levels[1]!.y === build.levels[0]!.y + build.levels[0]!.depth &&
+      build.levels[2]!.y === build.levels[1]!.y + build.levels[1]!.depth,
+  );
+  check(
+    'access attaches to the tallest level, not the first',
+    build.stairs.every((s) => s.level === 2) && build.ramps.every((r) => r.level === 2),
+    JSON.stringify({ stairs: build.stairs.map((s) => s.level), ramps: build.ramps.map((r) => r.level) }),
+  );
+
+  const solution = solveStage(build);
+  check('every level tiles into decks', solution.decks.length > 0, `${solution.decks.length} decks`);
+  check(
+    'decks carry the height of the level they belong to',
+    new Set(solution.decks.map((d) => d.height)).size === 3,
+    [...new Set(solution.decks.map((d) => d.height / IN))].join(', '),
+  );
+
+  const list = stageBuildList(build, solution);
+  const ramp = list.find((l) => l.item.startsWith('Ramp '));
+  check('the ramp is on the build list', !!ramp, list.map((l) => l.item).join(' | '));
+  // 48in of rise at 1:12 is 48ft of ramp — the number that decides whether it fits.
+  check('and is priced by its run, not its rise', /48\.0ft run/.test(ramp?.detail ?? ''), ramp?.detail);
+  check('the guardrail is on the build list', list.some((l) => l.item.startsWith('Guardrail')));
+  check('skirting is still on the build list', list.some((l) => l.item.startsWith('Skirt')));
+
+  const warned = stageWarnings(build);
+  check(
+    'a 48ft ramp run is flagged as needing to fit',
+    warned.some((w) => /runs 48ft/.test(w)),
+    warned.join(' | '),
+  );
+
+  // A ramp steeper than 1:12 is not an accessible ramp, whatever it is called.
+  const steep = multiLevelStage(0, 0, 20 * FT, [{ depth: 12 * FT, height: 24 * IN }], {
+    rampEdges: ['front'],
+  });
+  steep.ramps[0]!.slope = 8;
+  check(
+    'a 1:8 ramp is called out against the 1:12 limit',
+    stageWarnings(steep).some((w) => /1:8/.test(w) && /1:12/.test(w)),
+    stageWarnings(steep).join(' | '),
+  );
+}
+
+console.log('\nforcing a stock deck size\n');
+{
+  const FT = 120;
+
+  const free = solveStage(multiLevelStage(0, 0, 24 * FT, [{ depth: 16 * FT, height: 240 }]));
+  const forced = solveStage(
+    multiLevelStage(0, 0, 24 * FT, [{ depth: 16 * FT, height: 240 }], { preferredDeck: "4' x 4'" }),
+  );
+
+  check(
+    'a forced size is the only size used',
+    new Set(forced.decks.map((d) => d.size)).size === 1 && forced.decks[0]!.size === "4' x 4'",
+    [...new Set(forced.decks.map((d) => d.size))].join(', '),
+  );
+  check(
+    'and it takes more of them than letting the tiler choose',
+    forced.decks.length > free.decks.length,
+    `${forced.decks.length} forced vs ${free.decks.length} free`,
+  );
+  check(
+    'an unknown deck label is reported rather than failing the build',
+    solveStage(
+      multiLevelStage(0, 0, 24 * FT, [{ depth: 16 * FT, height: 240 }], { preferredDeck: '9 x 9' }),
+    ).notes.some((n) => /not a stock deck size/.test(n)),
+  );
 }
 
 console.log(`\n${passed}/${passed + failed} checks passed`);

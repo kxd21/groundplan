@@ -17,7 +17,8 @@ import { allocationCsv, summariseAllocation } from './allocation.js';
 import type { SightlineSummary } from './av.js';
 import type { PlacedItem } from './definition.js';
 import { seatCount } from './definition.js';
-import type { LegendEntry, TitleBlock } from './layers.js';
+import type { LegendEntry, LoadSummary, TitleBlock } from './layers.js';
+import type { cableSchedule } from './cable.js';
 import { allCapacities, describeRoom, roomArea, roomPerimeter, type RoomModel } from './room.js';
 import type { SeatingSolution } from './seating-plan.js';
 import type { BuildListLine, StageBuild, StageSolution } from './stage.js';
@@ -34,6 +35,10 @@ export interface ReportInput {
   allocation?: Allocation[];
   sightlines?: SightlineSummary;
   legend?: LegendEntry[];
+  /** Weight and power by layer, for rigging and distro planning. */
+  load?: LoadSummary;
+  /** Cable footage by type, for the pull. */
+  cable?: ReturnType<typeof cableSchedule>;
   /** Anything the caller wants said at the top. */
   warnings?: string[];
 }
@@ -199,6 +204,68 @@ export function buildReport(input: ReportInput): string {
       '',
     );
     if (input.allocation.some((a) => a.estimated)) lines.push('\\* size estimated from the item name.', '');
+  }
+
+  if (input.load?.lines.length) {
+    lines.push('## Weight and power', '');
+    lines.push(
+      ...table(
+        ['Layer', 'Items', 'Weight (lb)', 'Power (W)'],
+        input.load.lines.map((line) => [
+          line.layer,
+          line.unknown ? `${line.counted} (+${line.unknown} unrated)` : String(line.counted),
+          line.weightLb ? Math.round(line.weightLb).toLocaleString() : '—',
+          line.powerW ? Math.round(line.powerW).toLocaleString() : '—',
+        ]),
+      ),
+    );
+    lines.push('');
+    lines.push(
+      `**Total ${Math.round(input.load.totalWeightLb).toLocaleString()} lb · ` +
+        `${Math.round(input.load.totalPowerW).toLocaleString()} W ` +
+        `(${input.load.ampsAt120V.toFixed(1)} A at 120V single phase)**`,
+    );
+    if (input.load.unknown) {
+      lines.push(
+        '',
+        `${input.load.unknown} item${input.load.unknown === 1 ? '' : 's'} carry no weight or ` +
+          'power figure and are not in these totals. Add them on the item in Inventory ' +
+          'to bring them in.',
+      );
+    }
+    lines.push(
+      '',
+      'Planning figures only: a straight sum with no derating, power factor or ' +
+        'inrush allowance. Not a substitute for an electrician or a rigger.',
+      '',
+    );
+  }
+
+  if (input.cable?.lines.length) {
+    lines.push('## Cable', '');
+    lines.push(
+      ...table(
+        ['Type', 'Runs', 'Drawn (ft)', 'Order (ft)'],
+        input.cable.lines.map((line) => [
+          line.label,
+          String(line.runs),
+          line.feet.toFixed(0),
+          String(line.orderFeet),
+        ]),
+      ),
+    );
+    lines.push('');
+    lines.push(
+      `**${input.cable.totalFeet.toFixed(0)} ft drawn · ` +
+        `${input.cable.totalOrderFeet} ft to order**`,
+    );
+    lines.push(
+      '',
+      'Order footage rounds each run up to the next stock length. The difference ' +
+        'from the drawn total is slack, not waste — a run cut to the drawn length ' +
+        'arrives short.',
+      '',
+    );
   }
 
   if (input.legend?.length) {

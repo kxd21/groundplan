@@ -19,6 +19,8 @@ import {
   addStage,
   applySeating,
   createRectangularRoom,
+  curveRoomWall,
+  dimensionOneWall,
   dimensionTheRoom,
   openPlanModel,
   planAllocation,
@@ -195,6 +197,63 @@ async function main(): Promise<void> {
     // the numbers are honest about what they measure.
     const bare = await open();
     check('a derived outline can still be dimensioned', commit(bare, () => dimensionTheRoom(bare, 'imperial')).ok);
+  }
+
+  {
+    // Calling out one wall the way a drafter would: a curve reads three ways
+    // and they are not interchangeable, so each has to be askable for.
+    const session = await open();
+    commit(session, () => createRectangularRoom(session, 40 * F, 30 * F, 'imperial'));
+
+    const straight = commit(session, () => dimensionOneWall(session, 0, 'length', 'imperial'));
+    check('a straight wall takes a length dimension', straight.ok, straight.reason);
+
+    const wrongKind = dimensionOneWall(session, 0, 'radius', 'imperial');
+    check(
+      'and refuses a radius, with a reason that says what to do instead',
+      !wrongKind.ok && /straight/i.test(wrongKind.reason ?? ''),
+      wrongKind.reason,
+    );
+
+    // Bow one wall out, then read it three different ways.
+    // A 30ft radius on a 40ft wall: a real ballroom bow, not a hairline.
+    const curved = commit(session, () => curveRoomWall(session, 0, 30 * F, 'imperial'));
+    check('a wall can be curved for the arc dimensions', curved.ok, curved.reason);
+
+    for (const kind of ['radius', 'diameter', 'arc'] as const) {
+      const reply = commit(session, () => dimensionOneWall(session, 0, kind, 'imperial'));
+      check(`a curved wall can be called out as a ${kind}`, reply.ok, reply.reason);
+    }
+
+    check('and the plan still verifies afterwards', verifyWritable(session.loaded.document).ok);
+  }
+
+  {
+    // Corner angles: square corners are the assumption and stay unannotated,
+    // an angled corner is the thing a carpenter needs off the drawing.
+    const square = await open();
+    commit(square, () => createRectangularRoom(square, 40 * F, 30 * F, 'imperial'));
+    const before = square.scene.primitives.length;
+    commit(square, () => dimensionTheRoom(square, 'imperial', { corners: true }));
+    const withCorners = square.scene.primitives.length;
+
+    const plain = await open();
+    commit(plain, () => createRectangularRoom(plain, 40 * F, 30 * F, 'imperial'));
+    const plainBefore = plain.scene.primitives.length;
+    commit(plain, () => dimensionTheRoom(plain, 'imperial'));
+    const plainAfter = plain.scene.primitives.length;
+
+    check(
+      'asking for corners on a square room adds no angle clutter',
+      withCorners - before === plainAfter - plainBefore,
+      `${withCorners - before} vs ${plainAfter - plainBefore}`,
+    );
+
+    // Asking for one specific corner is different from the automatic pass:
+    // the pass stays quiet about right angles because they are the assumption,
+    // but a user who points at a corner and asks has said what they want.
+    const angled = commit(square, () => dimensionOneWall(square, 0, 'angle', 'imperial'));
+    check('but asking for one corner directly draws it anyway', angled.ok, angled.reason);
   }
 
   // -------------------------------------------------------------------------

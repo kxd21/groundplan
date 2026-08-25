@@ -148,7 +148,11 @@ console.log('\nlayers\n');
 
 {
   const layers = defaultLayers();
-  check('there is a layer per technical system', layers.length === 10, `${layers.length}`);
+  // Eleven since Rigging was split out of Lighting: whoever hangs the fixture
+  // is not whoever signs off the point it hangs from, and a plot that conflates
+  // them cannot answer either question.
+  check('there is a layer per technical system', layers.length === 11, `${layers.length}`);
+  check('rigging is its own layer', layers.some((l) => l.id === 'rigging'));
   check('architecture is locked by default', layers.find((l) => l.id === 'architecture')!.locked);
 
   check('a screen goes on video', suggestLayer('16ft Fast-Fold Screen') === 'video');

@@ -16,6 +16,7 @@
  * that reliably prints — 0.13mm — and nothing resolves below it.
  */
 
+import { cableSpec, classifyCable } from './cable.js';
 import type { Layer, ScenePrimitive } from './scene.js';
 
 /** Printed points. A point is 1/72in. */
@@ -42,7 +43,7 @@ export interface DrawingStyle {
   /** Dash pattern in printed points. Absent means solid. */
   dash?: number[];
   /** Where the appearance came from, so the UI can be honest about it. */
-  source: 'imported' | 'class-default';
+  source: 'imported' | 'class-default' | 'cable';
 }
 
 /**
@@ -111,6 +112,9 @@ function deckFill(owner: string): string {
  * to prefer. The field exists so that when it is decoded, a value read from the
  * file can take precedence and be told apart from one this invented.
  */
+/** Names that mean "this is a cable run", not a piece of equipment. */
+const CABLE_RUN = /\b(run|cable|feeder|snake|soca|dmx|sdi|fib(re|er)|xlr|cat ?[56]|drop)\b/i;
+
 export function resolveStyle(primitive: ScenePrimitive): DrawingStyle {
   const grade = gradeFor(primitive);
   const style: DrawingStyle = {
@@ -122,6 +126,22 @@ export function resolveStyle(primitive: ScenePrimitive): DrawingStyle {
   // A closed outline belonging to a deck is a surface, so it is filled.
   if (primitive.owner && DECK.test(primitive.owner) && enclosesArea(primitive)) {
     style.fill = deckFill(primitive.owner);
+  }
+
+  /*
+   * A cable run reads as its own kind of line.
+   *
+   * Every run used to draw identically, so a fibre and a soca were the same
+   * mark and the drawing could not answer the question anybody actually asks
+   * of it. The conventions live in `cable.ts` next to the schedule that totals
+   * them, so the line and the order sheet cannot drift apart.
+   */
+  if (primitive.owner && CABLE_RUN.test(primitive.owner) && !enclosesArea(primitive)) {
+    const spec = cableSpec(classifyCable(primitive.owner));
+    style.stroke = spec.stroke;
+    style.strokePoints = Math.max(MIN_STROKE_POINTS, spec.strokePoints);
+    if (spec.dash) style.dash = spec.dash;
+    style.source = 'cable';
   }
 
   return style;
@@ -156,6 +176,62 @@ export const SCALE_INCHES_PER_FOOT: Record<string, number> = {
   '1/4': 1 / 4,
   fit: 1 / 8,
 };
+
+/**
+ * Printable sheet sizes in inches, portrait.
+ *
+ * Declared here rather than in the print service because the SVG exporter has
+ * to size its strokes for the sheet the drawing will land on, and the exporter
+ * runs in the renderer, which cannot import from `src/main`.
+ */
+export const PAPER_SIZES: Record<string, { width: number; height: number }> = {
+  Letter: { width: 8.5, height: 11 },
+  Legal: { width: 8.5, height: 14 },
+  Tabloid: { width: 11, height: 17 },
+  A4: { width: 8.27, height: 11.69 },
+  A3: { width: 11.69, height: 16.54 },
+};
+
+/** Sheet margin, in inches. Matches `MARGIN` in the print service. */
+export const SHEET_MARGIN = 0.4;
+
+/** Height reserved for the title block, in inches. Matches the print service. */
+export const SHEET_TITLE_BLOCK = 0.85;
+
+/** The drawing frame left on a sheet once margins and title block are taken. */
+export function sheetFrame(
+  paperId: string,
+  landscape: boolean,
+): { width: number; height: number } {
+  const paper = PAPER_SIZES[paperId] ?? PAPER_SIZES.Letter!;
+  const pageWidth = landscape ? paper.height : paper.width;
+  const pageHeight = landscape ? paper.width : paper.height;
+  return {
+    width: Math.max(1, pageWidth - SHEET_MARGIN * 2 - 0.2),
+    height: Math.max(1, pageHeight - SHEET_MARGIN * 2 - SHEET_TITLE_BLOCK - 0.2),
+  };
+}
+
+/**
+ * The scale a "Fit to page" drawing actually ends up at.
+ *
+ * "Fit" is not a scale, it is an outcome, and the drawing arrives at whatever
+ * scale makes it fit the frame. Sizing strokes for a nominal 1/8in per foot and
+ * then letting the sheet shrink the result is why a large room printed as
+ * hairlines: a 245ft ballroom on Letter lands near 1/30in per foot, so every
+ * line had been drawn for a sheet roughly four times the size of the one it
+ * went onto. Given the drawing extent and the frame, this returns the scale the
+ * drawing will really be read at, so the weights can be built for that.
+ */
+export function fitInchesPerFoot(
+  extentUnits: { width: number; height: number },
+  frameInches: { width: number; height: number },
+): number {
+  const widthFeet = extentUnits.width / 120;
+  const heightFeet = extentUnits.height / 120;
+  if (!(widthFeet > 0) || !(heightFeet > 0)) return SCALE_INCHES_PER_FOOT['1/8']!;
+  return Math.min(frameInches.width / widthFeet, frameInches.height / heightFeet);
+}
 
 /** Printed height of annotation text, in points (3/32in). */
 export const TEXT_POINTS = 6.75;

@@ -235,15 +235,15 @@ export function workspaceStatus(state: WorkspaceState): string {
   const wallEdit = state.overlays.includes('wall-edit');
   switch (state.mode) {
     case 'browse':
-      return 'Browse · recent plans and folders';
+      return 'Files · recent plans and folders';
     case 'place':
-      return wallEdit ? 'Place · inventory and gear · wall edit still on' : 'Place · stamp inventory and gear';
+      return wallEdit ? 'Assets · inventory and gear · wall edit still on' : 'Assets · stamp inventory and gear';
     case 'inspect':
-      return wallEdit ? 'Inspect · layers and properties · wall edit still on' : 'Inspect · layers and properties';
+      return wallEdit ? 'Properties · layers and properties · wall edit still on' : 'Properties · layers and properties';
     case 'setup':
-      return 'Setup · room, kit, and print';
+      return 'Layouts · room-fitted kits and output';
     case 'draw':
-      return 'Draw · tools shelf';
+      return 'All tools · drawing, annotation, and measurement';
     case 'room-layout':
       return 'Room layout · resize, add/cut, then drag walls on the plan';
     case 'canvas':
@@ -251,13 +251,7 @@ export function workspaceStatus(state: WorkspaceState): string {
   }
 }
 
-/**
- * The mode strip's five buttons.
- *
- * `room-layout` is not among them on purpose: it is reached from the room tools
- * and leaves back to wherever you were, so putting it in the strip would give
- * it a second, conflicting way in.
- */
+/** Derived panel visibility for the permanent editor rail and contextual dock. */
 export const MODE_STRIP: readonly WorkspaceMode[] = ['browse', 'place', 'inspect', 'setup', 'draw'];
 
 export interface LandingFacts {

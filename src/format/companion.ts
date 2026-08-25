@@ -34,7 +34,7 @@ import { createHash } from 'node:crypto';
 import type { RVDocument } from './rv.js';
 import type { AspectRatio, InstanceOverride, ItemSpec, Obstruction } from './definition.js';
 import type { RoomModel, WallSegment } from './room.js';
-import type { StageBuild, StageLevel, Stair, StairEdge } from './stage.js';
+import type { Rail, Ramp, StageBuild, StageLevel, Stair, StairEdge } from './stage.js';
 import type { UnitSystem } from './units.js';
 
 export const COMPANION_FORMAT = 'groundplan-companion';
@@ -188,12 +188,55 @@ function parseStage(value: unknown): StageBuild | null {
       });
     }
   }
+  /*
+   * Ramps and rails are read the same way stairs are, and both default to
+   * empty. A sidecar written before they existed is not broken by their
+   * absence — it simply describes a stage that has neither.
+   */
+  const ramps: Ramp[] = [];
+  if (Array.isArray(value.ramps)) {
+    for (const entry of value.ramps) {
+      const raw = entry as Record<string, unknown>;
+      if (typeof raw?.id !== 'string' || typeof raw.edge !== 'string') continue;
+      const width = typeof raw.width === 'number' && raw.width > 0 ? raw.width : 0;
+      const slope = typeof raw.slope === 'number' && raw.slope > 0 ? raw.slope : 12;
+      if (!(width > 0)) continue;
+      ramps.push({
+        id: raw.id,
+        level: typeof raw.level === 'number' && raw.level >= 0 ? Math.floor(raw.level) : 0,
+        edge: raw.edge as StairEdge,
+        offset: typeof raw.offset === 'number' ? raw.offset : 0,
+        width,
+        slope,
+        handrail: raw.handrail === true,
+      });
+    }
+  }
+
+  const rails: Rail[] = [];
+  if (Array.isArray(value.rails)) {
+    for (const entry of value.rails) {
+      const raw = entry as Record<string, unknown>;
+      if (typeof raw?.id !== 'string' || typeof raw.edge !== 'string') continue;
+      rails.push({
+        id: raw.id,
+        level: typeof raw.level === 'number' && raw.level >= 0 ? Math.floor(raw.level) : 0,
+        edge: raw.edge as StairEdge,
+        length: typeof raw.length === 'number' && raw.length > 0 ? raw.length : 0,
+        offset: typeof raw.offset === 'number' ? raw.offset : 0,
+      });
+    }
+  }
+
   return {
     id: value.id,
     name: value.name,
     levels,
     stairs,
+    ramps,
+    rails,
     skirted: value.skirted === true,
+    preferredDeck: typeof value.preferredDeck === 'string' ? value.preferredDeck : undefined,
   };
 }
 

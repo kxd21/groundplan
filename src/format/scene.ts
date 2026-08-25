@@ -17,6 +17,7 @@
  */
 
 import { walk, UNITS_PER_FOOT, type RVDocument, type RVNode } from './rv.js';
+import { disciplineFor } from './layers.js';
 import { TRAILER_EVENT, TRAILER_VENUE } from './trailer.js';
 import type { Extent } from './index.js';
 
@@ -42,6 +43,15 @@ export interface ScenePrimitive {
   color: number;
   cls: string;
   layer: Layer;
+  /**
+   * The production layer this belongs to — Video, Audio, Staging and so on.
+   *
+   * `layer` above says what KIND of geometry this is, which is what the file
+   * format cares about and what decides how it is drawn. This says which
+   * DISCIPLINE owns it, which is what a production cares about, and it is the
+   * one a user turns on and off, locks, solos and prints.
+   */
+  discipline: string;
   /** Catalogue name of the owning shape, e.g. `Round 66"`. */
   owner?: string;
   /** Rendered text, for labels and dimensions. */
@@ -196,6 +206,7 @@ export function buildScene(doc: RVDocument): Scene {
           color: node.color ?? 0x000000,
           cls: node.cls,
           layer,
+          discipline: disciplineFor(layer, owner),
           owner,
           text,
           textStyle:

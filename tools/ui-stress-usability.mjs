@@ -168,6 +168,15 @@ await measure('open-new-plan', 12000, async () => {
     await setInput('#new-plan-depth', "60'");
   }
   if (await ev('!!document.querySelector(".new-plan-sheet")')) {
+    const reviewed = await click({ match: '/^Review plan$/i' }, null);
+    if (reviewed) {
+      record('plan:Review plan', true, 'clicked');
+      await sleep(300);
+      if (await ev('!!document.querySelector("#new-plan-name")')) {
+        await setInput('#new-plan-name', 'Usability Audit');
+      }
+      await click({ match: '/^Empty room/i', root: '.new-plan-review' }, null);
+    }
     const created = await click({ match: '/^Create plan$/i' }, 'plan:Create plan');
     if (!created) {
       await setInput('#new-plan-width', "80'").catch(() => undefined);
@@ -277,7 +286,7 @@ const hoverProbe = await ev(`(async () => {
 
   const labeled = [...document.querySelectorAll('button')].find((b) => {
     const t = (b.textContent || '').replace(/\\s+/g, ' ').trim();
-    return /^(New|Open|Setup)\\b/i.test(t);
+    return /^(New|Open|Files|Assets)\\b/i.test(t);
   });
   const icon = [...document.querySelectorAll('button')].find((b) => {
     const r = b.getBoundingClientRect();
@@ -326,7 +335,7 @@ const hoverProbe = await ev(`(async () => {
 record(
   'tips:labeled hover suppressed',
   hoverProbe.labeledText == null || hoverProbe.labeledShows === false,
-  hoverProbe.labeledText || 'no labeled New/Open/Setup in view',
+  hoverProbe.labeledText || 'no labeled editor action in view',
 );
 record(
   'tips:icon hover shows tip',
@@ -334,22 +343,22 @@ record(
   hoverProbe.iconTip || 'no icon-only tipped control found',
 );
 
-// ---------- C. Modes ----------
-console.log('\n-- C. Modes --');
-await measure('toggle-Browse', 1000, async () => {
-  await click({ match: '/^\\s*Browse\\s*$/' }, 'mode:Browse');
+// ---------- C. Editor surfaces + direct tools ----------
+console.log('\n-- C. Editor surfaces + direct tools --');
+await measure('toggle-Files', 1000, async () => {
+  await click({ match: '/^\\s*Files\\s*$/' }, 'surface:Files');
   await sleep(150);
 });
-await measure('toggle-Inspect', 1000, async () => {
-  await click({ match: '/^\\s*Inspect\\s*$/' }, 'mode:Inspect');
+await measure('toggle-Properties', 1000, async () => {
+  await click({ match: '/^\\s*Properties\\s*$/', root: '.editor-workspace-actions' }, 'surface:Properties');
   await sleep(150);
 });
-await measure('toggle-Draw', 1000, async () => {
-  await click({ match: '/^\\s*Draw\\s*$/' }, 'mode:Draw');
+await measure('arm-Line', 1000, async () => {
+  await click({ aria: 'Line' }, 'tool:Line');
   await sleep(150);
 });
-await measure('toggle-Place', 1000, async () => {
-  await click({ match: '/^\\s*Place\\s*$/' }, 'mode:Place');
+await measure('toggle-Assets', 1000, async () => {
+  await click({ match: '/^\\s*Assets\\s*$/' }, 'surface:Assets');
   await sleep(150);
 });
 {
@@ -413,7 +422,7 @@ if (hasPlan) {
 
 // ---------- E. Inspector tabs ----------
 console.log('\n-- E. Inspector --');
-// Panel toggles above may leave Inspect closed — reopen before tab hits.
+// Surface toggles above may leave Properties closed — reopen before tab hits.
 {
   const open = await ev(`(() => {
     const rail = document.querySelector('.inspector, [aria-label="Properties and layers inspector"]');
@@ -422,7 +431,7 @@ console.log('\n-- E. Inspector --');
     return r.width > 40 && r.height > 40;
   })()`);
   if (!open) {
-    await click({ match: '/^\\s*Inspect\\s*$/' }, 'mode:Inspect reopen');
+    await click({ match: '/^\\s*Properties\\s*$/', root: '.editor-workspace-actions' }, 'surface:Properties reopen');
     await sleep(200);
   }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 
+import DockTitlebar from './DockTitlebar.js';
 import ShowSetupPanel, { type PlanIdentityFields, type ShowKitInfo } from './ShowSetupPanel.js';
 import { IconPlus } from './icons.js';
 
@@ -277,6 +278,15 @@ export default function CreateDialog({
   const chairs = chairOptions.length ? chairOptions : inventory;
   const tables = tableOptions.length ? tableOptions : inventory;
 
+  const headline =
+    drawingRoomOutline ? 'Drawing room boundary' : !hasRoom ? 'Create room boundary' : 'Room-fitted kits and generators';
+  const guidance =
+    !hasRoom || drawingRoomOutline
+      ? 'Import a site plan or draw the room directly on the canvas.'
+      : layoutDone
+        ? 'Apply another room-fitted layout, tune the plan directly, or export it.'
+        : 'Apply a room-fitted layout or launch a custom generator.';
+
   const sheet = (
       <div
         className={`sheet create-dialog-sheet${docked ? ' is-docked' : ''}`}
@@ -285,28 +295,21 @@ export default function CreateDialog({
         aria-labelledby="create-dialog-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="create-dialog-head">
-          <div>
-            <small>Setup</small>
-            <h2 id="create-dialog-title">
-              {!hasRoom || drawingRoomOutline
-                ? 'Finish the room'
-                : layoutDone
-                  ? 'Layout ready'
-                  : 'Setup'}
-            </h2>
-            <p>
-              {!hasRoom || drawingRoomOutline
-                ? 'Add a site plan or click corners to close the outline, then apply a kit.'
-                : layoutDone
-                  ? 'Tweak on the plan, or print. Bank stamps stay under the fold.'
-                  : 'Apply a matching kit, or build stage and seating yourself, then print.'}
-            </p>
-          </div>
-          <button type="button" className="create-dialog-close" onClick={onClose} aria-label="Close Setup">
-            ×
-          </button>
-        </header>
+        {docked ? (
+          <DockTitlebar title={hasRoom ? 'Layouts' : 'Room'} sub={headline} onClose={onClose} closeLabel={`Close ${hasRoom ? 'Layouts' : 'Room'}`} />
+        ) : (
+          <header className="create-dialog-head">
+            <div>
+              <small>{hasRoom ? 'Layouts' : 'Room'}</small>
+              <h2 id="create-dialog-title">{headline}</h2>
+              <p>{guidance}</p>
+            </div>
+            <button type="button" className="create-dialog-close" onClick={onClose} aria-label={`Close ${hasRoom ? 'Layouts' : 'Room'}`}>
+              ×
+            </button>
+          </header>
+        )}
+        {docked && <p className="create-dialog-guidance" id="create-dialog-title">{guidance}</p>}
 
         <div className="create-dialog-body">
           <ShowSetupPanel

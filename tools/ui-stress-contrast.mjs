@@ -251,14 +251,11 @@ console.log('title', await ev('document.title'));
 
 const surfaces = [
   { id: 'plan-chrome', open: null },
-  { id: 'setup', open: { text: 'Setup' } },
-  // Mode labels, not panel nouns: the shell redesign renamed these to match the
-  // mode strip, and the harness kept opening panels that no longer answer to
-  // "Inspector" / "Browser" / "Tools" — so it was sampling whatever happened to
-  // be on screen and still reporting a pass.
-  { id: 'inspector', open: { text: 'Inspect' } },
-  { id: 'browser', open: { text: 'Browse' } },
-  { id: 'tools', open: { text: 'Draw' } },
+  { id: 'layouts', open: { text: 'Layouts' } },
+  { id: 'properties', open: { text: 'Properties', root: '.editor-workspace-actions' } },
+  { id: 'files', open: { text: 'Files', root: '.editor-workspace-actions' } },
+  // Direct tools no longer open a wrapper panel; audit the rail's armed state.
+  { id: 'tools', open: { aria: 'Line' } },
   // The welcome screen is the first thing every launch shows and was the one
   // surface never audited — no button reaches it once a plan is restored, and
   // `plan-chrome` opens nothing, so coverage depended on the app's state rather

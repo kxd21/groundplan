@@ -31,19 +31,6 @@ export interface CommandContext {
   shellMode: ShellMode | 'none';
 }
 
-export const SHELL_MODES: Array<{
-  id: ShellMode;
-  label: string;
-  hint: string;
-  commandId: CommandId;
-}> = [
-  { id: 'browse', label: 'Browse', hint: 'Recent plans and folders', commandId: 'mode.browse' },
-  { id: 'place', label: 'Place', hint: 'Stamp inventory and gear', commandId: 'mode.place' },
-  { id: 'inspect', label: 'Inspect', hint: 'Layers and properties', commandId: 'mode.inspect' },
-  { id: 'setup', label: 'Setup', hint: 'Show progress: room → kit → stage → seating → print', commandId: 'mode.setup' },
-  { id: 'draw', label: 'Draw', hint: 'Drawing tools shelf', commandId: 'mode.draw' },
-];
-
 export const COMMAND_CATALOG: CommandDef[] = [
   {
     id: 'palette.open',
@@ -131,43 +118,43 @@ export const COMMAND_CATALOG: CommandDef[] = [
   },
   {
     id: 'mode.browse',
-    title: 'Mode: Browse',
+    title: 'Files',
     subtitle: 'Recent plans and folders',
-    section: 'Mode',
+    section: 'Workspace',
     shortcut: '⌘B',
     keywords: ['browser', 'files', 'rail'],
     when: (c) => c.workspace === 'plan' && c.hasDoc,
   },
   {
     id: 'mode.place',
-    title: 'Mode: Place',
+    title: 'Assets',
     subtitle: 'Stamp inventory and gear',
-    section: 'Mode',
+    section: 'Workspace',
     keywords: ['equipment', 'insert', 'stamp'],
     when: (c) => c.workspace === 'plan' && c.hasDoc,
   },
   {
     id: 'mode.inspect',
-    title: 'Mode: Inspect',
+    title: 'Properties',
     subtitle: 'Layers and properties',
-    section: 'Mode',
+    section: 'Workspace',
     shortcut: '⌘⇧B',
     keywords: ['inspector', 'properties', 'layers'],
     when: (c) => c.workspace === 'plan' && c.hasDoc,
   },
   {
     id: 'mode.setup',
-    title: 'Mode: Setup',
-    subtitle: 'Show progress: room, kit, stage, seating, print',
-    section: 'Mode',
-    keywords: ['create', 'show setup', 'kit'],
+    title: 'Layout library',
+    subtitle: 'Room-fitted kits, custom generators, and output',
+    section: 'Workspace',
+    keywords: ['create', 'layout', 'kit'],
     when: (c) => c.workspace === 'plan' && c.hasDoc,
   },
   {
     id: 'mode.draw',
-    title: 'Mode: Draw',
-    subtitle: 'Drawing tools shelf',
-    section: 'Mode',
+    title: 'All canvas tools',
+    subtitle: 'Expanded drawing and measurement list',
+    section: 'Workspace',
     keywords: ['tools', 'dock', 'line', 'rect'],
     when: (c) => c.workspace === 'plan' && c.hasDoc,
   },
@@ -341,6 +328,156 @@ export const COMMAND_CATALOG: CommandDef[] = [
     section: 'Edit',
     shortcut: '⌘⇧G',
     when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  /*
+   * Everything below was reachable only by finding the right panel. The palette
+   * covered 44 actions against roughly 180 the app can actually do, which meant
+   * a user who could not find a panel did not have the feature — align,
+   * distribute, flip, reorder and auto-dimension were all in that gap.
+   */
+  {
+    id: 'edit.copy',
+    title: 'Copy selection',
+    section: 'Edit',
+    shortcut: '⌘C',
+    when: (c) => c.hasDoc && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.paste',
+    title: 'Paste',
+    section: 'Edit',
+    shortcut: '⌘V',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.rotate-cw',
+    title: 'Rotate right 90°',
+    keywords: ['turn', 'clockwise'],
+    section: 'Edit',
+    shortcut: ']',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.rotate-ccw',
+    title: 'Rotate left 90°',
+    keywords: ['turn', 'anticlockwise', 'counterclockwise'],
+    section: 'Edit',
+    shortcut: '[',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.flip-horizontal',
+    title: 'Flip horizontally',
+    keywords: ['mirror'],
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.flip-vertical',
+    title: 'Flip vertically',
+    keywords: ['mirror'],
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.align-left',
+    title: 'Align left',
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.align-center',
+    title: 'Align centres horizontally',
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.align-right',
+    title: 'Align right',
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.align-top',
+    title: 'Align top',
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.align-middle',
+    title: 'Align middles vertically',
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.align-bottom',
+    title: 'Align bottom',
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.distribute-horizontal',
+    title: 'Distribute evenly across',
+    keywords: ['space', 'spread'],
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.distribute-vertical',
+    title: 'Distribute evenly down',
+    keywords: ['space', 'spread'],
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.bring-to-front',
+    title: 'Bring to front',
+    keywords: ['order', 'raise'],
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'edit.send-to-back',
+    title: 'Send to back',
+    keywords: ['order', 'lower'],
+    section: 'Edit',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'plan.dimension-room',
+    title: 'Dimension the room',
+    subtitle: 'A dimension on every wall',
+    keywords: ['measure', 'auto'],
+    section: 'Plan',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'plan.dimension-room-corners',
+    title: 'Dimension the room and its corner angles',
+    subtitle: 'Adds the angle at every corner that is not square',
+    keywords: ['measure', 'auto', 'angle'],
+    section: 'Plan',
+    when: (c) => c.hasDoc && c.editable && c.workspace === 'plan',
+  },
+  {
+    id: 'view.layers-show-all',
+    title: 'Show all layers',
+    section: 'View',
+    when: (c) => c.hasDoc && c.workspace === 'plan',
+  },
+  {
+    id: 'view.layers-hide-all',
+    title: 'Hide all layers',
+    section: 'View',
+    when: (c) => c.hasDoc && c.workspace === 'plan',
+  },
+  {
+    id: 'view.snap',
+    title: 'Toggle snapping',
+    keywords: ['grid', 'snap'],
+    section: 'View',
+    shortcut: 'S',
+    when: (c) => c.hasDoc && c.workspace === 'plan',
   },
   {
     id: 'settings.open',

@@ -21,26 +21,50 @@
  */
 
 import { walk, type RVDocument, type RVNode } from './rv.js';
-import type { Layer, Scene, ScenePrimitive } from './scene.js';
+import type { Scene, ScenePrimitive } from './scene.js';
 import { instanceKey } from './definition.js';
 
 /** Logical units are tenths of an inch; DXF goes out in inches. */
 const UNITS_PER_INCH = 10;
 
-/** Groundplan layers to DXF layer names, with an AutoCAD colour index each. */
-const LAYERS: Record<Layer, { name: string; color: number }> = {
-  walls: { name: 'GP-WALLS', color: 7 },
-  furniture: { name: 'GP-EQUIPMENT', color: 5 },
-  region: { name: 'GP-REGIONS', color: 3 },
+/**
+ * Production layers to DXF layer names, with an AutoCAD colour index each.
+ *
+ * These used to be the five GEOMETRY layers — GP-WALLS, GP-EQUIPMENT and so on
+ * — which told a CAD user how Groundplan stores a shape and nothing about what
+ * the shape is for. A drawing opened in Vectorworks now arrives on the layers
+ * the production actually works in, so the video department can switch off
+ * everything that is not theirs.
+ */
+const LAYERS: Record<string, { name: string; color: number }> = {
+  architecture: { name: 'GP-ARCHITECTURE', color: 7 },
+  staging: { name: 'GP-STAGING', color: 8 },
+  seating: { name: 'GP-SEATING', color: 5 },
+  video: { name: 'GP-VIDEO', color: 4 },
+  lighting: { name: 'GP-LIGHTING', color: 2 },
+  rigging: { name: 'GP-RIGGING', color: 33 },
+  audio: { name: 'GP-AUDIO', color: 6 },
+  power: { name: 'GP-POWER-DATA', color: 1 },
+  drape: { name: 'GP-DRAPE-SCENIC', color: 3 },
+  catering: { name: 'GP-CATERING', color: 30 },
   annotation: { name: 'GP-ANNOTATION', color: 2 },
-  other: { name: 'GP-OTHER', color: 8 },
 };
+
+const FALLBACK_LAYER = { name: 'GP-OTHER', color: 8 };
+
+/** The DXF layer for a primitive, by the discipline that owns it. */
+function dxfLayer(primitive: ScenePrimitive): { name: string; color: number } {
+  return LAYERS[primitive.discipline] ?? FALLBACK_LAYER;
+}
 
 const BLOCK_LAYER = 'GP-EQUIPMENT';
 
 export interface DxfOptions {
-  /** Layers the user has switched off are left out, as they are when printing. */
-  visible?: Set<Layer>;
+  /**
+   * Production layers the user has switched off are left out, as they are
+   * when printing.
+   */
+  visible?: Set<string>;
   /**
    * Elevation above finished floor in logical units, keyed by instanceKey
    * (name@inchX,inchY). Written as DXF INSERT group-code 30 so VW can hang
@@ -150,7 +174,7 @@ function textEntity(layer: string, x: number, y: number, height: number, value: 
  */
 export function toDxf(doc: RVDocument, scene: Scene, options: DxfOptions = {}): DxfResult {
   const visible = options.visible;
-  const isVisible = (p: ScenePrimitive): boolean => !visible || visible.has(p.layer);
+  const isVisible = (p: ScenePrimitive): boolean => !visible || visible.has(p.discipline);
   const elevLookup = (key: string): number => {
     if (!options.elevations) return 0;
     if (options.elevations instanceof Map) return options.elevations.get(key) ?? 0;
@@ -267,7 +291,7 @@ export function toDxf(doc: RVDocument, scene: Scene, options: DxfOptions = {}): 
   for (const [selectId, group] of byShape) {
     if (consumed.has(selectId)) continue;
     for (const primitive of group) {
-      const layer = LAYERS[primitive.layer].name;
+      const layer = dxfLayer(primitive).name;
       const pts: number[] = [];
       for (let i = 0; i < primitive.pts.length; i += 2) {
         const x = toInches(primitive.pts[i]);
@@ -304,7 +328,7 @@ export function toDxf(doc: RVDocument, scene: Scene, options: DxfOptions = {}): 
   }
 
   const layerTable: Pair[] = [];
-  for (const { name, color } of Object.values(LAYERS)) {
+  for (const { name, color } of [...Object.values(LAYERS), FALLBACK_LAYER]) {
     layerTable.push([0, 'LAYER'], [2, name], [70, 0], [62, color], [6, 'CONTINUOUS']);
   }
 
@@ -329,7 +353,7 @@ export function toDxf(doc: RVDocument, scene: Scene, options: DxfOptions = {}): 
     [2, 'TABLES'],
     [0, 'TABLE'],
     [2, 'LAYER'],
-    [70, Object.keys(LAYERS).length],
+    [70, Object.keys(LAYERS).length + 1],
     ...layerTable,
     [0, 'ENDTAB'],
     [0, 'ENDSEC'],

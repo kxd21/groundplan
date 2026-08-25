@@ -21,6 +21,7 @@
  * such restriction.
  */
 
+import { combinePolygons, type Point as BooleanPoint } from './polygon-boolean.js';
 import {
   bulgeFromAngle,
   bulgeFromArcLength,
@@ -83,13 +84,17 @@ function uniqueSorted(values: number[]): number[] {
  * as holes rather than being flattened away.
  */
 export function combineRooms(a: RoomModel, b: RoomModel, op: BooleanOp): RoomEditResult {
+  /*
+   * Anything that is not two rectilinear outlines goes to the general clipper.
+   *
+   * The grid decomposition below is exact for horizontal and vertical walls and
+   * cannot represent anything else, which is why it used to refuse. It is kept
+   * as the fast path for the commonest case — adding or cutting a rectangle —
+   * and everything it cannot do now has somewhere to go instead of a message
+   * saying no.
+   */
   if (!isAxisAligned(allWalls(a)) || !isAxisAligned(allWalls(b))) {
-    return {
-      ok: false,
-      reason:
-        'Combining rooms needs both outlines to be made of horizontal and vertical walls. ' +
-        'Edit the corners directly for an angled or curved boundary.',
-    };
+    return combineRoomsGeneral(a, b, op);
   }
   if (a.walls.length < 3 || b.walls.length < 3) {
     return { ok: false, reason: 'Both rooms need a closed outline before they can be combined.' };
@@ -573,4 +578,56 @@ export function roomProblems(room: RoomModel): string[] {
   }
 
   return problems;
+}
+
+
+/**
+ * Combines two outlines of any shape.
+ *
+ * Arcs are flattened to polylines first, at the same tolerance the renderer
+ * uses, and the result comes back as straight segments. That is a real loss —
+ * a bowed wall unioned with a foyer comes out as a fine polyline rather than
+ * an arc — and it is the honest trade: the alternative on offer before was
+ * refusing to combine them at all. A wall the operation did not touch keeps
+ * its bulge, because the fast path above handles those cases untouched.
+ */
+function combineRoomsGeneral(a: RoomModel, b: RoomModel, op: BooleanOp): RoomEditResult {
+  if (a.walls.length < 3 || b.walls.length < 3) {
+    return { ok: false, reason: 'Both rooms need a closed outline before they can be combined.' };
+  }
+
+  const subject = roomPolygon(allWalls(a));
+  const clip = roomPolygon(allWalls(b));
+  if (subject.length < 3 || clip.length < 3) {
+    return { ok: false, reason: 'These outlines do not enclose any floor.' };
+  }
+
+  const result = combinePolygons(subject, clip, op);
+  if (!result || !result.outers.length) {
+    return {
+      ok: false,
+      reason:
+        op === 'intersection'
+          ? 'These outlines do not overlap, so there is no room in common.'
+          : 'That would remove the whole room.',
+    };
+  }
+
+  // The room model carries one outer boundary. Several disjoint pieces is a
+  // legitimate geometric answer and not a legitimate ROOM, so say so rather
+  // than silently keeping the biggest and dropping the rest.
+  if (result.outers.length > 1) {
+    return {
+      ok: false,
+      reason:
+        `That would leave ${result.outers.length} separate areas. ` +
+        'A room has to be one enclosed space; combine them one at a time.',
+    };
+  }
+
+  const room = roomFromPolygon(result.outers[0]!, a.name);
+  room.holes = result.holes.map((hole: BooleanPoint[]) => roomFromPolygon(hole, 'hole').walls);
+  room.ceilingHeight = a.ceilingHeight;
+
+  return { ok: true, room };
 }

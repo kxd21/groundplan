@@ -201,7 +201,7 @@ for (const [label, spec] of [
 // re-enter only if a tool's own action drops the mode.
 const enterDraw = async (why) => {
   if (await ev(`!!document.querySelector('[data-tool-id]')`)) return true;
-  return click({ text: 'Draw' }, `ribbon:Draw dock${why ? ` (${why})` : ''}`);
+  return click({ text: 'Tools' }, `ribbon:Tools dock${why ? ` (${why})` : ''}`);
 };
 await enterDraw();
 await sleep(200);
@@ -457,7 +457,7 @@ await shot(path.join(AUDIT, 'ui-stress-05-equipment.png'));
 console.log('\n-- F. Annotations --');
 // Back into Draw: the annotation tools are dock tools, and the sections above
 // left the app in Setup.
-await click({ text: 'Draw' }, 'annot:Draw dock');
+await click({ text: 'Tools' }, 'annot:Tools dock');
 await sleep(260);
 await click({ toolId: 'add-text' }, 'annot:Add text');
 await sleep(150);
@@ -469,7 +469,7 @@ await sleep(150);
 record('annot:text STAGE', true);
 await esc();
 
-await click({ text: 'Draw' }, 'annot:Draw dock (dimension)');
+await click({ text: 'Tools' }, 'annot:Tools dock (dimension)');
 await sleep(220);
 await click({ toolId: 'dimension' }, 'annot:Dimension tool');
 await sleep(120);
@@ -480,7 +480,7 @@ await sleep(250);
 record('annot:dimension drag', true);
 await esc();
 
-await click({ text: 'Draw' }, 'annot:Draw dock (measure)');
+await click({ text: 'Tools' }, 'annot:Tools dock (measure)');
 await sleep(220);
 await click({ toolId: 'measure' }, 'annot:Measure tool');
 await sleep(100);

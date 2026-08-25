@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import type { Scene, Layer, ScenePrimitive } from '../../format/scene.js';
+import type { Scene, ScenePrimitive } from '../../format/scene.js';
 import { resolveStyle, type DrawingStyle } from '../../format/style.js';
 import { formatLength, UNITS_PER_METRE, type UnitSystem } from '../../format/units.js';
+import {
+  applySnap,
+  boundsOfMany,
+  editSnapStep,
+  snapDragDelta,
+  snapPlanPoint,
+  type Bounds,
+} from './snap.js';
 import { IconPlus, IconMinus, IconFit, IconHand } from './icons.js';
 import type { PlanPoint, PointerSpec } from './tool/machine.js';
 import type { EditablePointPath } from './PointEditor.js';
@@ -30,49 +38,6 @@ const UNITS_PER_INCH = 10;
 const RULER = 22;
 /** Hit-testing every pointer move gets expensive on very large plans. */
 const HOVER_PRIMITIVE_LIMIT = 24000;
-
-type SnapKeys = { shift: boolean; alt: boolean };
-
-/**
- * Step used while dragging / placing on the plan.
- *
- * Plan snap is often a full foot — too coarse for careful edits — so interactive
- * tools clamp to 1″ (or 1 cm) unless Shift asks for a finer step, or Alt leaves
- * the value free (returns 0).
- */
-function editSnapStep(snapStep: number, units: UnitSystem, keys: SnapKeys): number {
-  if (keys.alt) return 0;
-  const inchOrCm = units === 'metric' ? UNITS_PER_METRE / 100 : UNITS_PER_INCH;
-  const fine = units === 'metric' ? UNITS_PER_METRE / 1000 : 1; // 1 mm or 0.1″
-  const coarse = snapStep > 0 ? Math.min(snapStep, inchOrCm) : inchOrCm;
-  return keys.shift ? fine : coarse;
-}
-
-function snapScalar(value: number, step: number): number {
-  if (!(step > 0)) return value;
-  return Math.round(value / step) * step;
-}
-
-function snapPlanPoint(
-  point: { x: number; y: number },
-  snapStep: number,
-  units: UnitSystem,
-  keys: SnapKeys,
-): { x: number; y: number } {
-  const step = editSnapStep(snapStep, units, keys);
-  if (!(step > 0)) return point;
-  return { x: snapScalar(point.x, step), y: snapScalar(point.y, step) };
-}
-
-/** Snap a single-axis drag delta (walls, nudges). */
-function snapDragDelta(
-  delta: number,
-  snapStep: number,
-  units: UnitSystem,
-  keys: SnapKeys,
-): number {
-  return snapScalar(delta, editSnapStep(snapStep, units, keys));
-}
 
 export interface View {
   scale: number;
@@ -102,7 +67,16 @@ export const planY = (view: View, sy: number): number => -(sy - view.offsetY) / 
 
 interface Props {
   scene: Scene | null;
-  visibleLayers: Set<Layer>;
+  /**
+   * Production layers currently shown, by id.
+   *
+   * This was the five geometry layers — walls, furniture, annotation and so on
+   * — which describe how the FILE stores a shape. It is now the ten layers a
+   * production actually works in, which is what a user expects to switch off.
+   */
+  visibleLayers: Set<string>;
+  /** Layers that cannot be selected or dragged, by id. */
+  lockedLayers?: Set<string>;
   paper: boolean;
   /** When false, the drawing grid is hidden (rulers stay). */
   showGrid?: boolean;
@@ -116,6 +90,19 @@ interface Props {
   /** Selected object ids. Empty means nothing is selected. */
   selection: number[];
   onSelect: (ids: number[]) => void;
+  /**
+   * A right-click that did not pan, with whatever sits under it.
+   *
+   * The canvas reports the hit and the position; what the menu offers is the
+   * shell's business, because the shell is what owns the commands.
+   */
+  onContextMenu?: (info: {
+    planX: number;
+    planY: number;
+    clientX: number;
+    clientY: number;
+    nodeId: number | null;
+  }) => void;
   /**
    * Objects under the pointer when ≥2 overlap (for the Properties stack list).
    * Cleared when the pointer leaves a stack or selection starts elsewhere.
@@ -221,13 +208,6 @@ function pointsToScreenPixels(points: number): number {
   return Math.max(0.9, points * SCREEN_PIXELS_PER_POINT);
 }
 
-interface Bounds {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
-
 interface PreparedPrimitive extends Bounds {
   primitive: ScenePrimitive;
   paperColor: string;
@@ -331,17 +311,21 @@ function pointInPolygon(x: number, y: number, pts: number[]): boolean {
  */
 function hitTestCandidates(
   prepared: PreparedPrimitive[],
-  visible: Set<Layer>,
+  visible: Set<string>,
   x: number,
   y: number,
   tolerance: number,
+  locked?: Set<string>,
 ): Array<{ id: number; distance: number; size: number; name: string }> {
   const hits: Array<{ id: number; distance: number; size: number; name: string }> = [];
   const seen = new Set<number>();
 
   for (const item of prepared) {
     const p = item.primitive;
-    if (!visible.has(p.layer)) continue;
+    if (!visible.has(p.discipline)) continue;
+    // A locked layer is visible but not touchable: that is the whole point of
+    // locking the Architecture layer while placing chairs on top of it.
+    if (locked?.has(p.discipline)) continue;
     if (seen.has(p.selectId)) continue;
 
     let distance = Infinity;
@@ -405,12 +389,13 @@ function hitTestCandidates(
 /** Finds the object nearest a point (first of `hitTestCandidates`). */
 function hitTest(
   prepared: PreparedPrimitive[],
-  visible: Set<Layer>,
+  visible: Set<string>,
   x: number,
   y: number,
   tolerance: number,
+  locked?: Set<string>,
 ): number | null {
-  return hitTestCandidates(prepared, visible, x, y, tolerance)[0]?.id ?? null;
+  return hitTestCandidates(prepared, visible, x, y, tolerance, locked)[0]?.id ?? null;
 }
 
 /** COLORREF (0x00BBGGRR) to a CSS colour. */
@@ -448,6 +433,7 @@ function rulerLabel(logical: number, system: UnitSystem): string {
 export function PlanCanvas({
   scene,
   visibleLayers,
+  lockedLayers,
   paper,
   showGrid = true,
   objectSnap = true,
@@ -456,6 +442,7 @@ export function PlanCanvas({
   fitToken,
   selection,
   onSelect,
+  onContextMenu,
   onStackCandidates,
   stackPeekItems = null,
   onStackCycle,
@@ -500,6 +487,15 @@ export function PlanCanvas({
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [backgroundImage, setBackgroundImage] = useState<HTMLImageElement | null>(null);
   const panRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  /**
+   * How far the pointer travelled since the last right-button press.
+   *
+   * Right-drag pans and right-click opens the menu, and the only thing that
+   * separates them is whether the pointer moved. Without this the menu would
+   * appear at the end of every pan, which is why it was easier to suppress the
+   * menu entirely than to get this right.
+   */
+  const rightPressRef = useRef<{ x: number; y: number; moved: number } | null>(null);
   const moveRef = useRef<{ startX: number; startY: number } | null>(null);
   const pointMoveRef = useRef<{
     pathNodeId: number;
@@ -643,12 +639,28 @@ export function PlanCanvas({
 
   const selectionSet = useMemo(() => new Set(selection), [selection]);
 
-  /** One combined bound per selectable object, rebuilt only when layers change. */
+  /** Selectable ids on a locked layer, so a rubber band can skip them. */
+  const lockedIds = useMemo(() => {
+    const out = new Set<number>();
+    if (!lockedLayers?.size) return out;
+    for (const item of prepared) {
+      if (lockedLayers.has(item.primitive.discipline)) out.add(item.primitive.selectId);
+    }
+    return out;
+  }, [prepared, lockedLayers]);
+
+  /**
+   * One combined bound per selectable object, rebuilt only when layers change.
+   *
+   * Locked objects are deliberately still in here. Locking a layer means "do
+   * not let me move this by accident", not "pretend it is not there" — snapping
+   * a deck flush to a locked wall is exactly why the wall got locked.
+   */
   const objectBounds = useMemo(() => {
     const result = new Map<number, Bounds>();
     for (const item of prepared) {
       const p = item.primitive;
-      if (!visibleLayers.has(p.layer) || !Number.isFinite(item.minX)) continue;
+      if (!visibleLayers.has(p.discipline) || !Number.isFinite(item.minX)) continue;
       const current = result.get(p.selectId);
       if (current) {
         current.minX = Math.min(current.minX, item.minX);
@@ -984,7 +996,7 @@ export function PlanCanvas({
 
     for (const item of prepared) {
       const p = item.primitive;
-      if (!visibleLayers.has(p.layer)) continue;
+      if (!visibleLayers.has(p.discipline)) continue;
       const isSelected = selectionSet.has(p.selectId);
       const ox = isSelected && nudge ? nudge.dx : 0;
       const oy = isSelected && nudge ? nudge.dy : 0;
@@ -1452,6 +1464,7 @@ export function PlanCanvas({
       spaceHeld ||
       !scene;
     if (wantsPan) {
+      if (e.button === 2) rightPressRef.current = { x: e.clientX, y: e.clientY, moved: 0 };
       panRef.current = { x: e.clientX, y: e.clientY, ox: view.offsetX, oy: view.offsetY };
       return;
     }
@@ -1614,7 +1627,7 @@ export function PlanCanvas({
       // grid snapping changes the coordinate. This lets a dimension follow the
       // object that was clicked instead of becoming a detached drawing line.
       const nodeId = pointerMode.associate
-        ? (hitTest(prepared, visibleLayers, point.x, point.y, 8 / view.scale) ?? undefined)
+        ? (hitTest(prepared, visibleLayers, point.x, point.y, 8 / view.scale, lockedLayers) ?? undefined)
         : undefined;
       const coordinate =
         pointerMode.snap === 'grid'
@@ -1636,7 +1649,7 @@ export function PlanCanvas({
     if (scene) {
       const { x, y } = toPlan(e);
       const tolerance = 8 / view.scale;
-      const candidates = hitTestCandidates(prepared, visibleLayers, x, y, tolerance);
+      const candidates = hitTestCandidates(prepared, visibleLayers, x, y, tolerance, lockedLayers);
 
       if (candidates.length >= 2) {
         onStackCandidates?.(candidates.map((c) => ({ id: c.id, name: c.name })));
@@ -1752,6 +1765,10 @@ export function PlanCanvas({
     pointerScreenRef.current = { x: e.clientX, y: e.clientY };
     const pan = panRef.current;
     if (pan) {
+      const right = rightPressRef.current;
+      if (right) {
+        right.moved = Math.max(right.moved, Math.hypot(e.clientX - right.x, e.clientY - right.y));
+      }
       scheduleView((v) => ({
         ...v,
         offsetX: pan.ox + (e.clientX - pan.x),
@@ -1962,6 +1979,7 @@ export function PlanCanvas({
         const caught = new Set<number>(e.shiftKey ? selection : []);
         const crossing = marquee.x1 < marquee.x0;
         for (const [id, bounds] of objectBounds) {
+          if (lockedIds.has(id)) continue;
           const intersects =
             bounds.maxX >= box.minX &&
             bounds.minX <= box.maxX &&
@@ -1992,6 +2010,25 @@ export function PlanCanvas({
       }
     }
     panRef.current = null;
+
+    /*
+     * A right-button release that did not travel is a right CLICK, and that is
+     * what opens the menu. Right-drag stays what it has always been: a pan.
+     */
+    if (e.button === 2) {
+      const travelled = rightPressRef.current?.moved ?? 0;
+      rightPressRef.current = null;
+      if (onContextMenu && scene && travelled <= 4) {
+        const at = toPlan(e);
+        onContextMenu({
+          planX: at.x,
+          planY: at.y,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          nodeId: hitTest(prepared, visibleLayers, at.x, at.y, 8 / view.scale, lockedLayers),
+        });
+      }
+    }
   };
 
   // The one place the tool's mode becomes the CSS cursor token, plus the two
@@ -2052,6 +2089,13 @@ export function PlanCanvas({
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        /*
+         * Only ever suppress the browser's own menu here. The decision about
+         * OUR menu cannot be made in this handler: on macOS `contextmenu`
+         * fires on right-button PRESS, before the pointer has moved, so there
+         * is nothing yet to distinguish a click from the start of a pan. That
+         * happens on release instead — see `onPointerUp`.
+         */
         onContextMenu={(e) => e.preventDefault()}
         onDragOver={(e) => {
           const inventoryDrop =
@@ -2202,88 +2246,6 @@ export function PlanCanvas({
  * the difference between a drawing that looks drafted and one that looks
  * nudged, so object alignment wins when both are in range.
  */
-function applySnap(
-  objectBounds: Map<number, Bounds>,
-  selection: number[],
-  raw: { dx: number; dy: number },
-  snapStep: number,
-  viewScale: number,
-  objectSnap: boolean,
-  units: UnitSystem = 'imperial',
-  keys: SnapKeys = { shift: false, alt: false },
-): { dx: number; dy: number; guides: { x?: number; y?: number } } {
-  if (!selection.length) return { ...raw, guides: {} };
-
-  const moving = boundsOfMany(objectBounds, selection);
-  if (!moving) return { ...raw, guides: {} };
-
-  const centre = {
-    x: (moving.minX + moving.maxX) / 2 + raw.dx,
-    y: (moving.minY + moving.maxY) / 2 + raw.dy,
-  };
-
-  // Snap tolerance is a fixed screen distance, so it feels the same at any zoom.
-  const tolerance = 7 / viewScale;
-  const selected = new Set(selection);
-  const guides: { x?: number; y?: number } = {};
-  let dx = raw.dx;
-  let dy = raw.dy;
-  let bestX: { at: number; gap: number } | null = null;
-  let bestY: { at: number; gap: number } | null = null;
-
-  if (objectSnap && !keys.alt && selection.length <= 40) {
-    for (const [id, bounds] of objectBounds) {
-      if (selected.has(id)) continue;
-      const { minX, minY, maxX, maxY } = bounds;
-
-      for (const candidate of [(minX + maxX) / 2, minX, maxX]) {
-        const gap = Math.abs(candidate - centre.x);
-        if (gap < tolerance && (!bestX || gap < bestX.gap)) bestX = { at: candidate, gap };
-      }
-      for (const candidate of [(minY + maxY) / 2, minY, maxY]) {
-        const gap = Math.abs(candidate - centre.y);
-        if (gap < tolerance && (!bestY || gap < bestY.gap)) bestY = { at: candidate, gap };
-      }
-    }
-  }
-
-  const gridStep = editSnapStep(snapStep, units, keys);
-
-  if (bestX) {
-    dx += bestX.at - centre.x;
-    guides.x = bestX.at;
-  } else if (gridStep > 0) {
-    dx += snapScalar(centre.x, gridStep) - centre.x;
-  }
-
-  if (bestY) {
-    dy += bestY.at - centre.y;
-    guides.y = bestY.at;
-  } else if (gridStep > 0) {
-    dy += snapScalar(centre.y, gridStep) - centre.y;
-  }
-
-  return { dx, dy, guides };
-}
-
-/** Combined bounding box of a whole selection. */
-function boundsOfMany(objectBounds: Map<number, Bounds>, ids: number[]) {
-  let box: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
-  for (const id of ids) {
-    const b = objectBounds.get(id);
-    if (!b) continue;
-    box = box
-      ? {
-          minX: Math.min(box.minX, b.minX),
-          minY: Math.min(box.minY, b.minY),
-          maxX: Math.max(box.maxX, b.maxX),
-          maxY: Math.max(box.maxY, b.maxY),
-        }
-      : b;
-  }
-  return box;
-}
-
 /** Alignment guides, drawn only while a snap is actually holding. */
 function drawGuides(
   ctx: CanvasRenderingContext2D,

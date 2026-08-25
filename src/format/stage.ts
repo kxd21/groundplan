@@ -71,13 +71,52 @@ export interface Stair {
   handrail: boolean;
 }
 
+/** A ramp is the accessible way onto a stage, and it is not a shallow stair. */
+export interface Ramp {
+  id: string;
+  level: number;
+  edge: StairEdge;
+  /** Distance along that edge to the near side of the ramp. */
+  offset: number;
+  width: number;
+  /**
+   * Run per unit of rise. 12 is the ADA maximum for a new ramp — one foot of
+   * run for every inch of rise — and shallower is always allowed.
+   */
+  slope: number;
+  handrail: boolean;
+}
+
+/** Guardrail along one edge of one level. */
+export interface Rail {
+  id: string;
+  level: number;
+  edge: StairEdge;
+  /** Length along that edge. Zero means the whole edge. */
+  length: number;
+  offset: number;
+}
+
 export interface StageBuild {
   id: string;
   name: string;
   levels: StageLevel[];
   stairs: Stair[];
+  /** Accessible ramps. Separate from stairs: different parts, different rules. */
+  ramps: Ramp[];
+  /** Guardrails along named edges. */
+  rails: Rail[];
   /** Skirt the visible edges. */
   skirted: boolean;
+  /**
+   * Force a stock deck size rather than letting the tiler choose.
+   *
+   * The tiler picks whatever tiles the footprint exactly, which is the right
+   * default and the wrong answer when the shop only owns one size. A label
+   * from `DECK_SIZES`; anything unrecognised is ignored rather than failing the
+   * build.
+   */
+  preferredDeck?: string;
 }
 
 export interface StageSolution {
@@ -99,20 +138,38 @@ const nextId = (prefix: string) => `${prefix}-${(counter++).toString(36)}`;
  * reported rather than fudged — a stage that is 3in over is a real problem on
  * site and hiding it in a rounded rectangle helps nobody.
  */
-function tileLevel(level: StageLevel, index: number, notes: string[]): Deck[] {
+function tileLevel(
+  level: StageLevel,
+  index: number,
+  notes: string[],
+  preferredDeck?: string,
+): Deck[] {
   const decks: Deck[] = [];
-  const primary = DECK_SIZES[0];
+  const forced = preferredDeck
+    ? DECK_SIZES.find((d) => d.label === preferredDeck)
+    : undefined;
+  if (preferredDeck && !forced) {
+    notes.push(`"${preferredDeck}" is not a stock deck size; the tiler chose its own.`);
+  }
+  /*
+   * The stock the tiler may use. Forcing a size means the shop owns one kind
+   * of deck, so offering it the rest is not a helpful fallback — it produces a
+   * parts list nobody can pull. A footprint that will not tile in the forced
+   * size is reported short instead, which is the honest answer.
+   */
+  const SIZES = forced ? [forced] : DECK_SIZES;
+  const primary = forced ?? DECK_SIZES[0];
 
   let shortDepth = 0;
   let shortWidth = 0;
 
   /** Prefer a stock size that tiles the level with no remainder; keep 4×8 primary when it fits. */
   const pickDepth = (remaining: number, fullWidth: number) => {
-    const fits = DECK_SIZES.filter((d) => d.depth <= remaining + 1e-6);
+    const fits = SIZES.filter((d) => d.depth <= remaining + 1e-6);
     if (!fits.length) return undefined;
     const exact = fits.filter((d) => Math.abs(remaining % d.depth) < 1e-6);
     const widthFor = (depth: number) =>
-      DECK_SIZES.filter((s) => s.depth === depth && Math.abs(fullWidth % s.width) < 1e-6).sort(
+      SIZES.filter((s) => s.depth === depth && Math.abs(fullWidth % s.width) < 1e-6).sort(
         (a, b) => b.width - a.width,
       )[0];
     const perfect = exact.filter((d) => widthFor(d.depth));
@@ -140,7 +197,7 @@ function tileLevel(level: StageLevel, index: number, notes: string[]): Deck[] {
     return fits.sort((a, b) => b.depth - a.depth)[0];
   };
   const pickWidth = (remaining: number, depth: number) => {
-    const fits = DECK_SIZES.filter((d) => d.depth === depth && d.width <= remaining + 1e-6);
+    const fits = SIZES.filter((d) => d.depth === depth && d.width <= remaining + 1e-6);
     if (!fits.length) return undefined;
     const exact = fits.filter((d) => Math.abs(remaining % d.width) < 1e-6).sort((a, b) => b.width - a.width);
     if (exact.length) return exact[0];
@@ -201,7 +258,7 @@ export function solveStage(build: StageBuild): StageSolution {
       notes.push(`${level.label ?? `Level ${index + 1}`} has no size.`);
       return;
     }
-    decks.push(...tileLevel(level, index, notes));
+    decks.push(...tileLevel(level, index, notes, build.preferredDeck));
   });
 
   return {
@@ -278,6 +335,48 @@ export function stageBuildList(build: StageBuild, solution: StageSolution): Buil
     if (stair.handrail) lines.push({ item: 'Handrail', quantity: 2 });
   }
 
+  /*
+   * A ramp is priced by its run, not by its rise. One inch of rise needs
+   * `slope` inches of run, so a 32in stage at the ADA maximum of 1:12 is
+   * thirty-two feet of ramp — which is usually the moment somebody discovers
+   * the ramp does not fit in the room, and is exactly why it belongs on the
+   * build list rather than in somebody's head.
+   */
+  for (const ramp of build.ramps) {
+    const level = build.levels[ramp.level];
+    if (!level) continue;
+    const run = level.height * ramp.slope;
+    const landings = Math.max(0, Math.ceil(level.height / (30 * IN)) - 1);
+    lines.push({
+      item: `Ramp ${(ramp.width / FT).toFixed(0)}ft`,
+      quantity: 1,
+      detail:
+        `${(run / FT).toFixed(1)}ft run at 1:${ramp.slope} for ` +
+        `${(level.height / IN).toFixed(0)}in rise` +
+        (landings ? `, ${landings} intermediate landing${landings === 1 ? '' : 's'}` : ''),
+    });
+    if (ramp.handrail) {
+      lines.push({
+        item: 'Ramp handrail',
+        quantity: 2,
+        detail: `${(run / FT).toFixed(1)}ft each side`,
+      });
+    }
+  }
+
+  for (const rail of build.rails) {
+    const level = build.levels[rail.level];
+    if (!level) continue;
+    const edgeLength =
+      rail.edge === 'left' || rail.edge === 'right' ? level.depth : level.width;
+    const length = rail.length > 0 ? rail.length : edgeLength;
+    lines.push({
+      item: `Guardrail ${rail.edge}`,
+      quantity: Math.ceil(length / FT),
+      detail: `linear feet on ${level.label ?? `level ${rail.level + 1}`}`,
+    });
+  }
+
   return lines;
 }
 
@@ -320,6 +419,47 @@ export function stageWarnings(build: StageBuild): string[] {
     }
     if (level.height > 30 * IN && !stair.handrail) {
       warnings.push('Stairs over 30in usually need a handrail.');
+    }
+  }
+
+  for (const ramp of build.ramps) {
+    const level = build.levels[ramp.level];
+    if (!level) {
+      warnings.push('A ramp is attached to a level that does not exist.');
+      continue;
+    }
+    // 1:12 is the ADA maximum for a new ramp. Anything steeper is a slope
+    // somebody will struggle with, whatever it is called on the drawing.
+    if (ramp.slope < 12) {
+      warnings.push(
+        `The ramp to ${level.label ?? `level ${ramp.level + 1}`} is 1:${ramp.slope}, ` +
+          'steeper than the 1:12 an accessible ramp allows.',
+      );
+    }
+    if (ramp.width < 36 * IN) {
+      warnings.push('An accessible ramp needs at least 36in of clear width.');
+    }
+    // A run this long has to go somewhere, and it is rarely where the drawing
+    // first put it.
+    const run = level.height * ramp.slope;
+    if (run > 30 * FT) {
+      warnings.push(
+        `The ramp to ${level.label ?? `level ${ramp.level + 1}`} runs ` +
+          `${(run / FT).toFixed(0)}ft. Check it fits, and that it has landings.`,
+      );
+    }
+    if (level.height > 30 * IN && !ramp.handrail) {
+      warnings.push('A ramp rising more than 30in usually needs handrails both sides.');
+    }
+  }
+
+  // Guardrail is the answer to the height warning above, so only complain when
+  // the height is there and the rail is not.
+  for (const [index, level] of build.levels.entries()) {
+    if (level.height >= 48 * IN && !build.rails.some((r) => r.level === index)) {
+      warnings.push(
+        `${level.label ?? `Level ${index + 1}`} is 4ft or more up with no guardrail on the build.`,
+      );
     }
   }
 
@@ -408,6 +548,8 @@ export function simpleStage(
     name,
     levels: [{ x, y, width, depth, height, label: name }],
     stairs,
+    ramps: [],
+    rails: [],
     skirted: true,
   };
 }
@@ -460,6 +602,8 @@ export function tieredStage(
     // the front is taller (the common case).
     levels: [frontLevel, backLevel],
     stairs,
+    ramps: [],
+    rails: [],
     skirted: true,
   };
 }
@@ -523,4 +667,109 @@ export function levelOutline(level: StageLevel): RoomModel {
     ],
     level.label ?? 'level',
   );
+}
+
+/** One level in a multi-level build, as a caller describes it. */
+export interface LevelSpec {
+  depth: number;
+  height: number;
+  label?: string;
+}
+
+/**
+ * A stage of any number of levels, stacked front to back.
+ *
+ * `simpleStage` makes one level and `tieredStage` makes exactly two, which
+ * covers the common house-riser patterns and stops precisely where a real
+ * build gets interesting: a keynote set with a downstage thrust, a main deck
+ * and an upstage band riser is three, and an awards show with a stepped
+ * chorus is more. The model has always held `StageLevel[]`; this is the
+ * builder that fills it.
+ *
+ * Levels are laid front to back in the order given, each starting where the
+ * one before it ended, so the depths are read the way they are quoted on site.
+ */
+export function multiLevelStage(
+  x: number,
+  y: number,
+  width: number,
+  levels: LevelSpec[],
+  options: {
+    name?: string;
+    stairEdges?: StairEdge[];
+    rampEdges?: StairEdge[];
+    railEdges?: StairEdge[];
+    preferredDeck?: string;
+    skirted?: boolean;
+  } = {},
+): StageBuild {
+  const name = options.name ?? 'Stage';
+  const built: StageLevel[] = [];
+  let cursor = y;
+
+  for (const [index, spec] of levels.entries()) {
+    if (!(spec.depth > 0)) continue;
+    built.push({
+      x,
+      y: cursor,
+      width,
+      depth: spec.depth,
+      height: spec.height,
+      label: spec.label ?? (levels.length === 1 ? name : `${name} level ${index + 1}`),
+    });
+    cursor += spec.depth;
+  }
+
+  if (!built.length) {
+    return { id: nextId('stage'), name, levels: [], stairs: [], ramps: [], rails: [], skirted: false };
+  }
+
+  // Access attaches to the tallest level: that is the one somebody has to get
+  // up to, and the one a code officer asks about.
+  const tallest = built.reduce(
+    (best, level, index) => (level.height > built[best]!.height ? index : best),
+    0,
+  );
+  const target = built[tallest]!;
+  const along = (edge: StairEdge) =>
+    edge === 'left' || edge === 'right' ? target.depth : target.width;
+
+  const stairs: Stair[] = (options.stairEdges ?? []).map((edge) => ({
+    id: nextId('stair'),
+    level: tallest,
+    edge,
+    offset: Math.max(0, along(edge) / 2 - 2 * FT),
+    width: 4 * FT,
+    riserHeight: 8 * IN,
+    handrail: target.height > 30 * IN,
+  }));
+
+  const ramps: Ramp[] = (options.rampEdges ?? []).map((edge) => ({
+    id: nextId('ramp'),
+    level: tallest,
+    edge,
+    offset: Math.max(0, along(edge) / 2 - 2 * FT),
+    width: 4 * FT,
+    slope: 12,
+    handrail: target.height > 30 * IN,
+  }));
+
+  const rails: Rail[] = (options.railEdges ?? []).map((edge) => ({
+    id: nextId('rail'),
+    level: tallest,
+    edge,
+    length: 0,
+    offset: 0,
+  }));
+
+  return {
+    id: nextId('stage'),
+    name,
+    levels: built,
+    stairs,
+    ramps,
+    rails,
+    skirted: options.skirted !== false,
+    preferredDeck: options.preferredDeck,
+  };
 }

@@ -118,7 +118,9 @@ console.log('combining rooms\n');
 }
 
 {
-  // The honest refusal: a diagonal wall cannot be combined exactly.
+  // A diagonal wall used to be an honest refusal: the rectilinear decomposition
+  // had no cell that could hold one. The general clipper does, so combining an
+  // angled room now works rather than explaining why it cannot.
   const angled = roomFromPolygon([
     { x: 0, y: 0 },
     { x: 40 * F, y: 0 },
@@ -126,9 +128,41 @@ console.log('combining rooms\n');
     { x: 0, y: 30 * F },
   ]);
   check('an angled room is not axis-aligned', !isAxisAligned(angled.walls));
-  const refused = combineRooms(angled, rectRoom(0, 0, 10 * F, 10 * F), 'difference');
-  check('combining an angled room is refused, not approximated', !refused.ok);
-  check('and the refusal says what to do instead', (refused.reason ?? '').includes('corners'), refused.reason);
+
+  const before = roomArea(angled);
+  const cut = combineRooms(angled, rectRoom(0, 0, 10 * F, 10 * F), 'difference');
+  check('an angled room can be cut', cut.ok, cut.reason);
+  check(
+    'and the corner really is gone',
+    !!cut.room && Math.abs(roomArea(cut.room) - (before - 100 * F * F)) < F * F,
+    cut.room ? `${roomArea(cut.room) / (F * F)} sq ft, was ${before / (F * F)}` : cut.reason,
+  );
+  check('the result keeps the diagonal', !!cut.room && !isAxisAligned(cut.room.walls));
+
+  const added = combineRooms(angled, rectRoom(40 * F, 0, 10 * F, 10 * F), 'union');
+  check('and an angled room can be added to', added.ok, added.reason);
+  check(
+    'growing by the area of what was added',
+    !!added.room && Math.abs(roomArea(added.room) - (before + 100 * F * F)) < F * F,
+    added.room ? `${roomArea(added.room) / (F * F)} sq ft` : added.reason,
+  );
+
+  // Two disjoint pieces is a legitimate geometric answer and not a room. The
+  // operand is angled so this goes through the general clipper; the rectilinear
+  // fast path above has its own, older handling.
+  const trapezoid = roomFromPolygon([
+    { x: 0, y: 0 },
+    { x: 30 * F, y: 0 },
+    { x: 26 * F, y: 10 * F },
+    { x: 4 * F, y: 10 * F },
+  ]);
+  const split = combineRooms(trapezoid, rectRoom(12 * F, -5 * F, 6 * F, 20 * F), 'difference');
+  check('a cut that would split the room in two is refused', !split.ok);
+  check(
+    'and says why, rather than keeping the larger half',
+    /separate areas/.test(split.reason ?? ''),
+    split.reason,
+  );
 }
 
 check(

@@ -173,6 +173,8 @@ export const INSERT_TREE: InsertBranch[] = [
           leaf('speaker', 'Speaker', ['Speaker', 'loudspeaker'], ['speaker'], "2' x 2' Speaker"),
           leaf('sub', 'Subwoofer', ['Subwoofer', 'sub'], ['subwoofer'], "2' x 2' Subwoofer"),
           leaf('mixer', 'Mixer', ['Mixer'], ['mixer'], "3' x 2' 6\" Mixer"),
+          leaf('audio-console', 'Audio console', ['Audio Console', 'FOH Console', 'Desk'], ['mixer'], "4' x 3' Audio Console"),
+          leaf('foh-rack', 'FOH rack', ['FOH Rack', 'Amp Rack', 'Audio Rack'], ['rack'], "2' 6\" x 3' FOH Rack"),
         ],
       },
       {
@@ -187,6 +189,41 @@ export const INSERT_TREE: InsertBranch[] = [
         label: 'Rear',
         children: [
           leaf('camera', 'Video camera', ['Video Camera', 'Camera'], ['camera'], "2' 6\" x 2' 6\" Video Camera"),
+          // A manned camera needs a platform and an operator; a PTZ needs a
+          // clamp and a cable. Drawing them as the same box loses the thing
+          // the plan is for.
+          leaf('camera-ptz', 'PTZ camera', ['PTZ Camera', 'PTZ', 'Robo Camera'], ['camera'], "1' x 1' PTZ Camera"),
+          leaf('camera-platform', 'Camera platform', ['Camera Platform', 'Camera Riser'], ['camera'], "6' x 6' Camera Platform"),
+        ],
+      },
+      {
+        id: 'video-support',
+        label: 'Video support',
+        children: [
+          leaf('confidence', 'Confidence monitor', ['Confidence Monitor', 'Confidence', 'Downstage Monitor'], ['monitor'], "4' x 2' 6\" Confidence Monitor"),
+          leaf('dsm', 'Downstage monitor (DSM)', ['DSM', 'Downstage Monitor'], ['monitor'], "3' 6\" x 2' 3\" DSM"),
+          leaf('video-rack', 'Video rack', ['Video Rack', 'Video World', 'Rack'], ['rack'], "2' 6\" x 3' Video Rack"),
+          leaf('video-switcher', 'Video switcher', ['Video Switcher', 'Switcher'], ['switcher'], "3' x 2' Video Switcher"),
+        ],
+      },
+      {
+        id: 'power-data',
+        label: 'Power & data',
+        children: [
+          leaf('distro', 'Power distro', ['Distro', 'Power Distro', 'Distribution'], ['distro'], "2' 6\" x 2' Distro"),
+          leaf('power-drop', 'Power drop', ['Power Drop', 'Drop', 'Feeder'], ['power'], "1' x 1' Power Drop"),
+          leaf('switch', 'Network switch', ['Network Switch', 'Switch', 'Ethernet Switch'], ['network'], "2' x 1' 6\" Network Switch"),
+          leaf('cable-ramp', 'Cable ramp', ['Cable Ramp', 'Yellow Jacket', 'Cable Cover'], ['cable'], "3' x 1' 6\" Cable Ramp"),
+          leaf('cable-mat', 'Cable mat', ['Cable Mat', 'Walkway Mat'], ['cable'], "6' x 3' Cable Mat"),
+        ],
+      },
+      {
+        id: 'rigging',
+        label: 'Rigging',
+        children: [
+          leaf('motor', 'Chain motor', ['Chain Motor', 'Motor', 'Chain Hoist', 'Hoist'], ['motor'], "1' 6\" x 1' 6\" Chain Motor"),
+          leaf('rig-point', 'Rigging point', ['Rigging Point', 'Rig Point', 'Pick Point'], ['rigging'], "1' x 1' Rigging Point"),
+          leaf('motor-control', 'Motor control', ['Motor Control', 'Hoist Control'], ['motor'], "2' x 2' Motor Control"),
         ],
       },
       {

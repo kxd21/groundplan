@@ -1,9 +1,11 @@
-import type { Layer, Scene, ScenePrimitive } from '../../format/scene.js';
+import type { Scene, ScenePrimitive } from '../../format/scene.js';
 import type { PlanBackground } from '../../format/companion.js';
 import {
+  fitInchesPerFoot,
   pointsToUnits,
   resolveStyle,
   SCALE_INCHES_PER_FOOT,
+  sheetFrame,
   TEXT_POINTS,
 } from '../../format/style.js';
 
@@ -17,13 +19,12 @@ import {
  */
 export function toSvg(
   scene: Scene,
-  visible: Set<Layer>,
+  visible: Set<string>,
   scaleId = '1/8',
   background: PlanBackground | null = null,
+  sheet: { paper: string; landscape: boolean } = { paper: 'Letter', landscape: true },
 ): string {
   const exportBackground = background?.visible && background.includeInExport ? background : null;
-  const inchesPerFoot = SCALE_INCHES_PER_FOOT[scaleId] ?? SCALE_INCHES_PER_FOOT['1/8'];
-  const units = (points: number) => pointsToUnits(points, inchesPerFoot);
 
   // Plan y grows upward, SVG y grows down — see `screenY` in PlanCanvas for why
   // the drawing was coming out mirrored. Flipping the coordinates once, here,
@@ -46,7 +47,7 @@ export function toSvg(
   // otherwise stretch the page and shrink the plan to a corner of it.
   let extent: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
   for (const p of scene.primitives) {
-    if (!visible.has(p.layer) || p.layer === 'annotation') continue;
+    if (!visible.has(p.discipline) || p.layer === 'annotation') continue;
     for (let i = 0; i < p.pts.length; i += 2) {
       const x = p.pts[i];
       const y = p.pts[i + 1];
@@ -90,6 +91,28 @@ export function toSvg(
   const minY = extent.minY - pad;
   const width = extent.maxX - extent.minX + pad * 2;
   const height = extent.maxY - extent.minY + pad * 2;
+
+  /*
+   * Stroke weights are stated in printed points, so they can only be converted
+   * once the scale the drawing will be READ at is known. For a named
+   * architectural scale that is the scale itself. For "Fit to page" it is not
+   * knowable until the extent is: the drawing is shrunk to the frame, and the
+   * scale is whatever that shrinking produced. Resolving it here, after the
+   * extent, is the whole fix for large plans exporting as hairlines.
+   */
+  const inchesPerFoot =
+    scaleId === 'fit'
+      ? fitInchesPerFoot({ width, height }, sheetFrame(sheet.paper, sheet.landscape))
+      : (SCALE_INCHES_PER_FOOT[scaleId] ?? SCALE_INCHES_PER_FOOT['1/8']!);
+  const units = (points: number) => pointsToUnits(points, inchesPerFoot);
+
+  // The sheet size this drawing is built for, in real inches. Declaring it on
+  // the root means anything that opens the file standalone — Illustrator, a
+  // browser, a placed asset in a deck — renders it at the size its line weights
+  // were computed for. `width / 10` alone is a unitless pixel count that only
+  // happened to be right at 1/8in per foot.
+  const paperWidthIn = (width / 120) * inchesPerFoot;
+  const paperHeightIn = (height / 120) * inchesPerFoot;
 
   const n = (v: number) => (Math.round(v * 100) / 100).toString();
   const esc = (s: string) =>
@@ -149,7 +172,7 @@ export function toSvg(
   const strokes: string[] = [];
 
   for (const p of scene.primitives) {
-    if (!visible.has(p.layer)) continue;
+    if (!visible.has(p.discipline)) continue;
     const style = resolveStyle(p);
     const stroke = style.stroke;
     const w = units(style.strokePoints);
@@ -205,7 +228,7 @@ export function toSvg(
   }
 
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(minX)} ${n(minY)} ${n(width)} ${n(height)}" width="${n(width / 10)}" height="${n(height / 10)}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(minX)} ${n(minY)} ${n(width)} ${n(height)}" width="${n(paperWidthIn)}in" height="${n(paperHeightIn)}in">`,
     `<rect x="${n(minX)}" y="${n(minY)}" width="${n(width)}" height="${n(height)}" fill="#ffffff"/>`,
     ...(exportBackground
       ? [

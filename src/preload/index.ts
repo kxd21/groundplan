@@ -168,6 +168,10 @@ const api = {
     venue?: string;
     event?: string;
     contact?: string;
+    /** Who drew the sheet, for the title block. */
+    drawnBy?: string;
+    /** Which revision this issue is, for the title block. */
+    revision?: string;
     roomWidth?: number;
     /** Floor-plan depth (Y extent), not ceiling. */
     roomHeight?: number;
@@ -251,6 +255,9 @@ const api = {
 
   move: (nodeId: number, dx: number, dy: number): Promise<EditReply> =>
     ipcRenderer.invoke('edit:move', nodeId, dx, dy),
+  /** Absolute placement. A null axis leaves that coordinate where it is. */
+  moveTo: (nodeId: number, x: number | null, y: number | null): Promise<EditReply> =>
+    ipcRenderer.invoke('edit:move-to', nodeId, x, y),
   remove: (nodeId: number): Promise<EditReply> => ipcRenderer.invoke('edit:delete', nodeId),
   duplicate: (nodeId: number, dx: number, dy: number): Promise<EditReply> =>
     ipcRenderer.invoke('edit:duplicate', nodeId, dx, dy),
@@ -423,7 +430,22 @@ const api = {
     ipcRenderer.invoke('plan:room-wall-length', wallIndex, length),
   roomWallOffset: (wallIndex: number, distance: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:room-wall-offset', wallIndex, distance),
-  roomDimension: (): Promise<EditReply & { note?: string }> => ipcRenderer.invoke('plan:room-dimension'),
+  roomDimension: (options?: { corners?: boolean }): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:room-dimension', options ?? {}),
+  /** What the plan weighs and what it draws, by production layer. */
+  loadSummary: (): Promise<{
+    lines: Array<{ layer: string; counted: number; unknown: number; weightLb: number; powerW: number }>;
+    totalWeightLb: number;
+    totalPowerW: number;
+    unknown: number;
+    ampsAt120V: number;
+  } | null> => ipcRenderer.invoke('plan:load-summary'),
+  /** Calls out one wall as a radius, diameter, arc length, length or corner angle. */
+  wallDimension: (
+    index: number,
+    kind: 'radius' | 'diameter' | 'arc' | 'length' | 'angle',
+  ): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:wall-dimension', index, kind),
   roomMeta: (patch: {
     name?: string;
     ceilingHeight?: number;
@@ -539,13 +561,23 @@ const api = {
     height: number,
     back?: { depth: number; height: number },
     stairs?: Array<'front' | 'back' | 'left' | 'right'>,
+    /** Everything a house riser has that a single deck does not. */
+    more?: {
+      /** Every level front to back. Supersedes depth/height/back when given. */
+      levels?: Array<{ depth: number; height: number; label?: string }>;
+      ramps?: Array<'front' | 'back' | 'left' | 'right'>;
+      rails?: Array<'front' | 'back' | 'left' | 'right'>;
+      /** A stock deck label, e.g. "4' x 8'". */
+      deckSize?: string;
+      skirted?: boolean;
+    },
   ): Promise<
     EditReply & {
       note?: string;
       buildList?: Array<{ item: string; quantity: number; detail?: string }>;
       warnings?: string[];
     }
-  > => ipcRenderer.invoke('plan:stage-add', x, y, width, depth, height, back, stairs),
+  > => ipcRenderer.invoke('plan:stage-add', x, y, width, depth, height, back, stairs, more),
   stageClear: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('plan:stage-clear'),
 
   /** Draws a line, rectangle or ellipse between two plan points. */
@@ -560,8 +592,83 @@ const api = {
   placeCablePath: (
     name: string,
     points: Array<{ x: number; y: number }>,
+    /** Omit to read the kind out of the run's name. */
+    kind?: 'power' | 'audio' | 'video' | 'network' | 'fiber' | 'dmx',
   ): Promise<EditReply & { note?: string }> =>
-    ipcRenderer.invoke('plan:add-cable-path', name, points),
+    ipcRenderer.invoke('plan:add-cable-path', name, points, kind),
+
+  /**
+   * Builds an LED wall from a panel type and a panel count.
+   *
+   * Drawn as its individual cabinets, and answered with the numbers that follow
+   * — resolution, aspect, weight, draw, and what to order.
+   */
+  ledWall: (
+    x: number,
+    y: number,
+    request: { panel: string; columns: number; rows: number; name?: string },
+  ): Promise<
+    EditReply & {
+      note?: string;
+      warnings?: string[];
+      buildList?: Array<{ item: string; quantity: number; detail?: string }>;
+      wall?: {
+        panels: number;
+        pixelsWide: number;
+        pixelsHigh: number;
+        pixels: number;
+        aspectLabel: string;
+        weightLb: number;
+        powerW: number;
+        ampsAt208V: number;
+        widthMm: number;
+        heightMm: number;
+      };
+    }
+  > => ipcRenderer.invoke('plan:led-wall', x, y, request),
+
+  /* ── Named versions ─────────────────────────────────────────────────────
+   * Undo is bounded and dies with the session; recovery restores what you were
+   * doing. Neither is a record of what you agreed to. These are. */
+
+  versionList: (): Promise<
+    Array<{ id: string; name: string; savedAt: string; size: number; digest: string }>
+  > => ipcRenderer.invoke('versions:list'),
+
+  /** Snapshots the plan as it stands, including unsaved edits. */
+  versionSave: (
+    name: string,
+  ): Promise<
+    | { ok: true; version: { id: string; name: string; savedAt: string; size: number } }
+    | { ok: false; reason: string }
+  > => ipcRenderer.invoke('versions:save', name),
+
+  /** Restores a version as an undoable edit, not a file swap. */
+  versionRestore: (id: string): Promise<EditReply> => ipcRenderer.invoke('versions:restore', id),
+
+  /** What changed between a version and the plan as it stands. */
+  versionCompare: (
+    id: string,
+  ): Promise<{
+    added: Array<{ name: string; x: number; y: number }>;
+    removed: Array<{ name: string; x: number; y: number }>;
+    moved: Array<{ name: string; x: number; y: number; fromX?: number; fromY?: number; distance?: number }>;
+    changed: Array<{ name: string; x: number; y: number; detail?: string }>;
+    summary: string;
+    identical: boolean;
+  } | null> => ipcRenderer.invoke('versions:compare', id),
+
+  versionRename: (id: string, name: string): Promise<boolean> =>
+    ipcRenderer.invoke('versions:rename', id, name),
+
+  versionDelete: (id: string): Promise<boolean> => ipcRenderer.invoke('versions:delete', id),
+
+  /** Cable footage by type, drawn and rounded to stock lengths. */
+  cableSchedule: (): Promise<{
+    lines: Array<{ kind: string; label: string; runs: number; feet: number; orderFeet: number }>;
+    totalFeet: number;
+    totalOrderFeet: number;
+  } | null> => ipcRenderer.invoke('plan:cable-schedule'),
 
   placeAvPair: (x: number, y: number): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:place-av-pair', x, y),

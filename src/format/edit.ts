@@ -545,6 +545,94 @@ export function measureNode(node: RVNode): { width: number; height: number } {
   };
 }
 
+/**
+ * The object's OWN rectangle — width, height, and the angle it is drawn at.
+ *
+ * `node.angle` cannot answer this. `rotateNode` turns the outline *and* adds the
+ * delta to that field, so it is a running total of the turns applied since
+ * placement rather than an absolute facing: a chair whose symbol was drawn at
+ * -120 degrees still reads 0, and one turned repeatedly reads 512. Reporting it
+ * as an absolute angle put "512" in the Properties panel next to a chair that is
+ * visibly at 32 degrees.
+ *
+ * The outline knows. Measuring it recovers the angle the user can actually see,
+ * and the object's real side lengths instead of the axis-aligned box that
+ * `measureNode` returns — a 20.5x23.2in chair at -120 degrees boxes to 30.4x29.4.
+ *
+ * Only a true rectangle is recovered: four corners with square adjacent edges.
+ * A round table or a traced speaker outline has no meaningful own rectangle, so
+ * this returns null and callers keep the axis-aligned box.
+ */
+export function orientedExtent(
+  node: RVNode,
+): { width: number; height: number; angleRadians: number } | null {
+  const geometry = node.children.find((child) => child.cls === 'RVGeometry');
+  const root = geometry ?? node;
+
+  // A symbol is rarely one rectangle — a chair is a seat plus a back — so the
+  // angle comes from the largest rectangular part and the size is then measured
+  // in that part's frame, covering every point in the outline.
+  let best: { angle: number; area: number } | null = null;
+  const consider = (m: RVNode, depth = 0): void => {
+    if (depth > 64) return;
+    // A closed ring repeats its first point at the end — an 8x4 riser is stored
+    // as five points, not four, and dropping it here left every synthesized
+    // rectangle measured by its bounding box.
+    const raw = m.points;
+    const c =
+      raw.length === 5 && Math.hypot(raw[4].x - raw[0].x, raw[4].y - raw[0].y) < 1e-6
+        ? raw.slice(0, 4)
+        : raw;
+    if (c.length === 4) {
+      const edge = (a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: b.x - a.x, y: b.y - a.y });
+      const e0 = edge(c[0], c[1]);
+      const e1 = edge(c[1], c[2]);
+      const e2 = edge(c[2], c[3]);
+      const e3 = edge(c[3], c[0]);
+      const w = Math.hypot(e0.x, e0.y);
+      const h = Math.hypot(e1.x, e1.y);
+      const square = Math.abs(e0.x * e1.x + e0.y * e1.y) <= w * h * 1e-3;
+      const closed =
+        Math.abs(Math.hypot(e2.x, e2.y) - w) <= Math.max(1e-6, w * 1e-3) &&
+        Math.abs(Math.hypot(e3.x, e3.y) - h) <= Math.max(1e-6, h * 1e-3);
+      if (w > 1e-6 && h > 1e-6 && square && closed && (!best || w * h > best.area)) {
+        best = { angle: Math.atan2(e0.y, e0.x), area: w * h };
+      }
+    }
+    for (const child of m.children) consider(child, depth + 1);
+  };
+  consider(root);
+  if (!best) return null;
+
+  const { angle } = best;
+  const cos = Math.cos(-angle);
+  const sin = Math.sin(-angle);
+  let box: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+  const add = (m: RVNode, depth = 0): void => {
+    if (depth > 64) return;
+    for (const q of m.points) {
+      const x = q.x * cos - q.y * sin;
+      const y = q.x * sin + q.y * cos;
+      box = box
+        ? {
+            minX: Math.min(box.minX, x),
+            minY: Math.min(box.minY, y),
+            maxX: Math.max(box.maxX, x),
+            maxY: Math.max(box.maxY, y),
+          }
+        : { minX: x, minY: y, maxX: x, maxY: y };
+    }
+    for (const child of m.children) add(child, depth + 1);
+  };
+  add(root);
+  if (!box) return null;
+  const extent: { minX: number; minY: number; maxX: number; maxY: number } = box;
+  const width = extent.maxX - extent.minX;
+  const height = extent.maxY - extent.minY;
+  if (width < 1e-6 || height < 1e-6) return null;
+  return { width, height, angleRadians: angle };
+}
+
 /** Rewrites a node's cached bounds rect. */
 function setBounds(doc: RVDocument, node: RVNode, l: number, t: number, r2: number, b: number): void {
   if (node.fields.boundsAt == null) return;
@@ -671,7 +759,24 @@ export function resizeNode(doc: RVDocument, node: RVNode, scaleX: number, scaleY
   if (node.cls === 'RVShape') {
     const geometry = node.children.find((c) => c.cls === 'RVGeometry');
     if (!geometry) return { ok: false, reason: 'this item has no outline to resize' };
-    if (!transformGeometry(doc, geometry, (x, y) => [x * scaleX, y * scaleY])) {
+    // Scaling on world axes shears anything that is not axis-aligned: asking a
+    // 20.5x23.2in chair drawn at -120 degrees to double its width returned
+    // 27.1x41.9in with 123-degree corners — a parallelogram, not a wider chair.
+    // Scale on the object's own axes so width means the width you can see.
+    const own = orientedExtent(node);
+    const angle = own?.angleRadians ?? 0;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const scale = angle
+      ? (x: number, y: number): [number, number] => {
+          const lx = x * cos + y * sin;
+          const ly = -x * sin + y * cos;
+          const sx = lx * scaleX;
+          const sy = ly * scaleY;
+          return [sx * cos - sy * sin, sx * sin + sy * cos];
+        }
+      : (x: number, y: number): [number, number] => [x * scaleX, y * scaleY];
+    if (!transformGeometry(doc, geometry, scale)) {
       return { ok: false, reason: 'this item has no outline to resize' };
     }
     refreshShapeBounds(doc, node);

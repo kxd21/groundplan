@@ -43,6 +43,19 @@ export interface PrintRequest {
   venue?: string;
   event?: string;
   contact?: string;
+  /**
+   * Who drew it and which revision this is.
+   *
+   * Both already existed on the report's title block and neither reached the
+   * sheet, which meant the drawing a client signs off could not be cited in a
+   * production conversation: there was no way to say "we're working to Rev C,
+   * drawn by ...". They are the two fields that make a plan a document rather
+   * than a picture.
+   */
+  drawnBy?: string;
+  revision?: string;
+  /** What is on the sheet, by layer, with counts. Built from the drawing. */
+  legend?: Array<{ layer: string; name: string; count: number }>;
   /** Room size in logical units, for the title block. */
   roomWidth?: number;
   roomHeight?: number;
@@ -152,8 +165,41 @@ function titleBlockHtml(
         request.ceilingHeight ? ` × ${feetInches(request.ceilingHeight)} ceiling` : ''
       }</span></div>
       <div><span class="k">Scale</span><span class="v small">${escapeHtml(drawnAt)}</span></div>
+      ${request.drawnBy ? `<div><span class="k">Drawn by</span><span class="v small">${escapeHtml(request.drawnBy)}</span></div>` : ''}
+      ${request.revision ? `<div><span class="k">Rev</span><span class="v small">${escapeHtml(request.revision)}</span></div>` : ''}
       <div><span class="k">Sheet</span><span class="v small">${escapeHtml(sheetLabel)}</span></div>
       <div><span class="k">Printed</span><span class="v small">${escapeHtml(request.printedOn)}</span></div>
+    </div>`;
+}
+
+/**
+ * The key to what is on the sheet.
+ *
+ * Capped, because a legend that runs off the page is worse than none: on a
+ * 2,000-chair plan the tail is a long list of ones, and the head is what
+ * somebody is actually looking up. What is cut is stated rather than silently
+ * dropped.
+ */
+function legendHtml(request: PrintRequest): string {
+  const entries = request.legend ?? [];
+  if (!entries.length) return '';
+
+  const LIMIT = 18;
+  const shown = entries.slice(0, LIMIT);
+  const hidden = entries.length - shown.length;
+
+  const rows = shown
+    .map(
+      (entry) =>
+        `<tr><td class="lg-n">${entry.count}</td><td>${escapeHtml(entry.name)}</td>` +
+        `<td class="lg-l">${escapeHtml(entry.layer)}</td></tr>`,
+    )
+    .join('');
+
+  return `<div class="legend">
+      <div class="legend-head">Legend</div>
+      <table>${rows}</table>
+      ${hidden > 0 ? `<div class="legend-more">+${hidden} more on the equipment report</div>` : ''}
     </div>`;
 }
 
@@ -217,7 +263,7 @@ function buildSheet(request: PrintRequest): { html: string; pageCount: number } 
     .map(
       (tile, index) => `
   <div class="sheet${index < tiles.length - 1 ? ' break' : ''}">
-    <div class="frame" style="--svg-size:${tile.sizing}">${tile.svg}</div>
+    <div class="frame" style="--svg-size:${tile.sizing}">${tile.svg}${index === 0 ? legendHtml(request) : ''}</div>
     ${titleBlockHtml(request, drawnAt, tile.sheetLabel)}
   </div>`,
     )
@@ -235,6 +281,7 @@ function buildSheet(request: PrintRequest): { html: string; pageCount: number } 
   }
   .sheet.break { page-break-after: always; break-after: page; }
   .frame {
+    position: relative;
     flex: 1; min-height: 0; border: 0.5pt solid #999;
     display: flex; align-items: center; justify-content: center;
     overflow: hidden; padding: 0.1in; box-sizing: border-box;
@@ -256,6 +303,23 @@ function buildSheet(request: PrintRequest): { html: string; pageCount: number } 
   .k { font-size: 6pt; letter-spacing: 0.08em; text-transform: uppercase; color: #777; margin-bottom: 0.02in; }
   .v { font-size: 10pt; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .v.small { font-size: 8.5pt; font-weight: 500; }
+  /* The legend floats over the sheet's top-right corner rather than taking a
+     column of its own: on a tight architectural scale the drawing needs every
+     inch, and the corner above the plan is the one place reliably empty. */
+  .legend {
+    position: absolute; top: 0.08in; right: 0.08in; max-width: 2.6in;
+    background: rgba(255, 255, 255, 0.94); border: 0.5pt solid #999;
+    padding: 0.07in 0.09in; font-size: 7pt; line-height: 1.35;
+  }
+  .legend-head {
+    font-size: 6pt; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #777; margin-bottom: 0.04in;
+  }
+  .legend table { border-collapse: collapse; width: 100%; }
+  .legend td { padding: 0 0.05in 0 0; vertical-align: baseline; }
+  .legend .lg-n { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .legend .lg-l { color: #777; text-align: right; white-space: nowrap; }
+  .legend-more { color: #777; margin-top: 0.03in; }
 </style></head><body>
 ${pages}
 </body></html>`;

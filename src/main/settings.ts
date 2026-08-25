@@ -25,6 +25,10 @@ export interface Settings {
     landscape: boolean;
     /** Job or client line for the title block, when the plan carries none. */
     subtitle: string;
+    /** Who drew it. Usually constant for an operator, so it persists. */
+    drawnBy: string;
+    /** Which revision this sheet is. Bumped by hand as the plan is reissued. */
+    revision: string;
   };
 
   /** Defaults for File → Export DXF for CAD. */
@@ -86,7 +90,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  print: { scale: '1/8', paper: 'Tabloid', landscape: true, subtitle: '' },
+  print: { scale: '1/8', paper: 'Tabloid', landscape: true, subtitle: '', drawnBy: '', revision: '' },
   dxf: { includeSchedule: true, visibleLayersOnly: true },
   // Interactive edits snap at 1″ by default; Shift goes to 0.1″, Alt frees.
   drawing: {

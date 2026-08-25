@@ -54,6 +54,7 @@ const FT = 120;
 
 type RoomChoice = NewRoomShape | 'custom';
 type WallTreatment = 'straight' | 'curve';
+type NewPlanStep = 'start' | 'room' | 'review';
 
 /** Map a guest target to a quick-start room + kit. */
 export function suggestQuickStartForGuests(guests: number): {
@@ -307,7 +308,6 @@ function RoomPreview({
 export default function NewPlanDialog({ units, onCreated, onCancel, onError }: Props) {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [name, setName] = useState('Untitled plan');
-  const [nameOpen, setNameOpen] = useState(false);
 
   const [shape, setShape] = useState<RoomChoice>('rectangle');
   const [width, setWidth] = useState(() => formatLength(60 * FT, units));
@@ -336,6 +336,11 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [customOptionsOpen, setCustomOptionsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [guestTarget, setGuestTarget] = useState('');
+  const [step, setStep] = useState<NewPlanStep>('start');
+  const [startChoice, setStartChoice] = useState('ballroom');
+  const [suggestedKitId, setSuggestedKitId] = useState<string | undefined>('bundled:banquet-120');
+  const [layoutStart, setLayoutStart] = useState<'kit' | 'blank'>('kit');
+  const [openBackgroundAfterCreate, setOpenBackgroundAfterCreate] = useState(false);
 
   useEffect(() => {
     void api.roomPresets().then(setPresets);
@@ -491,33 +496,26 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const quickStart = (item: (typeof QUICK_START)[number]) => {
     const ceilingHeight = item.ceilingFt && item.ceilingFt > 0 ? item.ceilingFt * FT : undefined;
     if (ceilingHeight) setCeiling(formatLength(ceilingHeight, units));
+    setStartChoice(item.id);
+    setSuggestedKitId(item.kitId);
+    setLayoutStart(item.kitId ? 'kit' : 'blank');
+    setOpenBackgroundAfterCreate(Boolean(item.sitePlan));
     if (item.sitePlan) {
-      // CAD / venue PDF path: large working sheet → Background Studio → trace walls.
-      void create({
-        custom: {
-          guideWidth: 120 * FT,
-          guideDepth: 80 * FT,
-          angleLock: 'ortho',
-          showGuide: true,
-          autoDimensions: true,
-        },
-        openBackground: true,
-        ceilingHeight,
-      });
+      setShape('custom');
+      setWidth(formatLength(120 * FT, units));
+      setDepth(formatLength(80 * FT, units));
+      setCustomAngleLock('ortho');
+      setCustomShowGuide(true);
+      setCustomAutoDimensions(true);
       return;
     }
     if (item.custom) {
-      // One click: empty sheet + outline tool, ortho guide at 60×40.
-      void create({
-        custom: {
-          guideWidth: 60 * FT,
-          guideDepth: 40 * FT,
-          angleLock: 'ortho',
-          showGuide: true,
-          autoDimensions: true,
-        },
-        ceilingHeight,
-      });
+      setShape('custom');
+      setWidth(formatLength(60 * FT, units));
+      setDepth(formatLength(40 * FT, units));
+      setCustomAngleLock('ortho');
+      setCustomShowGuide(true);
+      setCustomAutoDimensions(true);
       return;
     }
     if (!(item.width && item.depth)) return;
@@ -525,12 +523,6 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     setWallTreatment('straight');
     setWidth(formatLength(item.width * FT, units));
     setDepth(formatLength(item.depth * FT, units));
-    // Keep the plan file name; venue archetype is not the document identity.
-    void create({
-      room: { shape: 'rectangle', width: item.width * FT, depth: item.depth * FT },
-      applyKitId: item.kitId,
-      ceilingHeight,
-    });
   };
 
   const curveInputLabel = curveMethod === 'radius'
@@ -552,7 +544,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onCancel}>
       <div
-        className="sheet new-plan-sheet"
+        className={`sheet new-plan-sheet is-${step}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-plan-title"
@@ -561,24 +553,47 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         <div className="new-plan-head">
           <div>
             <span className="new-plan-eyebrow">New plan</span>
-            <h2 id="new-plan-title">Build the room</h2>
+            <h2 id="new-plan-title">
+              {step === 'start' ? 'How do you want to begin?' : step === 'room' ? 'Define the room' : 'Review and create'}
+            </h2>
             <p>
-              Sized rooms with a matching kit, or start from a site plan / CAD PDF and trace the walls.
+              {step === 'start'
+                ? 'Choose a familiar room, work from headcount, or trace a site plan.'
+                : step === 'room'
+                  ? 'Confirm the boundary and dimensions before anything is created.'
+                  : 'Name the file and choose whether to begin with a suggested layout.'}
             </p>
           </div>
           <span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>
         </div>
 
-        <div className="new-plan-quick-start" role="group" aria-label="Common rooms">
+        <ol className="new-plan-steps" aria-label="New plan progress">
+          {([
+            ['start', '1', 'Starting point'],
+            ['room', '2', 'Room'],
+            ['review', '3', 'Create'],
+          ] as const).map(([id, number, label]) => {
+            const order = { start: 0, room: 1, review: 2 };
+            const current = order[step];
+            const item = order[id];
+            return (
+              <li key={id} className={item === current ? 'is-current' : item < current ? 'is-complete' : ''}>
+                <span>{item < current ? '✓' : number}</span>
+                <strong>{label}</strong>
+              </li>
+            );
+          })}
+        </ol>
+
+        {step === 'start' && <div className="new-plan-start-step">
+        <div className="new-plan-quick-start" role="radiogroup" aria-label="Common rooms">
           {QUICK_START.map((item) => (
             <button
               key={item.id}
               type="button"
-              className={
-                (item.custom && customRoom && !item.sitePlan) || (item.sitePlan && customRoom)
-                  ? 'is-on'
-                  : undefined
-              }
+              role="radio"
+              aria-checked={startChoice === item.id}
+              className={startChoice === item.id ? 'is-on' : undefined}
               disabled={busy}
               onClick={() => quickStart(item)}
             >
@@ -611,24 +626,18 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
               const guests = Math.floor(Number(guestTarget));
               if (!(guests > 0)) return;
               const pick = suggestQuickStartForGuests(guests);
+              setStartChoice('headcount');
+              setSuggestedKitId(pick.kitId);
+              setLayoutStart('kit');
+              setOpenBackgroundAfterCreate(false);
               setShape('rectangle');
               setWallTreatment('straight');
               setWidth(formatLength(pick.width * FT, units));
               setDepth(formatLength(pick.depth * FT, units));
               setCeiling(formatLength(pick.ceilingFt * FT, units));
-              void create({
-                room: {
-                  shape: 'rectangle',
-                  width: pick.width * FT,
-                  depth: pick.depth * FT,
-                },
-                applyKitId: pick.kitId,
-                ceilingHeight: pick.ceilingFt * FT,
-                name: planName === 'Untitled plan' ? `${pick.label} · ${guests}` : planName,
-              });
             }}
           >
-            Create for {Number(guestTarget) > 0 ? Number(guestTarget).toLocaleString() : '…'}
+            Use recommendation for {Number(guestTarget) > 0 ? Number(guestTarget).toLocaleString() : '…'}
           </button>
           {Number(guestTarget) > 0 ? (
             <p className="hint">
@@ -638,8 +647,14 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
             </p>
           ) : null}
         </div>
+        <div className="new-plan-start-summary" role="status">
+          <span><strong>Selected</strong><small>{startChoice === 'headcount' ? 'Headcount recommendation' : QUICK_START.find((item) => item.id === startChoice)?.label}</small></span>
+          <span><strong>Room</strong><small>{customRoom ? (openBackgroundAfterCreate ? 'Trace from site plan' : 'Draw a custom outline') : `${width} × ${depth}`}</small></span>
+          <span><strong>Next</strong><small>Review and adjust the room</small></span>
+        </div>
+        </div>}
 
-        <div className="new-plan-body is-room-builder">
+        {step === 'room' && <div className="new-plan-body is-room-builder">
           <div className="new-plan-room-workspace">
               <div className="new-plan-room-controls">
                 <section className="new-plan-builder-section">
@@ -657,6 +672,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                         className={shape === item.id ? 'active' : ''}
                         onClick={() => {
                           setShape(item.id);
+                          setOpenBackgroundAfterCreate(false);
                           if (item.id !== 'rectangle' && item.id !== 'l-shape' && item.id !== 'u-shape') setWallTreatment('straight');
                         }}
                       >
@@ -686,6 +702,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                           className={shape === item.id ? 'active' : ''}
                           onClick={() => {
                             setShape(item.id);
+                            setOpenBackgroundAfterCreate(false);
                             setAdvancedOpen(true);
                             if (item.id !== 'rectangle' && item.id !== 'l-shape' && item.id !== 'u-shape') setWallTreatment('straight');
                           }}
@@ -1130,43 +1147,84 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                 </div>
               </aside>
             </div>
-        </div>
+        </div>}
+
+        {step === 'review' && (
+          <div className="new-plan-review">
+            <section className="new-plan-review-summary">
+              <div className="new-plan-review-preview">
+                {customRoom && roomReady ? (
+                  <CustomRoomPreview width={parsed.width!} depth={parsed.depth!} angleLock={customAngleLock} showGuide={customShowGuide} />
+                ) : previewRoom ? (
+                  <RoomPreview room={previewRoom} highlightedWall={null} />
+                ) : null}
+              </div>
+              <div>
+                <span className="new-plan-eyebrow">Room ready</span>
+                <h3>{customRoom ? (openBackgroundAfterCreate ? 'Site-plan trace' : 'Custom room outline') : SHAPES.find((item) => item.id === shape)?.label}</h3>
+                <p>{customRoom ? `${width} × ${depth} working area` : shape === 'circle' ? `${diameter} diameter` : `${width} × ${depth}`} · {ceiling} ceiling</p>
+                <button type="button" className="link-btn" onClick={() => setStep('room')}>Edit room details</button>
+              </div>
+            </section>
+
+            <section className="new-plan-review-section">
+              <label htmlFor="new-plan-name"><strong>Plan name</strong><small>Shown in the title block and recent plans.</small></label>
+              <input id="new-plan-name" type="text" value={name} disabled={busy} onChange={(e) => setName(e.target.value)} autoFocus />
+            </section>
+
+            {!customRoom && suggestedKitId ? (
+              <section className="new-plan-review-section">
+                <div><strong>Starting layout</strong><small>Choose a useful head start or an empty room.</small></div>
+                <div className="new-plan-layout-choice" role="radiogroup" aria-label="Starting layout">
+                  <button type="button" role="radio" aria-checked={layoutStart === 'kit'} className={layoutStart === 'kit' ? 'is-on' : ''} onClick={() => setLayoutStart('kit')}>
+                    <span className="new-plan-choice-mark" aria-hidden>{layoutStart === 'kit' ? '✓' : ''}</span>
+                    <span><strong>Suggested layout</strong><small>Add a room-matched stage, seating, and core objects. Everything remains editable.</small></span>
+                  </button>
+                  <button type="button" role="radio" aria-checked={layoutStart === 'blank'} className={layoutStart === 'blank' ? 'is-on' : ''} onClick={() => setLayoutStart('blank')}>
+                    <span className="new-plan-choice-mark" aria-hidden>{layoutStart === 'blank' ? '✓' : ''}</span>
+                    <span><strong>Empty room</strong><small>Open the room alone and build the layout yourself.</small></span>
+                  </button>
+                </div>
+              </section>
+            ) : (
+              <section className="new-plan-review-section is-next-step">
+                <strong>{openBackgroundAfterCreate ? 'Next: align the site plan' : 'Next: draw the room boundary'}</strong>
+                <small>{openBackgroundAfterCreate ? 'Background Studio opens first; import the PDF or image, set its scale, then trace.' : 'The outline tool opens with the working-size guide visible.'}</small>
+              </section>
+            )}
+          </div>
+        )}
 
         <div className="new-plan-foot">
           <div className="new-plan-foot-meta">
-            {nameOpen ? (
-              <div className="field new-plan-name-inline">
-                <label htmlFor="new-plan-name">Plan name</label>
-                <input
-                  id="new-plan-name"
-                  type="text"
-                  value={name}
-                  disabled={busy}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && roomReady) {
-                      e.preventDefault();
-                      void create();
-                    }
-                  }}
-                />
-              </div>
-            ) : (
-              <button type="button" className="link-btn" disabled={busy} onClick={() => setNameOpen(true)}>
-                Rename from “{planName}”
-              </button>
-            )}
-            <span className="new-plan-foot-note">Saves to Documents/Groundplan; rename anytime with Save As.</span>
+            <span className="new-plan-foot-note">
+              {step === 'start'
+                ? 'Nothing is created until the final review.'
+                : step === 'room'
+                  ? 'Room geometry stays fully editable after creation.'
+                  : 'Creates an autosaved plan in Documents/Groundplan.'}
+            </span>
           </div>
-          <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+          {step === 'start' ? (
+            <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+          ) : (
+            <button type="button" onClick={() => setStep(step === 'review' ? 'room' : 'start')} disabled={busy}>Back</button>
+          )}
           <button
             type="button"
             className="primary"
-            onClick={() => void create()}
+            onClick={() => {
+              if (step === 'start') setStep('room');
+              else if (step === 'room') setStep('review');
+              else void create({
+                applyKitId: layoutStart === 'kit' ? suggestedKitId : undefined,
+                openBackground: openBackgroundAfterCreate,
+              });
+            }}
             disabled={busy || !roomReady}
           >
-            <IconPlus size={14} />
-            {busy ? 'Creating…' : customRoom ? 'Create & draw…' : 'Create plan'}
+            {step === 'review' ? <IconPlus size={14} /> : null}
+            {busy ? 'Creating…' : step === 'start' ? 'Continue to room' : step === 'room' ? 'Review plan' : customRoom ? 'Create & continue…' : 'Create plan'}
           </button>
         </div>
       </div>

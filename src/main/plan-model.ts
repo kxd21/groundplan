@@ -33,9 +33,27 @@ import {
 import type { CompanionDocument, PlanBackground } from '../format/companion.js';
 import { createCompanion, parsePlanBackground } from '../format/companion.js';
 import { instanceKey, resolveInstances, SpecLibrary, type PlacedItem } from '../format/definition.js';
-import { dimensionRoom as dimensionRoomDrawings } from '../format/dimension.js';
+import {
+  angleDimension,
+  arcDimension,
+  diameterDimension,
+  dimensionCorners,
+  dimensionRoom as dimensionRoomDrawings,
+  radiusDimension,
+  type DimensionDrawing,
+} from '../format/dimension.js';
 import { renderDimensions } from '../format/dimension-render.js';
-import { buildLegend, defaultLayers, titleBlockFor } from '../format/layers.js';
+import { buildLegend, defaultLayers, summariseLoad, titleBlockFor } from '../format/layers.js';
+import { solveWall, wallBuildList } from '../format/led.js';
+import { diffPlans, type PlanDiff } from '../format/versions.js';
+import {
+  cableSchedule,
+  cableSpec,
+  classifyCable,
+  toStockLength,
+  type CableKind,
+  type CableRun,
+} from '../format/cable.js';
 import { buildNewRoom, type NewRoomSpec } from '../format/new-room.js';
 import { buildReport } from '../format/report.js';
 import {
@@ -91,11 +109,13 @@ import {
   stageReservedAreas,
   stageWarnings,
   stairDeckOutlines,
+  multiLevelStage,
   tieredStage,
   type StageBuild,
 } from '../format/stage.js';
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
-import { UNITS_PER_FOOT, type Point, type RVDocument } from '../format/rv.js';
+import { loadBuffer } from '../format/index.js';
+import { UNITS_PER_FOOT, type Point, type RVDocument, UNITS_PER_INCH } from '../format/rv.js';
 import { addRoot, appendChild, indexDocument } from '../format/edit.js';
 import { planBody, planName } from '../format/plan-skeleton.js';
 import { createSegment, createShape } from '../format/synthesize.js';
@@ -635,7 +655,7 @@ function describeSource(source: 'walls' | 'region' | 'extent' | 'none'): string 
   return undefined;
 }
 
-function placedItems(doc: RVDocument): PlacedItem[] {
+export function placedItems(doc: RVDocument): PlacedItem[] {
   const library = new SpecLibrary(state.companion?.library ?? []);
   return resolveInstances(doc, library, state.companion?.overrides ?? []);
 }
@@ -1052,17 +1072,91 @@ export function offsetRoomWall(
 }
 
 /** Dimensions every wall of the room. */
-export function dimensionTheRoom(session: Session, units: UnitSystem): ModelEdit {
+export function dimensionTheRoom(
+  session: Session,
+  units: UnitSystem,
+  options: { corners?: boolean } = {},
+): ModelEdit {
   const doc = session.loaded.document;
   const room = currentRoom(doc);
   if (!room) return { ok: false, reason: 'there is no room outline to dimension' };
 
-  const drawings = dimensionRoomDrawings(room, units);
+  const drawings = [...dimensionRoomDrawings(room, units)];
+
+  /*
+   * Corner angles, for a room that is not square.
+   *
+   * `dimensionCorners` skips the 90-degree corners on its own, because a right
+   * angle is the assumption and annotating it is noise. What is left is the
+   * information a carpenter actually needs off the drawing: the splay on an
+   * angled house, the cut on a canted wall.
+   */
+  if (options.corners) drawings.push(...dimensionCorners(room));
+
   if (!drawings.length) return { ok: false, reason: 'this room has no walls to dimension' };
 
   const drawn = renderDimensions(doc, drawings);
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
   return { ok: true, created: drawn.created, note: `${drawings.length} dimensions added.` };
+}
+
+/** How a single wall can be called out. */
+export type WallDimensionKind = 'radius' | 'diameter' | 'arc' | 'length' | 'angle';
+
+/**
+ * Dimensions one wall the way a drafter would call it out.
+ *
+ * A curved wall has three legitimate readings and they are not
+ * interchangeable: a rigger wants the radius, a fabricator wants the diameter,
+ * and whoever is buying the drape wants the arc length. The room's automatic
+ * pass picks radius because it has to pick one; this is how a user asks for
+ * the other two, or for the angle at a corner.
+ */
+export function dimensionOneWall(
+  session: Session,
+  index: number,
+  kind: WallDimensionKind,
+  units: UnitSystem,
+): ModelEdit {
+  const doc = session.loaded.document;
+  const room = currentRoom(doc);
+  if (!room) return { ok: false, reason: 'there is no room outline to dimension' };
+
+  const wall = room.walls[index];
+  if (!wall) return { ok: false, reason: 'that wall is no longer part of the room' };
+
+  let drawing: DimensionDrawing | null = null;
+
+  if (kind === 'angle') {
+    const incoming = room.walls[(index - 1 + room.walls.length) % room.walls.length];
+    if (!incoming) return { ok: false, reason: 'that corner has no incoming wall' };
+    if (incoming.bulge || wall.bulge) {
+      return { ok: false, reason: 'an angle needs two straight walls meeting at the corner' };
+    }
+    // Ask for THIS corner rather than filtering the whole-room pass, which
+    // would hand back whichever angled corner happened to come first — and
+    // which deliberately drops right angles. A user pointing at one corner has
+    // said what they want, so a square corner gets its 90 drawn.
+    drawing = angleDimension(wall.start, incoming.start, wall.end);
+    if (!drawing) return { ok: false, reason: 'that corner has no measurable angle' };
+  } else if (kind === 'radius' || kind === 'diameter' || kind === 'arc') {
+    if (!wall.bulge) return { ok: false, reason: 'that wall is straight — use a length dimension' };
+    drawing =
+      kind === 'radius'
+        ? radiusDimension(wall, units)
+        : kind === 'diameter'
+          ? diameterDimension(wall, units)
+          : arcDimension(wall, units);
+  } else {
+    const straight = dimensionRoomDrawings({ ...room, walls: [wall] }, units);
+    drawing = straight[0] ?? null;
+  }
+
+  if (!drawing) return { ok: false, reason: 'that wall could not be dimensioned' };
+
+  const drawn = renderDimensions(doc, [drawing]);
+  if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
+  return { ok: true, created: drawn.created, note: `${drawing.text} added.` };
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,24 +1384,87 @@ export function addStage(
     back?: { depth: number; height: number };
     /** Which edges get stair units. Default: front for single, left+right for tiered. */
     stairs?: Array<'front' | 'back' | 'left' | 'right'>;
+    /**
+     * Every level front to back, when there are more than two.
+     *
+     * Supersedes `depth`/`height`/`back` when given. Those stay because a
+     * single deck and a house-riser pair are still the two commonest builds
+     * and neither should have to be described as a list.
+     */
+    levels?: Array<{ depth: number; height: number; label?: string }>;
+    /** Edges that get an accessible ramp. */
+    ramps?: Array<'front' | 'back' | 'left' | 'right'>;
+    /** Edges that get a guardrail. */
+    rails?: Array<'front' | 'back' | 'left' | 'right'>;
+    /** Force a stock deck size, by its label in `DECK_SIZES`. */
+    deckSize?: string;
+    /** Skirt the visible edges. Defaults on. */
+    skirted?: boolean;
   },
 ): ModelEdit & { buildList?: Array<{ item: string; quantity: number; detail?: string }>; warnings?: string[] } {
-  if (!(width > 0) || !(depth > 0)) return { ok: false, reason: 'enter a stage width and depth' };
+  const levelSpecs = options?.levels?.filter((l) => l.depth > 0) ?? [];
+  if (!(width > 0)) return { ok: false, reason: 'enter a stage width' };
+  if (!levelSpecs.length && !(depth > 0)) return { ok: false, reason: 'enter a stage width and depth' };
 
   const doc = session.loaded.document;
   const stairEdges =
     options?.stairs ??
     (options?.back ? (['left', 'right'] as const) : (['front'] as const));
-  const build = options?.back
-    ? tieredStage(
-        x,
-        y,
-        width,
-        { depth, height },
-        { depth: options.back.depth, height: options.back.height },
-        [...stairEdges],
-      )
-    : simpleStage(x, y, width, depth, height, 'Stage', [...stairEdges]);
+
+  const build = levelSpecs.length
+    ? multiLevelStage(x, y, width, levelSpecs, {
+        stairEdges: [...stairEdges],
+        rampEdges: options?.ramps ?? [],
+        railEdges: options?.rails ?? [],
+        preferredDeck: options?.deckSize,
+        skirted: options?.skirted,
+      })
+    : options?.back
+      ? tieredStage(
+          x,
+          y,
+          width,
+          { depth, height },
+          { depth: options.back.depth, height: options.back.height },
+          [...stairEdges],
+        )
+      : simpleStage(x, y, width, depth, height, 'Stage', [...stairEdges]);
+
+  // The single- and two-level builders predate ramps, rails and forced deck
+  // sizes, so those are applied on top rather than duplicated into each.
+  if (!levelSpecs.length) {
+    if (options?.deckSize) build.preferredDeck = options.deckSize;
+    if (options?.skirted === false) build.skirted = false;
+    const tallest = build.levels.reduce(
+      (best, level, index) => (level.height > (build.levels[best]?.height ?? 0) ? index : best),
+      0,
+    );
+    const target = build.levels[tallest];
+    if (target) {
+      const along = (edge: 'front' | 'back' | 'left' | 'right') =>
+        edge === 'left' || edge === 'right' ? target.depth : target.width;
+      for (const edge of options?.ramps ?? []) {
+        build.ramps.push({
+          id: `ramp-${edge}-${build.ramps.length}`,
+          level: tallest,
+          edge,
+          offset: Math.max(0, along(edge) / 2 - 2 * UNITS_PER_FOOT),
+          width: 4 * UNITS_PER_FOOT,
+          slope: 12,
+          handrail: target.height > 30 * UNITS_PER_INCH,
+        });
+      }
+      for (const edge of options?.rails ?? []) {
+        build.rails.push({
+          id: `rail-${edge}-${build.rails.length}`,
+          level: tallest,
+          edge,
+          length: 0,
+          offset: 0,
+        });
+      }
+    }
+  }
   const solution = solveStage(build);
   if (!solution.decks.length) return { ok: false, reason: 'no stock deck fits a stage that size' };
 
@@ -1451,9 +1608,18 @@ export function addCablePath(
   session: Session,
   name: string,
   points: Array<{ x: number; y: number }>,
+  kind?: CableKind,
 ): ModelEdit {
   if (points.length < 2) return { ok: false, reason: 'click at least two points for a cable run' };
-  const label = name.trim() || 'Power run';
+  const rawLabel = name.trim() || 'Power run';
+  // The kind is either stated or read out of the name. Either way it ends up in
+  // the label, so the drawing says what the run is without a legend and the
+  // schedule can group it without guessing twice.
+  const runKind = kind ?? classifyCable(rawLabel);
+  const spec = cableSpec(runKind);
+  const label = new RegExp(`\\b${spec.shortLabel}\\b`, 'i').test(rawLabel)
+    ? rawLabel
+    : `${rawLabel} (${spec.shortLabel})`;
   const doc = session.loaded.document;
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
@@ -1486,7 +1652,7 @@ export function addCablePath(
       category: 'power',
       height: 0,
       elevation: 0,
-      notes: `Run length ~${(length / UNITS_PER_FOOT).toFixed(1)} ft`,
+      notes: `${spec.label} run, ~${(length / UNITS_PER_FOOT).toFixed(1)} ft as drawn`,
     });
   }
   state.companion.overrides = [
@@ -1497,7 +1663,9 @@ export function addCablePath(
   return {
     ok: true,
     created: [shape.node.id],
-    note: `Placed ${label} · ${(length / UNITS_PER_FOOT).toFixed(1)} ft`,
+    note:
+      `Placed ${label} · ${(length / UNITS_PER_FOOT).toFixed(1)} ft as drawn · ` +
+      `order ${toStockLength(length / UNITS_PER_FOOT)} ft`,
   };
 }
 
@@ -1721,11 +1889,162 @@ export function planReport(session: Session, options: ReportOptions): string {
     allocation,
     sightlines,
     legend: buildLegend(items, defaultLayers(), {}),
+    load: summariseLoad(items, defaultLayers(), {}),
+    cable: planCableSchedule(session),
     warnings: [
       ...(state.freshness === 'stale' && state.reason ? [state.reason] : []),
       ...(room ? roomProblems(room) : []),
     ],
   });
+}
+
+/**
+ * The sheet legend: what is drawn, by layer, with counts.
+ *
+ * Built here rather than passed in from the window, because the drawing is the
+ * source and the main process is the one holding it. The report has had this
+ * for a while; the printed sheet went without.
+ */
+export function planLegend(session: Session): Array<{ layer: string; name: string; count: number }> {
+  const items = placedItems(session.loaded.document);
+  return buildLegend(items, defaultLayers(), {}).map(({ layer, name, count }) => ({
+    layer,
+    name,
+    count,
+  }));
+}
+
+/**
+ * Every cable run on the plan, with its kind and its drawn length.
+ *
+ * Runs are recognised by the note the placement wrote into the companion
+ * library, which is where the length has always been kept. Reading it back is
+ * what turns a set of lines on a drawing into something the warehouse can pull
+ * against.
+ */
+export function planCableRuns(session: Session): CableRun[] {
+  const items = placedItems(session.loaded.document);
+  const runs: CableRun[] = [];
+
+  for (const item of items) {
+    const spec = item.spec;
+    // Only placements the cable tool made carry a run note; anything else with
+    // a cable-ish name is a piece of equipment, not a run.
+    const match = /~([\d.]+) ft as drawn/.exec(spec.notes ?? '');
+    if (!match) continue;
+    runs.push({
+      name: item.name,
+      kind: classifyCable(item.name),
+      length: Number(match[1]) * UNITS_PER_FOOT,
+    });
+  }
+
+  return runs;
+}
+
+/** The cable schedule: how much of what goes on the truck. */
+export function planCableSchedule(session: Session): ReturnType<typeof cableSchedule> {
+  return cableSchedule(planCableRuns(session));
+}
+
+/**
+ * Places an LED wall as the panels it is built from.
+ *
+ * Drawn as a grid of cabinets rather than one rectangle, because that is what
+ * is on the truck and what the crew counts on site. The outline is the wall;
+ * the divisions are the panels.
+ */
+export function addLedWall(
+  session: Session,
+  x: number,
+  y: number,
+  request: { panel: string; columns: number; rows: number; name?: string },
+): ModelEdit & {
+  wall?: ReturnType<typeof solveWall>;
+  buildList?: Array<{ item: string; quantity: number; detail?: string }>;
+  warnings?: string[];
+} {
+  const wall = solveWall(request);
+  if (!wall) return { ok: false, reason: 'choose an LED panel type' };
+
+  const doc = session.loaded.document;
+  const label = request.name?.trim() || `LED wall ${wall.columns}×${wall.rows}`;
+
+  // One closed outline per cabinet, in the shape's own local space.
+  const outline: Array<Array<{ x: number; y: number }>> = [];
+  const cw = wall.width / wall.columns;
+  const ch = wall.height / wall.rows;
+  const left = -wall.width / 2;
+  const top = -wall.height / 2;
+  for (let row = 0; row < wall.rows; row++) {
+    for (let col = 0; col < wall.columns; col++) {
+      const px = left + col * cw;
+      const py = top + row * ch;
+      outline.push([
+        { x: px, y: py },
+        { x: px + cw, y: py },
+        { x: px + cw, y: py + ch },
+        { x: px, y: py + ch },
+        { x: px, y: py },
+      ]);
+    }
+  }
+
+  const shape = createShape(doc, { name: label, x, y, outline });
+  if (!shape.ok || !shape.node) return { ok: false, reason: shape.reason };
+  const host = planBody(doc);
+  const added = host ? appendChild(doc, host, shape.node) : addRoot(doc, shape.node);
+  if (!added.ok) return { ok: false, reason: added.reason };
+
+  // The wall's real numbers go on the definition, so the weight and power
+  // rollups pick it up without anybody retyping them.
+  if (!state.companion) state.companion = createCompanion(doc, 'imperial');
+  const existing = state.companion.library.findIndex(
+    (item) => item.name.toLowerCase() === label.toLowerCase(),
+  );
+  const spec = {
+    id: `led:${label.toLowerCase().replace(/\s+/g, '-')}`,
+    name: label,
+    category: 'video',
+    width: wall.width,
+    depth: 6 * UNITS_PER_INCH,
+    height: wall.height,
+    elevation: 0,
+    weightLb: wall.weightLb,
+    powerW: wall.powerW,
+    notes:
+      `${wall.panels} × ${wall.panel.label} · ${wall.pixelsWide}×${wall.pixelsHigh} px · ` +
+      `${wall.aspectLabel} · ${(wall.widthMm / 304.8).toFixed(1)}×${(wall.heightMm / 304.8).toFixed(1)} ft`,
+  };
+  if (existing >= 0) state.companion.library[existing] = spec;
+  else state.companion.library.push(spec);
+
+  return {
+    ok: true,
+    created: [shape.node.id],
+    wall,
+    buildList: wallBuildList(wall),
+    warnings: wall.warnings,
+    note: `${label} · ${wall.panels} panels · ${wall.pixelsWide}×${wall.pixelsHigh} px · ${wall.aspectLabel}`,
+  };
+}
+
+/**
+ * Compares the open plan against a snapshot.
+ *
+ * Both sides are read as PLACEMENTS rather than bytes, so the answer is about
+ * furniture and equipment rather than about the file. Two saves of an untouched
+ * drawing differ in ways nobody cares about; this reports the ones somebody
+ * does.
+ */
+export function comparePlanWith(session: Session, snapshot: Buffer): PlanDiff {
+  const before = loadBuffer(snapshot, session.path);
+  return diffPlans(placedItems(before.document), placedItems(session.loaded.document));
+}
+
+/** Weight and power by layer, for the panel and the rigging conversation. */
+export function planLoad(session: Session): ReturnType<typeof summariseLoad> {
+  return summariseLoad(placedItems(session.loaded.document), defaultLayers(), {});
 }
 
 /** The allocation table on its own, for the equipment panel. */

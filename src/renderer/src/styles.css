@@ -368,31 +368,33 @@ button:disabled {
   position: relative;
 }
 
-.body.is-rail-hidden {
+/* Gear and Inventory keep master-detail: a list on the left, its detail on the
+   right. Only the Plan workspace collapses to one dock (see below). */
+.body:not(.is-plan-dock).is-rail-hidden {
   grid-template-columns: minmax(0, 1fr) 252px;
 }
 
-.body.is-inspector-hidden {
+.body:not(.is-plan-dock).is-inspector-hidden {
   grid-template-columns: 216px minmax(0, 1fr);
 }
 
-.body.is-rail-hidden.is-inspector-hidden {
+.body:not(.is-plan-dock).is-rail-hidden.is-inspector-hidden {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.body.is-create-open {
+.body:not(.is-plan-dock).is-create-open {
   grid-template-columns: 216px minmax(0, 1fr) minmax(320px, 400px);
 }
 
-.body.is-create-open.is-rail-hidden {
+.body:not(.is-plan-dock).is-create-open.is-rail-hidden {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
 }
 
-.body.is-create-open.is-inspector-hidden {
+.body:not(.is-plan-dock).is-create-open.is-inspector-hidden {
   grid-template-columns: 216px minmax(0, 1fr) minmax(320px, 400px);
 }
 
-.body.is-create-open.is-rail-hidden.is-inspector-hidden {
+.body:not(.is-plan-dock).is-create-open.is-rail-hidden.is-inspector-hidden {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
 }
 
@@ -8683,20 +8685,27 @@ a,
   background: #dfe3e8;
 }
 
-.body.is-rail-hidden {
+.body:not(.is-plan-dock).is-rail-hidden {
   grid-template-columns: minmax(0, 1fr) 252px;
 }
 
-.body.is-inspector-hidden {
+.body:not(.is-plan-dock).is-inspector-hidden {
   grid-template-columns: 216px minmax(0, 1fr);
 }
 
-.body.is-rail-hidden.is-inspector-hidden {
+.body:not(.is-plan-dock).is-rail-hidden.is-inspector-hidden {
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* The dock's light chrome, declared once.
+ *
+ * `:root` is dark on purpose — the drafting surface is a near-neutral dark
+ * shell so plan colours read true — so every panel that wants light chrome has
+ * to say so. The drawing shelf did not, which is the whole reason it was the
+ * one dark surface in a light application. */
 .rail,
-.inspector {
+.inspector,
+.plan-tool-dock.is-docked {
   --bg: #f7f9fb;
   --surface: #ffffff;
   /* #ff6b6b is the dark-theme red; on this light surface it measures 2.78:1. */
@@ -11443,50 +11452,41 @@ a,
   align-content: center;
 }
 
-.seating-section-picker {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 12px 0;
-  padding: 10px 11px;
-  background: #f4f7fa;
+.seating-settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  margin: 12px 0 16px;
+  padding: 3px;
+  background: var(--surface-2);
   border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.seating-settings-tabs > button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 8px;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-sm);
 }
 
-.seating-section-picker > span {
-  display: grid;
-  min-width: 0;
-  flex: 1;
-  gap: 1px;
-}
-
-.seating-section-picker small {
-  color: var(--ink-3);
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.seating-section-picker strong {
+.seating-settings-tabs > button:hover:not(:disabled) {
   color: var(--ink);
-  font-size: 11px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
 }
 
-.seating-section-picker select {
-  width: min(250px, 42%);
-  min-height: 34px;
-  padding: 5px 30px 5px 9px;
+.seating-settings-tabs > button.active {
   color: var(--ink);
-  font: inherit;
   background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-xs);
-}
-
-.seating-section-picker select:focus-visible {
-  border-color: var(--accent-line);
+  box-shadow: 0 1px 3px rgba(18, 32, 48, .13);
 }
 
 .app[data-theme='dark'] .seating-window {
@@ -11532,9 +11532,8 @@ a,
   border-color: #3a3a3a;
 }
 
-.app[data-theme='dark'] .seating-section-picker {
-  background: #1a1a1a;
-  border-color: #333333;
+.app[data-theme='dark'] .seating-settings-tabs > button.active {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 @media (max-width: 720px) {
@@ -13335,6 +13334,37 @@ a,
   --home-ink: #172334;
   --home-ink-2: #526174;
   --home-ink-3: #5f6b78;
+  /*
+   * The welcome screen is a light ground, so it has to say so in the shared
+   * tokens too — not only in its own `--home-*` set.
+   *
+   * `:root` is dark. Any descendant here that reaches for `--accent` or an ink
+   * alias, rather than the `--home-*` equivalent, was picking up the dark
+   * theme's near-white on a near-white card: the "Start from this" button's
+   * hover state measured 1.03:1. Declaring them once here is the same rule
+   * `.create-setup-pane` and `.rail` already follow, and it fixes every
+   * descendant at once instead of one selector at a time.
+   */
+  --accent: #0b6ecb;
+  --accent-fill: #0b6ecb;
+  --accent-soft: rgba(11, 110, 203, 0.12);
+  --accent-line: rgba(11, 110, 203, 0.4);
+  --surface: var(--home-panel);
+  --surface-1: var(--home-panel);
+  --surface-2: var(--home-panel-2);
+  --surface-3: #e7edf3;
+  --panel: var(--home-panel);
+  --line: var(--home-line);
+  --line-strong: #c2ccd6;
+  --ink: var(--home-ink);
+  --ink-1: var(--home-ink);
+  --ink-2: var(--home-ink-2);
+  --ink-3: var(--home-ink-3);
+  --text: var(--home-ink);
+  --text-1: var(--home-ink);
+  --text-2: var(--home-ink-2);
+  --muted: var(--home-ink-3);
+  color-scheme: light;
   display: grid;
   grid-template-columns: 206px minmax(0, 1fr);
   width: 100%;
@@ -16747,6 +16777,11 @@ a,
   color: #a0a0a0;
 }
 
+.app[data-theme='dark'] .layer-only,
+.app[data-theme='dark'] .background-add-compact {
+  color: #8fc5ff;
+}
+
 .app[data-theme='dark'] .layer-check,
 .app[data-theme='dark'] .layer-manager .layer-check,
 .app[data-theme='dark'] .layer-manager .is-visible .layer-check {
@@ -17125,4 +17160,1633 @@ a,
   min-height: 30px;
   padding: 0 12px;
   white-space: nowrap;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * One dock for the Plan workspace.
+ *
+ * Browse, Place, Inspect, Setup and Draw are five values of ONE mode, so at
+ * most one of their panels can be on screen at a time — `panelsFor` in
+ * `workspace.ts` derives all four booleans from that single value, which makes
+ * them mutually exclusive by construction, not by convention.
+ *
+ * The layout did not believe it. It held a 216px column open on the left for
+ * the rail, a 252px column on the right for the inspector, and opened a THIRD
+ * column of 320-400px for Setup — three reserved widths for three panels that
+ * can never coexist. Two things followed. The inspector truncated its own
+ * headings, layer names and row buttons, because 252px is not enough for them
+ * and never was. And the canvas jumped sideways every time the mode changed,
+ * because the plan was moving between grid columns while the user was reading
+ * it — the one element on screen that must hold still.
+ *
+ * Here every mode panel lands in the same column, at one width the user sets
+ * once, under the same titlebar. The canvas keeps column 1 and never moves.
+ * Gear and Inventory are untouched: those are genuine master-detail screens
+ * where a list on the left and its detail on the right is the right shape.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+.body.is-plan-dock {
+  --dock-w: 340px;
+  grid-template-columns: 72px minmax(0, 1fr) var(--dock-w);
+}
+
+.body.is-plan-dock.is-dock-closed {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.body.is-plan-dock > .editor-tool-rail {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+/* Explicit placement, because the rail is the first DOM child and the
+   inspector the last: without this they would claim columns in source order
+   and the canvas would sit between them again. */
+.body.is-plan-dock > .stage {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.body.is-plan-dock > .rail,
+.body.is-plan-dock > .inspector,
+.body.is-plan-dock > .create-setup-pane,
+.body.is-plan-dock > .plan-tool-dock {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+/* The rail's divider belongs on the side it is actually docked to. */
+.body.is-plan-dock > .rail {
+  border-right: 0;
+  border-left: 1px solid var(--line);
+}
+
+/* Permanent editor activity rail. Domain surfaces are labelled; direct
+   pointer tools stay compact, with native tooltips and shortcuts. */
+.editor-tool-rail {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  scrollbar-width: none;
+}
+
+.editor-tool-rail::-webkit-scrollbar {
+  width: 0;
+}
+
+.editor-workspace-actions {
+  display: grid;
+  padding: 6px 5px 5px;
+  gap: 2px;
+}
+
+.editor-workspace-action,
+.editor-tool-action {
+  position: relative;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.editor-workspace-action {
+  min-height: 48px;
+  padding: 5px 2px 4px;
+  gap: 3px;
+}
+
+.editor-workspace-action::before {
+  content: '';
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: -5px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+}
+
+.editor-rail-icon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+}
+
+.editor-rail-label {
+  max-width: 60px;
+  overflow: hidden;
+  font-size: 9.5px;
+  font-weight: 580;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-workspace-action:hover:not(:disabled),
+.editor-tool-action:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.editor-workspace-action.is-active {
+  color: var(--accent-fill);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.editor-workspace-action.is-active::before {
+  background: var(--accent-fill);
+}
+
+.editor-workspace-action:focus-visible,
+.editor-tool-action:focus-visible {
+  outline: 2px solid var(--accent-fill);
+  outline-offset: -2px;
+}
+
+.editor-workspace-action:disabled,
+.editor-tool-action:disabled {
+  opacity: .36;
+}
+
+.editor-rail-divider {
+  height: 1px;
+  margin: 3px 8px 0;
+  flex: 0 0 auto;
+  background: var(--line);
+}
+
+.editor-tools-label {
+  padding: 9px 0 5px;
+  color: var(--ink-3);
+  font-size: 8px;
+  font-weight: 720;
+  letter-spacing: .11em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.editor-tool-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 0 5px 8px;
+}
+
+.editor-tool-action {
+  width: 29px;
+  min-height: 29px;
+  justify-self: center;
+}
+
+.editor-tool-action.is-active {
+  color: #fff;
+  background: var(--accent-fill);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+/* One scroll container per dock panel, under a titlebar that does not scroll.
+   `.inspector` scrolled as a whole, which is why its heading slid away from
+   the tabs that belong to it. */
+.body.is-plan-dock > .rail,
+.body.is-plan-dock > .inspector,
+.body.is-plan-dock > .create-setup-pane,
+.body.is-plan-dock > .plan-tool-dock {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── The shared titlebar ─────────────────────────────────────────────────
+ * Every dock panel opens with the same line: what this panel is, and the one
+ * control that closes it. Before, Setup carried a × , Draw carried four
+ * unlabelled window controls, and Browse, Place and Inspect carried nothing —
+ * so "how do I get rid of this?" had three different answers and two of them
+ * were invisible. */
+
+.dock-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.dock-titlebar-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+
+.dock-titlebar-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-titlebar-sub {
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-titlebar-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.dock-titlebar-close:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.dock-titlebar-close:focus-visible {
+  outline: 2px solid var(--accent-fill);
+  outline-offset: -2px;
+}
+
+/* Everything below the titlebar scrolls as one.
+ *
+ * Outside the plan dock the wrapper is invisible to layout — Gear and
+ * Inventory reuse the same `.rail` and `.inspector` elements, and their
+ * children must stay direct children of those. `display: contents` lets one
+ * unconditional wrapper in the JSX mean "a scroll container here" in the plan
+ * dock and "nothing at all" everywhere else. */
+.dock-body {
+  display: contents;
+}
+
+.body.is-plan-dock .dock-body {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The inspector owns its scrolling through .dock-body now, so the element
+   itself must not scroll as well or the titlebar scrolls with the content. */
+.body.is-plan-dock > .inspector {
+  overflow-y: hidden;
+}
+
+/* Its tab strip sticks to the titlebar rather than to the viewport top. */
+.body.is-plan-dock > .inspector .inspector-tabs {
+  top: 0;
+}
+
+/* ── Resize ──────────────────────────────────────────────────────────────
+ * One width for all five panels, set once by dragging this edge. */
+
+.dock-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: var(--dock-w);
+  width: 9px;
+  margin-right: -4px;
+  z-index: 6;
+  cursor: col-resize;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.dock-resize::after {
+  content: '';
+  position: absolute;
+  inset: 0 4px;
+  background: transparent;
+  transition: background var(--fast);
+}
+
+.dock-resize:hover::after,
+.dock-resize.is-dragging::after {
+  background: var(--accent-fill);
+}
+
+.dock-resize:focus-visible::after {
+  background: var(--accent-fill);
+}
+
+.body.is-plan-dock.is-dock-closed .dock-resize {
+  display: none;
+}
+
+/* Setup's one-line intro, under the shared titlebar. */
+.create-dialog-guidance {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 14px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Docked, Setup is a dock panel and takes the dock's width, not its own. */
+.body.is-plan-dock > .create-setup-pane {
+  border-left: 1px solid var(--line);
+}
+
+.body.is-plan-dock > .create-setup-pane > .create-dialog-sheet.is-docked {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ── Draw, docked ────────────────────────────────────────────────────────
+ * The drawing shelf was the only dark surface in a light application. It
+ * floated over the ruler it was covering, carried its own drag grip and four
+ * unlabelled window controls, and — because `.plan-tool-dock-group > button >
+ * span` was `display: none` unconditionally — showed twelve icons with no
+ * words next to any of them, in a 38px column. The labels were in the markup
+ * the whole time; nothing ever let them through.
+ *
+ * Docked, it is a panel like the other four: dock width, dock chrome, dock
+ * titlebar, and tools that say what they are. */
+
+.plan-tool-dock.is-docked {
+  --tool-accent: #095aa8;
+  position: relative;
+  z-index: auto;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  color: var(--ink);
+  color-scheme: inherit;
+  background: var(--surface);
+  border-right: 0;
+  border-left: 1px solid var(--line);
+  box-shadow: none;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-groups {
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-groups::-webkit-scrollbar {
+  width: 10px;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-groups::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: 8px 10px 12px;
+  border-bottom: 0;
+}
+
+/* Dense, labelled rows are faster to scan than a field of large tiles. This
+   is a professional tool list: icon, command name, shortcut — one line each. */
+.plan-tool-dock.is-docked .plan-tool-group-label {
+  padding: 10px 8px 4px;
+  color: var(--ink-3);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.plan-tool-dock.is-docked .plan-tool-group-label:first-child {
+  padding-top: 4px;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  min-height: 38px;
+  padding: 4px 9px 4px 6px;
+  place-items: center start;
+  gap: 8px;
+  color: var(--ink);
+  background: transparent;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button .plan-tool-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button .plan-tool-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 520;
+  line-height: 1.2;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button kbd {
+  min-width: 22px;
+  padding: 2px 5px;
+  color: var(--ink-3);
+  font: 9px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 1px 0 var(--line-strong);
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button:hover:not(:disabled),
+.plan-tool-dock.is-docked .plan-tool-dock-group > button:focus-visible {
+  color: var(--ink);
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button:hover:not(:disabled) .plan-tool-icon,
+.plan-tool-dock.is-docked .plan-tool-dock-group > button:focus-visible .plan-tool-icon {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active,
+.plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active:hover:not(:disabled) {
+  color: var(--tool-accent);
+  background: #e7f1ff;
+  border-color: transparent;
+  box-shadow: inset 3px 0 0 var(--tool-accent);
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active .plan-tool-icon {
+  color: var(--tool-accent);
+  background: #f5f9ff;
+  border-color: var(--accent-line);
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active .plan-tool-label {
+  color: var(--tool-accent);
+  font-weight: 650;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active kbd {
+  color: var(--tool-accent);
+  background: #f5f9ff;
+  border-color: var(--accent-line);
+  box-shadow: none;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button:disabled {
+  opacity: 0.45;
+}
+
+.plan-tool-dock.is-docked .plan-tool-colours {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-height: 54px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.plan-tool-dock.is-docked .plan-tool-colours .plan-tool-colour-action {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  width: auto;
+  height: 38px;
+  min-width: 0;
+  padding: 4px 7px;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.plan-tool-dock.is-docked .plan-tool-colours .plan-tool-colour-action:hover,
+.plan-tool-dock.is-docked .plan-tool-colours .plan-tool-colour-action:focus-visible {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
+  outline: none;
+}
+
+.plan-tool-dock.is-docked .plan-tool-colour {
+  position: static;
+  width: 20px;
+  height: 20px;
+  border-color: var(--surface);
+  border-radius: 5px;
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+
+.plan-tool-colour-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  text-align: left;
+}
+
+.plan-tool-colour-copy small,
+.plan-tool-colour-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-tool-colour-copy small {
+  color: var(--ink-3);
+  font-size: 8.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.plan-tool-colour-copy strong {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.app[data-theme='dark'] .plan-tool-dock.is-docked {
+  --surface: #121212;
+  --surface-2: #1c1c1c;
+  --surface-3: #262626;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --ink: #eeeeee;
+  --ink-2: #b0b0b0;
+  --ink-3: #a0a0a0;
+  --accent-line: rgba(143, 197, 255, 0.42);
+  --tool-accent: #8fc5ff;
+  color: var(--ink);
+  color-scheme: dark;
+  background: var(--surface);
+  border-left-color: #000000;
+}
+
+.app[data-theme='dark'] .plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active,
+.app[data-theme='dark'] .plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active:hover:not(:disabled) {
+  color: #f2f2f2;
+  background: var(--surface-3);
+  box-shadow: inset 3px 0 0 var(--tool-accent);
+}
+
+.app[data-theme='dark'] .plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active .plan-tool-icon,
+.app[data-theme='dark'] .plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active .plan-tool-label,
+.app[data-theme='dark'] .plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active kbd {
+  color: #f2f2f2;
+}
+
+.app[data-theme='dark'] .plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active .plan-tool-icon,
+.app[data-theme='dark'] .plan-tool-dock.is-docked .plan-tool-dock-group > button.is-active kbd {
+  background: #202830;
+  border-color: var(--accent-line);
+}
+
+/* The customize button rides in the titlebar's trailing slot. */
+.plan-tool-customize {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.plan-tool-dock.is-docked .plan-tool-customize:hover,
+.plan-tool-dock.is-docked .plan-tool-customize.is-active {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.plan-tool-dock.is-docked .plan-tool-customizer {
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+/* The hidden-panel rules predate the dock and share its specificity, so they
+   are restated here to outrank the `display: flex` above. Without this the
+   inspector renders on top of whichever panel is actually open — they occupy
+   the same grid cell. */
+.body.is-plan-dock.is-rail-hidden > .rail,
+.body.is-plan-dock.is-inspector-hidden > .inspector {
+  display: none;
+}
+
+/* The calculator is an overlay, not a mode, so it is the one thing that can be
+   open ALONGSIDE a dock panel. It takes a third column of its own; the dock
+   keeps its width and the drawing gives up the difference. */
+.body.is-plan-dock.is-calculator-open,
+.body.is-plan-dock.is-calculator-open.is-rail-hidden,
+.body.is-plan-dock.is-calculator-open.is-inspector-hidden,
+.body.is-plan-dock.is-calculator-open.is-rail-hidden.is-inspector-hidden {
+  grid-template-columns: 72px minmax(0, 1fr) var(--dock-w) minmax(350px, 390px);
+}
+
+.body.is-plan-dock.is-calculator-open.is-dock-closed {
+  grid-template-columns: 72px minmax(0, 1fr) minmax(350px, 390px);
+}
+
+.body.is-plan-dock.is-calculator-open > .space-calculator {
+  grid-column: 4;
+  grid-row: 1;
+}
+
+.body.is-plan-dock.is-calculator-open.is-dock-closed > .space-calculator {
+  grid-column: 3;
+}
+
+/* ── Dock panels must survive the dock's width ──────────────────────────────
+ * Setup was authored against a 400px pane and inherits `min-width: auto` on
+ * its grid and flex children, so at any narrower width its rows resolved to
+ * their MIN-CONTENT size and overflowed the column instead of wrapping — the
+ * Print to PDF button and the right edge of every card were sliced off. This
+ * is the same `min-width: 0` rule the layout needs everywhere a flex or grid
+ * child holds text that must be allowed to shrink. */
+
+.body.is-plan-dock > .create-setup-pane .section > *,
+.body.is-plan-dock > .create-setup-pane .show-setup-summary,
+.body.is-plan-dock > .create-setup-pane .show-setup-phase,
+.body.is-plan-dock > .create-setup-pane .section-title,
+.body.is-plan-dock > .create-setup-pane .section-title > * {
+  min-width: 0;
+}
+
+/* Below roughly 380px the fact block and its button no longer fit on one line
+   together, so the button takes its own row rather than being clipped. */
+.body.is-plan-dock > .create-setup-pane .show-setup-summary {
+  flex-wrap: wrap;
+}
+
+.body.is-plan-dock > .create-setup-pane .show-setup-summary-print {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+/* `.show-setup-section` is `display: grid` with no explicit tracks, so its one
+   implicit column sizes to `auto` — max-content in practice — and every row
+   inside it took the width of the widest thing in the panel rather than the
+   width of the panel. `minmax(0, 1fr)` is what makes the column shrinkable,
+   and it is the fix `min-width: 0` on the children cannot make on its own. */
+.show-setup-section,
+.create-dialog-body .section {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Same implicit-track problem one level down: the phase card and the collapse
+   row inside it are both auto-sized grids. */
+.show-setup-phase,
+.show-setup-collapse > span:last-child {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.show-setup-collapse > span:last-child > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The rail's contents were authored as flex children of `.rail` — the item
+   list takes `flex: 1` to claim the space under the search and category
+   controls. Wrapping them in a block-level scroll container took that away and
+   collapsed the list to a single sliver of a row, so the wrapper is a flex
+   column in the rail and stays block-level in the inspector, whose sections
+   are laid out in normal flow. */
+.body.is-plan-dock > .rail > .dock-body {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+
+/* Groups the More menu into file, output and settings runs. */
+.ribbon-more-menu .ribbon-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--line);
+}
+
+/* The contextual row leads with what it is acting on, so "Delete" is never
+   ambiguous about how much it is about to delete. */
+.object-tools-count {
+  padding: 0 4px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* The ribbon reserves the contextual row's height as bottom padding. With no
+   selection there is no row, so the reservation goes too — 42px straight back
+   to the drawing. */
+.ribbon-panel.is-single-row {
+  height: 80px;
+  padding-bottom: 0;
+}
+
+.toolbar.is-plan-toolbar.is-single-row {
+  height: 82px;
+}
+
+.toolbar.is-plan-toolbar.is-single-row .ribbon-panel {
+  height: 38px;
+  padding-bottom: 0;
+}
+
+/* The one-line form of the site-plan offer, for plans that already have
+   something on them. */
+.background-add-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--accent-fill);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.background-add-compact:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.background-add-compact:disabled {
+  color: var(--ink-2);
+  cursor: default;
+}
+
+.background-add-compact > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app[data-theme='light'] .layer-group-chevron {
+  color: #526174;
+}
+
+
+/* Gear and Inventory carry no contextual row at all, so they never need the
+   42px the ribbon reserves for one. The base toolbar is 202px (an 80px title
+   band over a 122px ribbon whose last 42px are that reservation); take the
+   reservation off both. */
+.toolbar.is-single-row:not(.is-plan-toolbar) {
+  height: 160px;
+}
+
+.toolbar.is-single-row:not(.is-plan-toolbar) .ribbon-panel {
+  height: 80px;
+  padding-bottom: 0;
+}
+
+/* ── Guided room creation ────────────────────────────────────────────────
+ * Presets used to create a document on click and every geometry control was
+ * visible at once. The three-stage shell makes selection reversible and gives
+ * creation a real review point. */
+.new-plan-steps {
+  width: auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 16px 22px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.new-plan-steps li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 0 11px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.new-plan-steps li::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: transparent;
+}
+
+.new-plan-steps li > span {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 9.5px;
+}
+
+.new-plan-steps li.is-current {
+  color: var(--ink);
+}
+
+.new-plan-steps li.is-current::after {
+  background: var(--accent-fill);
+}
+
+.new-plan-steps li.is-current > span {
+  border-color: var(--accent-fill);
+  background: var(--accent-fill);
+  color: #fff;
+}
+
+.new-plan-steps li.is-complete > span {
+  border-color: #79b68e;
+  background: #e6f5ec;
+  color: #14663d;
+}
+
+.new-plan-start-step {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 18px;
+}
+
+.new-plan-sheet.is-start {
+  height: min(650px, calc(100vh - 48px));
+}
+
+.new-plan-sheet.is-review {
+  height: min(760px, calc(100vh - 48px));
+}
+
+.new-plan-start-step .new-plan-quick-start {
+  gap: 10px;
+  padding-top: 18px;
+}
+
+.new-plan-start-step .new-plan-quick-start > button {
+  position: relative;
+  min-height: 84px;
+  align-content: center;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+}
+
+.new-plan-start-step .new-plan-quick-start > button.is-on {
+  color: #095aa8;
+  box-shadow: inset 0 0 0 1px var(--accent-fill);
+}
+
+.app[data-theme='dark'] .new-plan-start-step .new-plan-quick-start > button.is-on {
+  color: var(--accent);
+}
+
+.new-plan-start-step .new-plan-quick-start > button.is-on::after {
+  content: '✓';
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-fill);
+  color: #fff;
+  font-size: 10px;
+}
+
+.new-plan-start-step .new-plan-guest-row {
+  margin: 14px 22px 0;
+  padding: 13px 14px;
+  border-style: solid;
+}
+
+.new-plan-start-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 14px 22px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+.new-plan-start-summary > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 0 14px;
+  border-left: 1px solid var(--line);
+}
+
+.new-plan-start-summary > span:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.new-plan-start-summary strong {
+  color: var(--ink-3);
+  font-size: 8.5px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.new-plan-start-summary small {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-plan-review {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 20px 22px;
+}
+
+.new-plan-review-summary {
+  display: grid;
+  grid-template-columns: minmax(260px, .85fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+.new-plan-review-preview {
+  height: 190px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.new-plan-review-preview svg {
+  width: 100%;
+  height: 100%;
+}
+
+.new-plan-review-summary h3 {
+  margin: 2px 0 6px;
+  color: var(--ink);
+  font-size: 20px;
+}
+
+.new-plan-review-summary p {
+  margin: 0 0 12px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.new-plan-review-section {
+  display: grid;
+  gap: 9px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.new-plan-review-section > label,
+.new-plan-review-section > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.new-plan-review-section strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.new-plan-review-section small {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.new-plan-layout-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.new-plan-layout-choice > button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  min-height: 80px;
+  padding: 12px;
+  color: var(--ink-2);
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.new-plan-layout-choice > button.is-on {
+  border-color: var(--accent-fill);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.new-plan-layout-choice > button > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.new-plan-choice-mark {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  color: #fff;
+  font-size: 10px;
+}
+
+.new-plan-layout-choice > button.is-on .new-plan-choice-mark {
+  border-color: var(--accent-fill);
+  background: var(--accent-fill);
+}
+
+.new-plan-review-section.is-next-step {
+  border-color: var(--accent-line);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+/* ── Guided show setup dock ────────────────────────────────────────────── */
+.show-setup-section.is-guided {
+  gap: 12px;
+  padding: 2px 0 16px;
+}
+
+.show-setup-title {
+  margin-bottom: 0;
+}
+
+.show-setup-progress.is-guided {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.show-setup-progress.is-guided li {
+  justify-content: center;
+  padding: 7px 5px;
+  font-size: 10.5px;
+}
+
+.show-setup-next-card {
+  min-width: 0;
+  box-sizing: border-box;
+  display: grid;
+  gap: 10px;
+  padding: 15px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 7%, var(--surface)) 0%, var(--surface) 65%);
+  box-shadow: 0 8px 22px rgba(25, 48, 74, .07);
+}
+
+.show-setup-next-label {
+  color: var(--accent-fill);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.show-setup-next-card h3 {
+  margin: -3px 0 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.show-setup-next-card > p {
+  margin: -4px 0 2px;
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.show-setup-route-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.show-setup-route {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 62px;
+  padding: 10px 12px;
+  color: var(--ink-2);
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.show-setup-route.is-primary {
+  border-color: var(--accent-line);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+
+.show-setup-route > svg {
+  color: var(--accent-fill);
+}
+
+.show-setup-route > span,
+.show-setup-kit-hero-head > div,
+.show-setup-specialists button > span,
+.show-setup-compact-card > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.show-setup-route strong,
+.show-setup-kit-hero strong,
+.show-setup-specialists strong,
+.show-setup-compact-card strong {
+  color: var(--ink);
+  font-size: 11.5px;
+}
+
+.show-setup-route small,
+.show-setup-kit-hero small,
+.show-setup-specialists small,
+.show-setup-compact-card small {
+  color: var(--ink-3);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.show-setup-wide-action {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 34px;
+  justify-content: center;
+}
+
+.show-setup-wide-action.btn-primary {
+  color: #fff;
+  background: #095fae;
+  border-color: #095fae;
+}
+
+.show-setup-wide-action.btn-primary:hover:not(:disabled) {
+  background: #074f92;
+  border-color: #074f92;
+}
+
+.show-setup-kit-hero {
+  min-width: 0;
+  box-sizing: border-box;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.show-setup-kit-hero > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.show-setup-kit-hero select {
+  width: 100%;
+}
+
+.show-setup-kit-hero-head {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.show-setup-kit-hero-head > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--accent-fill);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+.show-setup-kit-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.show-setup-kit-facts span {
+  padding: 6px 4px;
+  color: var(--ink-3);
+  font-size: 8.5px;
+  text-align: center;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.show-setup-kit-facts b {
+  display: block;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.show-setup-or {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  font-size: 8.5px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.show-setup-or::before,
+.show-setup-or::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+}
+
+.show-setup-specialists {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.show-setup-specialists > button {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 70px;
+  padding: 9px;
+  color: var(--ink-2);
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.show-setup-specialists > button > svg {
+  color: var(--accent-fill);
+}
+
+.show-setup-specialists > button.is-done {
+  border-color: #8fc9a5;
+  background: #eff9f2;
+}
+
+.show-setup-output-summary {
+  display: grid;
+  gap: 3px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.show-setup-output-summary strong { color: var(--ink); font-size: 12px; }
+.show-setup-output-summary span { color: var(--ink-3); font-size: 10px; }
+
+.show-setup-compact-card {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.show-setup-compact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.show-setup-compact-actions button,
+.show-setup-advanced-grid button {
+  padding: 6px 8px;
+  color: var(--ink-2);
+  font-size: 9.5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.show-setup-disclosure {
+  display: grid;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.show-setup-disclosure .show-setup-collapse {
+  align-items: center;
+}
+
+.show-setup-disclosure .show-setup-phase-index {
+  color: var(--ink-2);
+  background: var(--surface-3);
+}
+
+.show-setup-advanced-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.show-setup-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.show-setup-report-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 9px;
+  color: var(--ink-3);
+  font-size: 9.5px;
+  border-top: 1px solid var(--line);
+}
+
+.app[data-theme='dark'] .show-setup-next-label,
+.app[data-theme='dark'] .show-setup-route > svg,
+.app[data-theme='dark'] .show-setup-specialists > button > svg,
+.app[data-theme='dark'] .show-setup-kit-hero-head > span {
+  color: #7ab8ff;
+}
+
+.app[data-theme='dark'] .show-setup-specialists > button.is-done {
+  border-color: rgba(110, 200, 150, .42);
+  background: rgba(32, 110, 72, .22);
+}
+
+@media (max-width: 680px) {
+  .new-plan-review-summary,
+  .new-plan-layout-choice { grid-template-columns: 1fr; }
+  .new-plan-review-preview { height: 150px; }
+  .new-plan-start-summary { grid-template-columns: 1fr; gap: 10px; }
+  .new-plan-start-summary > span { padding: 10px 0 0; border-top: 1px solid var(--line); border-left: 0; }
+  .new-plan-start-summary > span:first-child { padding-top: 0; border-top: 0; }
+}
+
+/* Twenty commands fit in a normal laptop-height dock without turning the
+   palette into icon-only mystery meat. */
+.plan-tool-dock.is-docked .plan-tool-dock-group {
+  gap: 0;
+  padding: 5px 10px 7px;
+}
+
+.plan-tool-dock.is-docked .plan-tool-group-label {
+  padding: 7px 8px 3px;
+  font-size: 8.5px;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  min-height: 30px;
+  padding: 2px 8px 2px 5px;
+  gap: 7px;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button .plan-tool-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.plan-tool-dock.is-docked .plan-tool-dock-group > button .plan-tool-label {
+  font-size: 11px;
+}
+
+/* Drawn by and Revision sit together: one names who to ask about the sheet,
+   the other names which sheet is being asked about. */
+.print-issue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+/* ── Right-click menu on the plan ───────────────────────────────────────────
+ * The canvas is a dark or light drafting sheet depending on the sheet mode, so
+ * the menu declares its own light chrome the way the dock panels do rather
+ * than inheriting whatever is under the pointer. */
+
+.plan-context-menu {
+  --surface: #ffffff;
+  --surface-2: #f1f4f7;
+  --surface-3: #e7edf3;
+  --line: rgba(28, 42, 58, 0.1);
+  --ink: #172334;
+  --ink-2: #526174;
+  --danger: #c92a2a;
+  position: fixed;
+  z-index: 400;
+  min-width: 208px;
+  padding: 5px;
+  color: var(--ink);
+  color-scheme: light;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(17, 24, 39, 0.18);
+}
+
+.plan-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.plan-context-menu button:hover:not(:disabled),
+.plan-context-menu button:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+
+.plan-context-menu button:disabled {
+  color: var(--ink-2);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.plan-context-menu button.is-danger:hover:not(:disabled) {
+  color: var(--danger);
+  background: rgba(201, 42, 42, 0.08);
+}
+
+.plan-context-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex: none;
+  color: var(--ink-2);
+}
+
+.plan-context-menu button.is-danger:hover:not(:disabled) .plan-context-icon {
+  color: var(--danger);
+}
+
+.plan-context-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-context-menu kbd {
+  flex: none;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.plan-context-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
+/* Lock and print sit with "Only" as the three things you do to a layer that
+   are not simply showing it. Off is the quiet state for both. */
+.layer-lock,
+.layer-print {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.layer-lock:hover:not(:disabled),
+.layer-print:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.layer-lock.is-on {
+  color: var(--accent-fill);
+  background: var(--accent-soft);
+}
+
+/* Printing is the default, so the ON state is quiet ink and the OFF state is
+   the one that has to be noticed. */
+.layer-print.is-on {
+  color: var(--ink-2);
+}
+
+.layer-print:not(.is-on) {
+  color: var(--ink-3);
+  opacity: 0.45;
+  text-decoration: line-through;
 }

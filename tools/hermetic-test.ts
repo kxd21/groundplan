@@ -798,7 +798,7 @@ async function main(): Promise<void> {
     const deck = {
       id: 0, nodeId: 0, selectId: 0, type: 'polyline' as const,
       pts: [0, 0, 100, 0, 100, 100, 0, 100, 0, 0],
-      color: 0, cls: 'RVSegmentPoly', layer: 'furniture' as const,
+      color: 0, cls: 'RVSegmentPoly', layer: 'furniture' as const, discipline: 'staging',
       owner: 'Stage 42\' x 8\' x 32"',
     };
     check('a closed deck outline resolves a fill', !!resolveStyle(deck).fill);
