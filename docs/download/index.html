@@ -6,453 +6,791 @@
     <title>Download Groundplan</title>
     <meta
       name="description"
-      content="Install Groundplan on Mac or Windows. Open and edit legacy event floor plans without a Windows VM."
+      content="Download Groundplan for Mac, Windows, or Linux. Build rooms and event floor plans without legacy software."
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap"
-      rel="stylesheet"
+    <meta name="theme-color" content="#f5f6f8" />
+    <link rel="canonical" href="https://kxd21.github.io/groundplan/download/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Groundplan — build the room, plan the show" />
+    <meta
+      property="og:description"
+      content="A modern event floor-planning app for Mac, Windows, and Linux. Opens existing Room Viewer plans directly."
+    />
+    <meta property="og:url" content="https://kxd21.github.io/groundplan/download/" />
+    <meta
+      property="og:image"
+      content="https://kxd21.github.io/groundplan/download/groundplan-share.png"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Groundplan — build the room, plan the show" />
+    <meta
+      name="twitter:description"
+      content="A modern event floor-planning app for Mac, Windows, and Linux."
+    />
+    <meta
+      name="twitter:image"
+      content="https://kxd21.github.io/groundplan/download/groundplan-share.png"
     />
     <style>
       :root {
-        --ink: #10141a;
-        --ink-soft: #1a222c;
-        --paper: #e8ebe4;
-        --paper-dim: #c5cbc0;
-        --line: rgba(232, 235, 228, 0.14);
-        --accent: #3d9a7a;
-        --accent-bright: #5ec49f;
-        --warn: #d4a05a;
-        --text: #e8ebe4;
-        --muted: #9aa396;
-        --danger: #c97868;
-        --font-display: 'Instrument Serif', Georgia, serif;
-        --font-body: 'DM Sans', system-ui, sans-serif;
+        --ink: #142033;
+        --ink-2: #46556a;
+        --ink-3: #6d7887;
+        --paper: #f5f6f8;
+        --surface: #ffffff;
+        --surface-2: #eef2f6;
+        --line: #dce2e9;
+        --line-strong: #c8d0da;
+        --blue: #0b6ecb;
+        --blue-dark: #0757a5;
+        --blue-soft: #e7f2fe;
+        --green: #176b43;
+        --green-soft: #e8f5ee;
+        --amber: #80520d;
+        --amber-soft: #fff4dc;
+        --danger: #a8372f;
+        --radius-sm: 10px;
+        --radius: 16px;
+        --radius-lg: 24px;
+        --shadow: 0 28px 70px rgba(28, 47, 73, 0.14);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        color-scheme: light;
       }
 
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
 
-      html,
+      html { scroll-behavior: smooth; }
+
       body {
         margin: 0;
-        min-height: 100%;
-        background: var(--ink);
-        color: var(--text);
-        font-family: var(--font-body);
+        min-width: 320px;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 14% 4%, rgba(45, 132, 224, 0.11), transparent 32rem),
+          radial-gradient(circle at 90% 30%, rgba(71, 171, 126, 0.08), transparent 34rem),
+          var(--paper);
         font-size: 16px;
         line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
       }
 
-      body {
-        background:
-          radial-gradient(1200px 700px at 70% -10%, rgba(61, 154, 122, 0.18), transparent 55%),
-          radial-gradient(900px 500px at -10% 40%, rgba(212, 160, 90, 0.08), transparent 50%),
-          linear-gradient(180deg, #0c1015 0%, #10141a 40%, #0e1218 100%);
-      }
+      a { color: var(--blue); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      button, a { -webkit-tap-highlight-color: transparent; }
 
-      /* Soft drafting grid — atmosphere, not chrome */
-      body::before {
-        content: '';
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        opacity: 0.35;
-        background-image:
-          linear-gradient(var(--line) 1px, transparent 1px),
-          linear-gradient(90deg, var(--line) 1px, transparent 1px);
-        background-size: 48px 48px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.85), transparent 70%);
-      }
-
-      a {
-        color: var(--accent-bright);
-        text-decoration: none;
-      }
-      a:hover {
-        text-decoration: underline;
-      }
-
-      .wrap {
-        position: relative;
-        z-index: 1;
-        width: min(1080px, calc(100% - 40px));
+      .shell {
+        width: min(1160px, calc(100% - 40px));
         margin: 0 auto;
       }
 
-      /* ---- Hero: one composition ---- */
-      .hero {
-        min-height: 100vh;
-        min-height: 100dvh;
+      .topbar {
+        min-height: 74px;
         display: flex;
-        flex-direction: column;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+      }
+
+      .wordmark {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 720;
+        letter-spacing: -0.01em;
+      }
+
+      .wordmark:hover { text-decoration: none; }
+
+      .mark {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        color: #fff;
+        background: linear-gradient(145deg, #1687f8, #0b63b8);
+        border-radius: 8px;
+        box-shadow: 0 5px 14px rgba(11, 110, 203, 0.23);
+      }
+
+      .mark svg { display: block; }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .top-actions > a,
+      .share-button {
+        min-height: 36px;
+        display: inline-flex;
+        align-items: center;
         justify-content: center;
-        padding: 48px 0 64px;
+        gap: 7px;
+        padding: 0 12px;
+        color: var(--ink-2);
+        background: rgba(255, 255, 255, 0.62);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 620;
+        cursor: pointer;
       }
 
-      .brand {
-        font-family: var(--font-display);
-        font-size: clamp(3.5rem, 10vw, 6.5rem);
+      .top-actions > a:hover,
+      .share-button:hover {
+        color: var(--ink);
+        background: #fff;
+        border-color: var(--line-strong);
+        text-decoration: none;
+      }
+
+      .hero {
+        min-height: 650px;
+        display: grid;
+        grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.82fr);
+        gap: clamp(44px, 7vw, 96px);
+        align-items: center;
+        padding: 58px 0 92px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 18px;
+        color: var(--blue-dark);
+        font-size: 12px;
+        font-weight: 720;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        background: #2f9d68;
+        border-radius: 50%;
+        box-shadow: 0 0 0 4px rgba(47, 157, 104, 0.12);
+      }
+
+      h1 {
+        max-width: 660px;
+        margin: 0;
+        font-size: clamp(3.25rem, 7.2vw, 6.7rem);
         line-height: 0.92;
-        letter-spacing: -0.02em;
-        margin: 0 0 28px;
-        color: var(--paper);
+        letter-spacing: -0.064em;
+        font-weight: 760;
       }
 
-      .lede {
-        max-width: 34rem;
-        font-size: clamp(1.05rem, 2.2vw, 1.25rem);
-        color: var(--muted);
-        margin: 0 0 36px;
-        font-weight: 400;
+      .hero-copy > p {
+        max-width: 590px;
+        margin: 28px 0 0;
+        color: var(--ink-2);
+        font-size: clamp(1.06rem, 1.8vw, 1.3rem);
+        line-height: 1.55;
       }
 
-      .cta-row {
+      .proof {
         display: flex;
         flex-wrap: wrap;
-        gap: 14px 18px;
-        align-items: center;
-        margin-bottom: 18px;
+        gap: 10px 18px;
+        margin: 28px 0 0;
+        padding: 0;
+        list-style: none;
+        color: var(--ink-3);
+        font-size: 13px;
       }
+
+      .proof li {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .proof svg { color: var(--green); flex: none; }
+
+      .download-card {
+        position: relative;
+        overflow: hidden;
+        padding: 28px;
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid rgba(200, 208, 218, 0.82);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+      }
+
+      .download-card::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto;
+        height: 4px;
+        background: linear-gradient(90deg, #1687f8, #5eae8b);
+      }
+
+      .detected {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 27px;
+        padding: 0 10px;
+        color: var(--green);
+        background: var(--green-soft);
+        border: 1px solid #c7e5d4;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 720;
+        letter-spacing: 0.035em;
+        text-transform: uppercase;
+      }
+
+      .download-card h2 {
+        margin: 17px 0 7px;
+        font-size: clamp(1.45rem, 3vw, 2rem);
+        line-height: 1.14;
+        letter-spacing: -0.035em;
+      }
+
+      .download-meta {
+        min-height: 48px;
+        margin: 0 0 18px;
+        color: var(--ink-3);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .download-meta strong { color: var(--ink-2); }
 
       .btn {
-        appearance: none;
-        border: 0;
+        min-height: 50px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        padding: 0 18px;
+        border-radius: 12px;
+        font: inherit;
+        font-size: 15px;
+        font-weight: 690;
         cursor: pointer;
-        font-family: var(--font-body);
-        font-weight: 600;
-        font-size: 1rem;
-        padding: 14px 22px;
-        border-radius: 2px;
-        transition: transform 160ms ease, background 160ms ease, color 160ms ease;
-      }
-      .btn:active {
-        transform: translateY(1px);
-      }
-      .btn-primary {
-        background: var(--paper);
-        color: var(--ink);
-      }
-      .btn-primary:hover {
-        background: #f4f6f0;
-        text-decoration: none;
-      }
-      .btn-primary[aria-disabled='true'] {
-        opacity: 0.45;
-        pointer-events: none;
-      }
-      .btn-ghost {
-        background: transparent;
-        color: var(--paper-dim);
-        border: 1px solid rgba(232, 235, 228, 0.28);
-      }
-      .btn-ghost:hover {
-        border-color: rgba(232, 235, 228, 0.5);
-        color: var(--paper);
-        text-decoration: none;
+        transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
       }
 
-      .meta {
-        color: var(--muted);
-        font-size: 0.92rem;
-        max-width: 36rem;
+      .btn:hover { text-decoration: none; }
+      .btn:active { transform: translateY(1px); }
+
+      .btn-primary {
+        width: 100%;
+        color: #fff;
+        background: linear-gradient(180deg, #117bd8, #0b64b7);
+        border: 1px solid #07559e;
+        box-shadow: 0 9px 22px rgba(11, 100, 183, 0.22);
       }
-      .meta strong {
-        color: var(--paper-dim);
-        font-weight: 500;
+
+      .btn-primary:hover {
+        background: linear-gradient(180deg, #0d70c8, #0959a4);
+        box-shadow: 0 11px 26px rgba(11, 100, 183, 0.28);
+      }
+
+      .btn-primary[aria-disabled="true"] {
+        pointer-events: none;
+        opacity: 0.48;
+        box-shadow: none;
+      }
+
+      .choose-link {
+        display: block;
+        margin: 12px 0 0;
+        color: var(--ink-3);
+        font-size: 12.5px;
+        text-align: center;
+      }
+
+      .quick-install {
+        display: grid;
+        gap: 0;
+        margin: 23px 0 0;
+        padding: 0;
+        list-style: none;
+        border-top: 1px solid var(--line);
+      }
+
+      .quick-install li {
+        display: grid;
+        grid-template-columns: 25px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        padding: 12px 0;
+        color: var(--ink-2);
+        font-size: 12.5px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .quick-install .num {
+        display: grid;
+        width: 23px;
+        height: 23px;
+        place-items: center;
+        color: var(--blue-dark);
+        background: var(--blue-soft);
+        border-radius: 7px;
+        font-size: 11px;
+        font-weight: 760;
+      }
+
+      .quick-install strong { display: block; color: var(--ink); }
+
+      .first-open-note {
+        margin: 14px 0 0;
+        color: var(--amber);
+        font-size: 11.5px;
+        line-height: 1.45;
       }
 
       .status {
-        margin-top: 22px;
-        min-height: 1.4em;
-        font-size: 0.92rem;
-        color: var(--muted);
-      }
-      .status.error {
-        color: var(--danger);
+        min-height: 19px;
+        margin: 12px 0 0;
+        color: var(--ink-3);
+        font-size: 12px;
+        text-align: center;
       }
 
-      /* ---- Below fold ---- */
+      .status.error { color: var(--danger); }
+
       .section {
-        padding: 56px 0 24px;
+        padding: 84px 0;
         border-top: 1px solid var(--line);
       }
-      .section h2 {
-        font-family: var(--font-display);
-        font-size: clamp(1.8rem, 3.5vw, 2.4rem);
-        font-weight: 400;
-        margin: 0 0 18px;
-        color: var(--paper);
+
+      .section-heading {
+        display: grid;
+        grid-template-columns: minmax(0, 0.72fr) minmax(260px, 0.55fr);
+        gap: 50px;
+        align-items: end;
+        margin-bottom: 34px;
       }
-      .section p,
-      .section li {
-        color: var(--muted);
-        max-width: 40rem;
+
+      .section-heading h2 {
+        margin: 0;
+        font-size: clamp(2.2rem, 5vw, 4.3rem);
+        line-height: 1;
+        letter-spacing: -0.052em;
       }
-      .section ol,
-      .section ul {
-        padding-left: 1.2rem;
-        margin: 0 0 18px;
-      }
-      .section li + li {
-        margin-top: 8px;
+
+      .section-heading p {
+        margin: 0;
+        color: var(--ink-2);
       }
 
       .platforms {
         display: grid;
-        gap: 18px;
-        margin: 28px 0 8px;
-      }
-      @media (min-width: 720px) {
-        .platforms {
-          grid-template-columns: 1fr 1fr 1fr;
-        }
-      }
-      .platform {
-        padding: 4px 0 12px;
-        border-top: 1px solid var(--line);
-      }
-      .platform h3 {
-        margin: 14px 0 8px;
-        font-size: 1rem;
-        font-weight: 600;
-        color: var(--paper);
-        letter-spacing: 0.01em;
-      }
-      .platform .links {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px 16px;
-        margin-top: 10px;
-      }
-      .platform a {
-        font-size: 0.95rem;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
       }
 
-      .callout {
-        margin: 20px 0;
-        padding: 14px 0;
-        border-left: 2px solid var(--warn);
-        padding-left: 14px;
-        color: var(--paper-dim);
-        max-width: 40rem;
-        font-size: 0.95rem;
+      .platform {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        padding: 21px;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
       }
-      /* The two version-specific routes read as steps, not prose: somebody
-         blocked by Gatekeeper is looking for what to click, not an argument. */
-      .callout-steps {
-        margin: 12px 0 0;
-        line-height: 1.55;
+
+      .platform.is-detected {
+        background: #fff;
+        border-color: #9fc8ef;
+        box-shadow: 0 12px 30px rgba(28, 67, 108, 0.09);
       }
-      .callout-steps strong {
-        color: var(--paper);
+
+      .platform-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
       }
-      .callout-note {
-        margin: 12px 0 0;
-        font-size: 0.9rem;
+
+      .platform h3 {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: -0.02em;
       }
-      .callout strong {
-        color: var(--warn);
-        font-weight: 600;
+
+      .platform-badge {
+        display: none;
+        padding: 3px 7px;
+        color: var(--blue-dark);
+        background: var(--blue-soft);
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 720;
+        text-transform: uppercase;
+      }
+
+      .platform.is-detected .platform-badge { display: inline-flex; }
+
+      .platform ol {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding-left: 20px;
+        color: var(--ink-2);
+        font-size: 13px;
+      }
+
+      .platform code {
+        padding: 1px 4px;
+        color: var(--ink-2);
+        background: var(--surface-2);
+        border-radius: 4px;
+        font-size: 0.92em;
+      }
+
+      .platform-callout {
+        margin: 18px 0 0;
+        padding: 13px;
+        color: var(--ink-2);
+        background: var(--amber-soft);
+        border: 1px solid #efd9a8;
+        border-radius: var(--radius-sm);
+        font-size: 12px;
+      }
+
+      .platform-callout strong { color: var(--amber); }
+
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 14px;
+        margin-top: auto;
+        padding-top: 18px;
+        font-size: 12.5px;
+      }
+
+      .mac-approval {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+        gap: 16px;
+        margin-top: 16px;
+      }
+
+      .approval-route {
+        padding: 22px;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+
+      .approval-route.primary { border-color: #a9cdf2; }
+
+      .approval-route h3 { margin: 0 0 4px; font-size: 16px; }
+      .approval-route > p { margin: 0 0 15px; color: var(--ink-3); font-size: 12px; }
+
+      .approval-route ol {
+        display: grid;
+        gap: 10px;
+        margin: 0;
+        padding-left: 20px;
+        color: var(--ink-2);
+        font-size: 13px;
+      }
+
+      .share-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 28px;
+        align-items: center;
+        padding: 30px;
+        color: #fff;
+        background: linear-gradient(135deg, #14263d, #0d1c2f);
+        border-radius: var(--radius-lg);
+        box-shadow: 0 22px 55px rgba(20, 38, 61, 0.2);
+      }
+
+      .share-panel h2 { margin: 0 0 6px; font-size: 25px; letter-spacing: -0.035em; }
+      .share-panel p { margin: 0; color: #aebed0; font-size: 13.5px; }
+
+      .share-panel .share-button {
+        min-height: 44px;
+        padding: 0 17px;
+        color: #102038;
+        background: #fff;
+        border-color: #fff;
       }
 
       footer {
-        padding: 48px 0 64px;
-        color: var(--muted);
-        font-size: 0.88rem;
-        border-top: 1px solid var(--line);
-        margin-top: 40px;
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 36px 0 48px;
+        color: var(--ink-3);
+        font-size: 12px;
+      }
+
+      @media (max-width: 860px) {
+        .hero { grid-template-columns: 1fr; min-height: auto; padding: 54px 0 72px; }
+        .hero-copy { text-align: center; }
+        .eyebrow { justify-content: center; }
+        h1 { max-width: 720px; }
+        .hero-copy > p { margin-inline: auto; }
+        .proof { justify-content: center; }
+        .download-card { width: min(520px, 100%); margin: 0 auto; }
+        .platforms { grid-template-columns: 1fr; }
+        .platform.is-detected { order: -1; }
+        .mac-approval { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 640px) {
+        .shell { width: min(100% - 26px, 1160px); }
+        .topbar { min-height: 64px; }
+        .top-actions > a { display: none; }
+        .share-button { padding-inline: 10px; }
+        .hero { gap: 38px; padding: 38px 0 60px; }
+        h1 { font-size: clamp(3.25rem, 18vw, 5.15rem); }
+        .hero-copy > p { margin-top: 22px; font-size: 1.02rem; }
+        .proof { display: grid; justify-content: start; width: max-content; max-width: 100%; margin-inline: auto; text-align: left; }
+        .download-card { padding: 22px; border-radius: 20px; }
+        .section { padding: 60px 0; }
+        .section-heading { grid-template-columns: 1fr; gap: 14px; margin-bottom: 24px; }
+        .section-heading h2 { font-size: 2.6rem; }
+        .share-panel { grid-template-columns: 1fr; padding: 24px; }
+        .share-panel .share-button { width: 100%; }
+        footer { flex-direction: column; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        .btn { transition: none; }
       }
     </style>
   </head>
   <body>
-    <main class="wrap">
-      <section class="hero" aria-label="Download Groundplan">
-        <h1 class="brand">Groundplan</h1>
-        <p class="lede">
-          Open and edit your existing event floor plans on Mac, Windows, and Linux — no Windows VM, no
-          legacy software.
-        </p>
+    <header class="shell topbar">
+      <a class="wordmark" href="#top" aria-label="Groundplan home">
+        <span class="mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M4 13.5V4.5h6.5v3H7v6H4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+            <path d="M8 8.5h6v5H8v-5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+          </svg>
+        </span>
+        Groundplan
+      </a>
+      <nav class="top-actions" aria-label="Page actions">
+        <a href="#install">Install guide</a>
+        <button class="share-button" type="button" data-share>
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 10.5V2.5m0 0L5.2 5.3M8 2.5l2.8 2.8M3 8v4.5h10V8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span>Share</span>
+        </button>
+      </nav>
+    </header>
 
-        <div class="cta-row">
-          <a class="btn btn-primary" id="primary-download" href="#install" aria-disabled="true">
-            Detecting your computer…
-          </a>
-          <a class="btn btn-ghost" id="all-releases" href="https://github.com/kxd21/groundplan/releases/latest">
-            All downloads
-          </a>
-        </div>
-        <p class="meta" id="primary-meta">
-          Looking up the latest signed build for this machine.
-        </p>
-        <noscript>
-          <p class="meta">
-            JavaScript is off — open
-            <a href="https://github.com/kxd21/groundplan/releases/latest">GitHub Releases</a>
-            and pick the installer for your Mac, Windows PC, or Linux machine.
+    <main id="top">
+      <section class="shell hero" aria-label="Download Groundplan">
+        <div class="hero-copy">
+          <p class="eyebrow">Production planning, rebuilt</p>
+          <h1>Build the room.<br />Plan the show.</h1>
+          <p>
+            Groundplan turns existing Room Viewer files into a modern workspace for rooms, seating,
+            stages, equipment, and show readiness—without converting your originals.
           </p>
-        </noscript>
-        <p class="status" id="status" role="status"></p>
+          <ul class="proof" aria-label="Groundplan highlights">
+            <li>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              Opens native .rv4 plans
+            </li>
+            <li>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              Mac, Windows, and Linux
+            </li>
+            <li>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              Signed in-app updates
+            </li>
+          </ul>
+        </div>
+
+        <aside class="download-card" aria-labelledby="download-title">
+          <span class="detected" id="detected-label">Detecting your computer</span>
+          <h2 id="download-title">Preparing your download…</h2>
+          <p class="download-meta" id="primary-meta">Looking up the latest Groundplan release.</p>
+          <a class="btn btn-primary" id="primary-download" href="#install" aria-disabled="true">
+            Detecting download…
+          </a>
+          <a class="choose-link" href="#install">Choose a different computer or installer</a>
+
+          <ol class="quick-install" id="quick-install">
+            <li><span class="num">1</span><span><strong>Download</strong>Use the button above for this computer.</span></li>
+            <li><span class="num">2</span><span><strong>Install</strong>Open the installer and follow the short steps.</span></li>
+            <li><span class="num">3</span><span><strong>Start planning</strong>Open a plan or create a new show.</span></li>
+          </ol>
+          <p class="first-open-note" id="first-open-note"></p>
+          <p class="status" id="status" role="status" aria-live="polite"></p>
+          <noscript>
+            <p class="status error">
+              JavaScript is off. Use
+              <a href="https://github.com/kxd21/groundplan/releases/latest">All downloads</a>.
+            </p>
+          </noscript>
+        </aside>
       </section>
 
-      <section class="section" id="install">
-        <h2>Install</h2>
+      <section class="shell section" id="install">
+        <div class="section-heading">
+          <h2>Download to first plan.</h2>
+          <p>
+            Pick your computer. The detected option is highlighted, and every installer links to the
+            latest public release.
+          </p>
+        </div>
 
         <div class="platforms">
-          <div class="platform" id="mac-panel">
-            <h3>macOS</h3>
+          <article class="platform" id="mac-panel">
+            <div class="platform-head"><h3>macOS</h3><span class="platform-badge">This computer</span></div>
             <ol>
-              <li>Open the <code>.dmg</code> and drag <strong>Groundplan</strong> into Applications.</li>
-              <li>Eject the disk image, then open Groundplan from Applications.</li>
+              <li>Open the <code>.dmg</code>.</li>
+              <li>Drag <strong>Groundplan</strong> onto <strong>Applications</strong>.</li>
+              <li>Open Groundplan from Applications.</li>
             </ol>
-            <div class="callout">
-              <strong>macOS will block the first open. This is expected.</strong>
-              You will see <em>&ldquo;Apple could not verify Groundplan is free of
-              malware.&rdquo;</em> Apple shows that for any app that has not been through
-              their paid notarization service. Approve it once and it opens normally
-              from then on.
-
-              <p class="callout-steps">
-                <strong>macOS&nbsp;15 Sequoia, macOS&nbsp;26 Tahoe and later</strong><br>
-                Double-click Groundplan &rarr; <em>Done</em> &rarr; open
-                <strong>System Settings &rarr; Privacy &amp; Security</strong> &rarr; scroll to
-                <strong>Security</strong> &rarr; <em>Open Anyway</em> &rarr; authenticate &rarr;
-                <em>Open Anyway</em> once more.
-              </p>
-
-              <p class="callout-steps">
-                <strong>macOS&nbsp;14 Sonoma and earlier</strong><br>
-                Control-click (right-click) Groundplan &rarr; <em>Open</em> &rarr;
-                <em>Open</em>. Control-clicking is what turns the block into a choice;
-                double-clicking only ever refuses.
-              </p>
-
-              <p class="callout-note">
-                Not sure which you have? <strong>Apple menu &rarr; About This Mac</strong>.
-                Full steps in the
-                <a href="https://github.com/kxd21/groundplan/blob/main/docs/installation.md#macos">installation guide</a>.
-              </p>
+            <div class="platform-callout">
+              <strong>One-time approval:</strong> the first launch needs a short Privacy &amp; Security
+              approval because the public build is not Apple-notarized. Exact clicks are below.
             </div>
             <div class="links" id="mac-links"></div>
-          </div>
+          </article>
 
-          <div class="platform" id="win-panel">
-            <h3>Windows</h3>
+          <article class="platform" id="win-panel">
+            <div class="platform-head"><h3>Windows</h3><span class="platform-badge">This computer</span></div>
             <ol>
               <li>Run the Setup <code>.exe</code>.</li>
-              <li>Choose <em>Just me</em> unless every account on the PC should have it.</li>
-              <li>Launch from the Start menu.</li>
+              <li>Choose <strong>Just me</strong> unless every account needs it.</li>
+              <li>Launch Groundplan from the Start menu.</li>
             </ol>
-            <div class="callout">
-              <strong>SmartScreen.</strong> Click <em>More info</em>, then <em>Run anyway</em>. Prefer
-              the portable build if you have no admin rights — put it anywhere you can write and run
-              it.
+            <div class="platform-callout">
+              <strong>SmartScreen:</strong> choose <strong>More info</strong>, then
+              <strong>Run anyway</strong>. The Portable download needs no admin access.
             </div>
             <div class="links" id="win-links"></div>
-          </div>
+          </article>
 
-          <div class="platform" id="linux-panel">
-            <h3>Linux</h3>
+          <article class="platform" id="linux-panel">
+            <div class="platform-head"><h3>Linux</h3><span class="platform-badge">This computer</span></div>
             <ol>
               <li>Download the <code>.AppImage</code>.</li>
-              <li>
-                Make it executable (<code>chmod +x …</code>) and run it from a terminal or file
-                manager.
-              </li>
+              <li>Make it executable with <code>chmod +x</code>.</li>
+              <li>Open it from your file manager or terminal.</li>
             </ol>
-            <div class="callout">
-              <strong>FUSE.</strong> Some distros need FUSE for AppImages. If it will not start,
-              check your distro’s AppImage docs or extract with <code>--appimage-extract</code>.
+            <div class="platform-callout">
+              <strong>FUSE:</strong> some distributions need FUSE support for AppImages.
             </div>
             <div class="links" id="linux-links"></div>
-          </div>
+          </article>
+        </div>
+
+        <div class="mac-approval" id="mac-approval">
+          <article class="approval-route primary">
+            <h3>macOS 15 Sequoia, 26 Tahoe, and later</h3>
+            <p>Use System Settings once.</p>
+            <ol>
+              <li>Open Groundplan once and click <strong>Done</strong>.</li>
+              <li>Open <strong>System Settings → Privacy &amp; Security</strong>.</li>
+              <li>Under Security, click <strong>Open Anyway</strong>, authenticate, and confirm.</li>
+            </ol>
+          </article>
+          <article class="approval-route">
+            <h3>macOS 14 Sonoma and earlier</h3>
+            <p>Use the Control-click route.</p>
+            <ol>
+              <li>Open the Applications folder.</li>
+              <li><strong>Control-click</strong> Groundplan and choose <strong>Open</strong>.</li>
+              <li>Click <strong>Open</strong> once more.</li>
+            </ol>
+          </article>
         </div>
       </section>
 
-      <section class="section" id="first-plan">
-        <h2>Open a plan</h2>
-        <p>
-          <strong>File → Open</strong> and pick a <code>.rv4</code> (or <code>.rs4</code>,
-          <code>.ds4</code>, shape libraries). Your existing files open as they are — Groundplan
-          edits the original format.
-        </p>
-        <p>
-          Full steps, update-over-USB, and troubleshooting:
-          <a href="https://github.com/kxd21/groundplan/blob/main/docs/installation.md">installation guide</a>.
-        </p>
+      <section class="shell section" id="share">
+        <div class="share-panel">
+          <div>
+            <h2>Send one link. Groundplan picks the installer.</h2>
+            <p>Share kxd21.github.io/groundplan/download — no file-name instructions required.</p>
+          </div>
+          <button class="share-button" type="button" data-share>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 10.5V2.5m0 0L5.2 5.3M8 2.5l2.8 2.8M3 8v4.5h10V8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <span>Share Groundplan</span>
+          </button>
+        </div>
       </section>
-
-      <footer>
-        Groundplan · signed updates after install ·
-        <a href="https://github.com/kxd21/groundplan">source</a>
-      </footer>
     </main>
+
+    <footer class="shell">
+      <span>Groundplan · modern event floor planning</span>
+      <span>
+        <a href="https://github.com/kxd21/groundplan/releases/latest">All downloads</a> ·
+        <a href="https://github.com/kxd21/groundplan/blob/main/docs/installation.md">Troubleshooting</a> ·
+        <a href="https://github.com/kxd21/groundplan">Source</a>
+      </span>
+    </footer>
 
     <script>
       (function () {
-        const REPO = 'kxd21/groundplan';
-        const RELEASES = 'https://github.com/' + REPO + '/releases/latest';
-        const API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
+        const REPO = "kxd21/groundplan";
+        const RELEASES = "https://github.com/" + REPO + "/releases/latest";
+        const API = "https://api.github.com/repos/" + REPO + "/releases/latest";
+        const SHARE_URL = "https://kxd21.github.io/groundplan/download/";
 
-        const primary = document.getElementById('primary-download');
-        const meta = document.getElementById('primary-meta');
-        const status = document.getElementById('status');
-        const macLinks = document.getElementById('mac-links');
-        const winLinks = document.getElementById('win-links');
-        const linuxLinks = document.getElementById('linux-links');
-        document.getElementById('all-releases').href = RELEASES;
+        const primary = document.getElementById("primary-download");
+        const title = document.getElementById("download-title");
+        const meta = document.getElementById("primary-meta");
+        const status = document.getElementById("status");
+        const detected = document.getElementById("detected-label");
+        const firstOpen = document.getElementById("first-open-note");
+        const macLinks = document.getElementById("mac-links");
+        const winLinks = document.getElementById("win-links");
+        const linuxLinks = document.getElementById("linux-links");
 
-        function detect() {
-          const ua = navigator.userAgent || '';
-          const platform = navigator.platform || '';
+        function detectComputer() {
+          const ua = navigator.userAgent || "";
+          const platform = navigator.platform || "";
           const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua);
           const isWin = /Win/i.test(platform) || /Windows/i.test(ua);
           const isLinux = !isMac && !isWin && (/Linux/i.test(platform) || /Linux/i.test(ua));
-          // 'arm' | 'x64' | 'unknown'. Deliberately not read from the UA string on
-          // Mac: every Mac browser, Apple silicon included, reports "Intel Mac OS
-          // X", so trusting it hands M-series users the Intel build.
-          const arch = /\b(arm64|aarch64)\b/i.test(ua) ? 'arm' : 'unknown';
-          return { isMac, isWin, isLinux, arch, platform, ua };
+          const arch = /\b(arm64|aarch64)\b/i.test(ua) ? "arm" : "unknown";
+          return { isMac, isWin, isLinux, arch };
         }
 
-        /** Apple silicon reports "Apple M…"; Intel Macs report "Intel Iris…". */
         function archFromWebGl() {
           try {
-            const gl = document.createElement('canvas').getContext('webgl');
-            if (!gl) return 'unknown';
-            const ext = gl.getExtension('WEBGL_debug_renderer_info');
-            if (!ext) return 'unknown';
-            const renderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '');
-            if (/apple\s*m\d/i.test(renderer)) return 'arm';
-            if (/intel|radeon|amd/i.test(renderer)) return 'x64';
-          } catch (_) {
-            /* ignore */
-          }
-          return 'unknown';
+            const gl = document.createElement("canvas").getContext("webgl");
+            const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
+            if (!gl || !ext) return "unknown";
+            const renderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || "");
+            if (/apple\s*m\d/i.test(renderer)) return "arm";
+            if (/intel|radeon|amd/i.test(renderer)) return "x64";
+          } catch (_) {}
+          return "unknown";
         }
 
         async function refineArch(info) {
-          // Chromium and Edge answer this directly and authoritatively.
           try {
             if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
-              const high = await navigator.userAgentData.getHighEntropyValues(['architecture']);
-              if (high.architecture === 'arm') info.arch = 'arm';
-              else if (high.architecture === 'x86') info.arch = 'x64';
+              const high = await navigator.userAgentData.getHighEntropyValues(["architecture"]);
+              if (high.architecture === "arm") info.arch = "arm";
+              if (high.architecture === "x86") info.arch = "x64";
             }
-          } catch (_) {
-            /* ignore */
-          }
-
-          // Safari has no userAgentData, and it is the common Mac browser.
-          if (info.isMac && info.arch === 'unknown') info.arch = archFromWebGl();
-
-          // Still unknown on a Mac: default to Apple silicon. Every Mac sold since
-          // 2020 is arm64, so this is right far more often than it is wrong, and
-          // the Intel DMG is one click away in the panel below.
-          if (info.isMac && info.arch === 'unknown') {
-            info.arch = 'arm';
+          } catch (_) {}
+          if (info.isMac && info.arch === "unknown") info.arch = archFromWebGl();
+          if (info.isMac && info.arch === "unknown") {
+            info.arch = "arm";
             info.archGuessed = true;
           }
           return info;
@@ -460,144 +798,174 @@
 
         function pickAsset(assets, predicates) {
           for (const test of predicates) {
-            const hit = assets.find((a) => test(a.name.toLowerCase()));
+            const hit = assets.find((asset) => test(asset.name.toLowerCase()));
             if (hit) return hit;
           }
           return null;
         }
 
-        function link(el, asset, label) {
+        function formatBytes(value) {
+          if (!Number.isFinite(value) || value <= 0) return "";
+          return (value / 1024 / 1024).toFixed(value > 100 * 1024 * 1024 ? 0 : 1) + " MB";
+        }
+
+        function addLink(parent, asset, label) {
           if (!asset) return;
-          const a = document.createElement('a');
-          a.href = asset.browser_download_url;
-          a.textContent = label || asset.name;
-          a.rel = 'noopener';
-          el.appendChild(a);
+          const anchor = document.createElement("a");
+          anchor.href = asset.browser_download_url;
+          anchor.textContent = label;
+          anchor.rel = "noopener";
+          parent.appendChild(anchor);
         }
 
         function setPrimary(asset, label, detail) {
+          title.textContent = label;
           if (!asset) {
-            primary.textContent = 'View all downloads';
+            primary.textContent = "View all downloads";
             primary.href = RELEASES;
-            primary.removeAttribute('aria-disabled');
-            meta.innerHTML = detail || 'Choose the installer for your computer from the release page.';
+            primary.removeAttribute("aria-disabled");
+            meta.innerHTML = detail || "Choose an installer from the release page.";
             return;
           }
           primary.textContent = label;
           primary.href = asset.browser_download_url;
-          primary.removeAttribute('aria-disabled');
+          primary.removeAttribute("aria-disabled");
           meta.innerHTML = detail;
         }
 
-        async function load() {
-          const info = await refineArch(detect());
+        function markDetected(id, label) {
+          detected.textContent = label + " detected";
+          const panel = document.getElementById(id);
+          if (panel) panel.classList.add("is-detected");
+        }
+
+        async function copyShareUrl() {
+          try {
+            await navigator.clipboard.writeText(SHARE_URL);
+            return true;
+          } catch (_) {
+            const field = document.createElement("textarea");
+            field.value = SHARE_URL;
+            field.style.position = "fixed";
+            field.style.opacity = "0";
+            document.body.appendChild(field);
+            field.select();
+            const copied = document.execCommand("copy");
+            field.remove();
+            return copied;
+          }
+        }
+
+        async function share(button) {
+          try {
+            if (navigator.share) {
+              await navigator.share({
+                title: "Groundplan",
+                text: "Download Groundplan for modern event floor planning.",
+                url: SHARE_URL,
+              });
+              return;
+            }
+            const copied = await copyShareUrl();
+            const label = button.querySelector("span");
+            const previous = label.textContent;
+            label.textContent = copied ? "Link copied" : SHARE_URL;
+            window.setTimeout(() => { label.textContent = previous; }, 2200);
+          } catch (_) {
+            // Cancelling the operating system share sheet is an ordinary outcome.
+          }
+        }
+
+        document.querySelectorAll("[data-share]").forEach((button) => {
+          button.addEventListener("click", () => void share(button));
+        });
+
+        primary.addEventListener("click", () => {
+          if (primary.getAttribute("aria-disabled") === "true") return;
+          status.className = "status";
+          status.textContent = "Download starting. The three installation steps stay on this page.";
+        });
+
+        async function loadRelease() {
+          const info = await refineArch(detectComputer());
           let release;
           try {
-            const res = await fetch(API, {
-              headers: { Accept: 'application/vnd.github+json' },
-            });
-            if (!res.ok) {
-              const rateLimited = res.status === 403 || res.status === 429;
-              throw new Error(
-                rateLimited
-                  ? 'GitHub rate-limited this page (' + res.status + ')'
-                  : 'release lookup failed (' + res.status + ')',
-              );
-            }
-            release = await res.json();
-          } catch (err) {
-            status.className = 'status error';
-            const msg = err && err.message ? String(err.message) : '';
-            status.textContent = /rate-limited|403|429/i.test(msg)
-              ? 'GitHub briefly limited requests from this network. Use All downloads, or refresh in a minute.'
-              : 'Could not reach GitHub for the latest build. Use All downloads, or try again shortly.';
-            setPrimary(null, null, 'Latest release page on GitHub.');
+            const response = await fetch(API, { headers: { Accept: "application/vnd.github+json" } });
+            if (!response.ok) throw new Error(String(response.status));
+            release = await response.json();
+          } catch (error) {
+            detected.textContent = "Download page";
+            status.className = "status error";
+            status.textContent = "The latest release could not be looked up. GitHub still has every installer.";
+            setPrimary(null, "View all downloads", "Open the latest Groundplan release on GitHub.");
             return;
           }
 
           const assets = Array.isArray(release.assets) ? release.assets : [];
-          const version = (release.tag_name || '').replace(/^v/, '') || release.name || '';
-
+          const version = (release.tag_name || "").replace(/^v/, "") || release.name || "";
           const macArm = pickAsset(assets, [
-            (n) => n.includes('mac-arm64') && n.endsWith('.dmg'),
-            (n) => n.includes('arm64') && n.endsWith('.dmg'),
+            (name) => name.includes("mac-arm64") && name.endsWith(".dmg"),
+            (name) => name.includes("arm64") && name.endsWith(".dmg"),
           ]);
           const macIntel = pickAsset(assets, [
-            (n) => n.includes('mac-x64') && n.endsWith('.dmg'),
-            (n) => /mac(?!.*arm)/.test(n) && n.endsWith('.dmg') && !n.includes('arm64'),
+            (name) => name.includes("mac-x64") && name.endsWith(".dmg"),
+            (name) => name.includes("mac") && name.endsWith(".dmg") && !name.includes("arm64"),
           ]);
           const winSetup = pickAsset(assets, [
-            (n) => n.includes('setup') && n.endsWith('.exe'),
-            (n) => n.endsWith('.exe') && !n.includes('portable'),
+            (name) => name.includes("setup") && name.endsWith(".exe"),
+            (name) => name.endsWith(".exe") && !name.includes("portable"),
           ]);
-          const winPortable = pickAsset(assets, [(n) => n.includes('portable') && n.endsWith('.exe')]);
+          const winPortable = pickAsset(assets, [(name) => name.includes("portable") && name.endsWith(".exe")]);
           const linuxApp = pickAsset(assets, [
-            (n) => n.includes('linux') && n.endsWith('.AppImage'),
-            (n) => n.endsWith('.AppImage'),
+            (name) => name.includes("linux") && name.toLowerCase().endsWith(".appimage"),
+            (name) => name.toLowerCase().endsWith(".appimage"),
           ]);
 
-          link(macLinks, macArm, 'Apple silicon · DMG');
-          link(macLinks, macIntel, 'Intel · DMG');
-          link(winLinks, winSetup, 'Windows Setup');
-          link(winLinks, winPortable, 'Windows Portable (no admin)');
-          link(linuxLinks, linuxApp, 'Linux · AppImage (x64)');
+          addLink(macLinks, macArm, "Apple silicon DMG");
+          addLink(macLinks, macIntel, "Intel DMG");
+          addLink(winLinks, winSetup, "Windows Setup");
+          addLink(winLinks, winPortable, "Portable · no admin");
+          addLink(linuxLinks, linuxApp, "Linux AppImage");
 
-          const verLabel = version ? 'Groundplan ' + version : 'Groundplan';
-
+          const versionLabel = version ? "Groundplan " + version : "Latest Groundplan";
           if (info.isMac) {
-            const preferArm = info.arch === 'arm';
-            const asset = preferArm ? macArm || macIntel : macIntel || macArm;
-            const archNote = preferArm
-              ? info.archGuessed
-                ? 'Apple silicon build — we could not read this Mac’s chip, and that is the common one. On an Intel Mac, use the Intel DMG below.'
-                : 'Apple silicon build. If this Mac is Intel, use the Intel DMG below.'
-              : 'Intel Mac build. If this Mac is Apple silicon, use the arm64 DMG below.';
+            const arm = info.arch === "arm";
+            const asset = arm ? macArm || macIntel : macIntel || macArm;
+            markDetected("mac-panel", "Mac");
             setPrimary(
               asset,
-              'Download for Mac',
-              '<strong>' +
-                verLabel +
-                '</strong> · ' +
-                (asset ? asset.name : 'DMG') +
-                '. ' +
-                archNote,
+              "Download for Mac",
+              "<strong>" + versionLabel + "</strong> · " + (arm ? "Apple silicon" : "Intel") +
+                (asset ? " · " + formatBytes(asset.size) : "") +
+                (info.archGuessed ? "<br>Apple silicon is selected by default; Intel is available below." : ""),
             );
+            firstOpen.textContent = "First install: macOS asks for one Privacy & Security approval. Exact steps are below.";
           } else if (info.isWin) {
+            const asset = winSetup || winPortable;
+            markDetected("win-panel", "Windows");
             setPrimary(
-              winSetup || winPortable,
-              'Download for Windows',
-              '<strong>' +
-                verLabel +
-                '</strong> · ' +
-                ((winSetup || winPortable) && (winSetup || winPortable).name) +
-                '. Need no admin? Use the portable build below.',
+              asset,
+              "Download for Windows",
+              "<strong>" + versionLabel + "</strong> · Setup" + (asset ? " · " + formatBytes(asset.size) : ""),
             );
+            firstOpen.textContent = "No administrator access? Choose the Portable download below.";
           } else if (info.isLinux) {
+            markDetected("linux-panel", "Linux");
             setPrimary(
               linuxApp,
-              'Download for Linux',
-              '<strong>' +
-                verLabel +
-                '</strong> · ' +
-                (linuxApp ? linuxApp.name : 'AppImage') +
-                '. Make it executable (<code>chmod +x</code>), then run it.',
+              "Download for Linux",
+              "<strong>" + versionLabel + "</strong> · AppImage" + (linuxApp ? " · " + formatBytes(linuxApp.size) : ""),
             );
+            firstOpen.textContent = "After downloading, make the AppImage executable once.";
           } else {
-            setPrimary(
-              null,
-              null,
-              '<strong>' +
-                verLabel +
-                '</strong> is available for Mac, Windows, and Linux. Pick the installer for your computer below or on the release page.',
-            );
+            detected.textContent = "Mac · Windows · Linux";
+            setPrimary(null, "Choose your download", "<strong>" + versionLabel + "</strong> is available for all three platforms.");
           }
 
-          if (!assets.length) {
-            status.textContent = 'A release exists, but no installers are attached yet.';
-          }
+          if (!assets.length) status.textContent = "The release exists, but its installers are still being attached.";
         }
 
-        load();
+        void loadRelease();
       })();
     </script>
   </body>

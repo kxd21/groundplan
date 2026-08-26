@@ -34,7 +34,7 @@ jobs:
       - name: Stage site
         run: |
           mkdir -p _site/download
-          cp docs/download/index.html _site/download/index.html
+          cp -R docs/download/. _site/download/
           cp docs/installation.md _site/installation.md
           # Root redirects to the download page so /groundplan/ is useful.
           cat > _site/index.html <<'EOF'

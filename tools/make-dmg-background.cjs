@@ -27,6 +27,7 @@ const { app, BrowserWindow } = require('electron');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, 'build');
+const VERSION = require(path.join(ROOT, 'package.json')).version;
 
 /**
  * Window size in points.
@@ -72,7 +73,7 @@ const html = `<!doctype html>
   .install .headline { top: 54px; }
   .install-sub {
     position: absolute; top: 84px; left: 0; right: 0;
-    color: #6e7781; font-size: 12px; text-align: center;
+    color: #626d79; font-size: 12px; text-align: center;
   }
   /* The arrow spans the gap between the icon slots the DMG places at x=170 and
      x=470, both at y=175. Nothing may be drawn inside those slots. */
@@ -88,7 +89,7 @@ const html = `<!doctype html>
   }
   .gate-sub {
     margin: 4px auto 0; max-width: 540px; text-align: center;
-    font-size: 11.5px; line-height: 1.42; color: #69727d;
+    font-size: 11.5px; line-height: 1.42; color: #626d79;
   }
   .routes { display: flex; gap: 12px; margin-top: 13px; }
   .route {
@@ -128,15 +129,20 @@ const html = `<!doctype html>
   .route.primary li > span { background: #dcecff; color: #0b5fab; }
   .footnote {
     margin-top: auto; padding-top: 9px;
-    text-align: center; font-size: 9.5px; line-height: 1.45; color: #858c95;
+    text-align: center; font-size: 10px; line-height: 1.45; color: #737d89;
   }
   .footnote strong { color: #5f6873; font-weight: 600; }
+  .share-link {
+    display: inline-block; margin-top: 4px; padding: 3px 8px;
+    border: 1px solid #d8dee6; border-radius: 999px;
+    color: #4d5b6b; background: rgba(255,255,255,.7); font-weight: 650;
+  }
 </style></head>
 <body>
   <div class="install">
     <div class="step-label">1 &middot; Install</div>
-    <div class="headline">Move Groundplan to Applications</div>
-    <div class="install-sub">Drag the Groundplan icon onto the Applications folder.</div>
+    <div class="headline">Drag Groundplan to Applications</div>
+    <div class="install-sub">Then open Groundplan from Applications.</div>
     <svg class="arrow" viewBox="0 0 124 20" fill="none">
       <path d="M2 10 H108" stroke="#91a4b7" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 6"/>
       <path d="M104 4 L114 10 L104 16" stroke="#4f86bd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -145,7 +151,7 @@ const html = `<!doctype html>
 
   <div class="gate">
     <div class="step-label">2 &middot; First open</div>
-    <div class="gate-headline">Allow Groundplan once</div>
+    <div class="gate-headline">First launch: approve Groundplan once</div>
     <div class="gate-sub">
       If macOS says it cannot verify Groundplan, use the route for your version.
       This one-time approval applies only to Groundplan.
@@ -169,9 +175,9 @@ const html = `<!doctype html>
       </div>
     </div>
     <div class="footnote">
-      Check your version in <strong>Apple menu &rsaquo; About This Mac</strong>.
+      Groundplan ${VERSION} &nbsp;&middot;&nbsp; Check macOS in <strong>Apple menu &rsaquo; About This Mac</strong>.
       This does not disable Gatekeeper.<br>
-      Need help? &nbsp;<strong>kxd21.github.io/groundplan/download</strong>
+      <span class="share-link">Help or another download: kxd21.github.io/groundplan/download</span>
     </div>
   </div>
 </body></html>`;

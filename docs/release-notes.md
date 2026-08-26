@@ -1,40 +1,45 @@
 ## Groundplan __VERSION__
 
-Installers for first-time setup. After install, Groundplan can update itself
-(Help → Check for Updates) or from a USB stick.
+Installers for a first-time setup. Existing copies can update from
+**Help → Check for Updates** or from a signed update folder on a USB drive.
 
-### What’s new in this release
+### Build the show, not just the drawing
 
-**Shell redesign**
-- Exclusive modes: Browse · Place · Inspect · Setup · Draw
-- Command palette (⌘K) with the same stable IDs as menus and agent IPC
-- Agent playbook: `docs/agent-commands.md` · `npm run test:commands`
+- A real show brief now travels with the plan: client, venue, dates, attendance,
+  layout goals, stage, screens, accessibility, rigging, power, and egress.
+- Show Setup compares the drawing with that brief and gives every issue a direct
+  route to the tool that resolves it.
+- Room, stage, seating, gear, inventory, and issue/export work now follow one
+  guided production flow.
 
-**Readable chrome**
-- Dark and light text contrast across Settings, Place, doc tabs, and Inspect Layers
-- Status bar shows mode + last command; Help shortcuts stay in sync with the catalog
+### Faster room and layout work
 
-**Reliability**
-- New Plan no longer hangs on a dirty open file (quiet autosave first)
-- Open folder / Open file busy toast releases if the system dialog stays open
+- New Plan starts with the show and room, then lands directly on the drawing.
+- Layout kits can place named, countable equipment with its real outline instead
+  of anonymous boxes.
+- Stage, seating, screen, and accessible-space requirements are recognized from
+  the drawing and retained when the plan reopens.
 
-**Room edit**
-- One layout workspace for size and walls; Inspect → Room opens that path
+### Cleaner professional workspace
 
-### Also in 1.2.x
+- One permanent activity rail for Files, Assets, Room, Stage, Seating, Show
+  Setup, Properties, and Calculate.
+- Browse, Place, Inspect, Setup, and Draw share one resizable dock rather than
+  repeatedly covering or shifting the plan.
+- Tool icons, text entry, light/dark contrast, plan orientation, and compact
+  window behavior received a full usability pass.
 
-**Show scale: 20-person rooms through concert floors**
-- New Plan quick starts and bundled show kits
-- Group / Ungroup; banquet / classroom layout recipes
+### Easier first install and sharing
 
-**Setup polish**
-- Room-first New Plan; autosave into Documents/Groundplan
-- Edit walls mode; atomic Save / Save As with `.bak` backups
+- A redesigned download page detects the visitor’s computer and offers one
+  primary installer, with a built-in Share action.
+- The macOS disk image includes the complete drag-to-Applications and one-time
+  Gatekeeper instructions in the installer window.
 
 ### Download page
 
-Open the [download guide](https://kxd21.github.io/groundplan/download/) for an
-OS-detected button and Gatekeeper / SmartScreen steps — or pick a file below.
+Share [kxd21.github.io/groundplan/download](https://kxd21.github.io/groundplan/download/)
+for an OS-detected installer button, or choose a file below.
 
 | Machine | File |
 | --- | --- |
@@ -46,7 +51,9 @@ OS-detected button and Gatekeeper / SmartScreen steps — or pick a file below.
 
 ### First open
 
-- **macOS:** if Gatekeeper blocks the app, right-click → Open → Open again (once). Builds are not Apple-notarised yet.
-- **Windows:** if SmartScreen appears, More info → Run anyway. Builds are not Authenticode-signed yet.
+- **macOS 15/26 and later:** open Groundplan once, click Done, then use
+  **System Settings → Privacy & Security → Open Anyway**.
+- **macOS 14 and earlier:** Control-click Groundplan → **Open** → **Open**.
+- **Windows:** SmartScreen → **More info** → **Run anyway**.
 
 Full instructions: [docs/installation.md](https://github.com/kxd21/groundplan/blob/main/docs/installation.md)

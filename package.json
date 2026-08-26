@@ -1,6 +1,6 @@
 {
   "name": "groundplan",
-  "version": "1.2.3",
+  "version": "1.3.0",
   "description": "Cross-platform editor for legacy Room Viewer event floor plans \u2014 runs on Windows, macOS, and Linux",
   "main": "out/main/index.js",
   "author": "Prince Thompson",
@@ -52,6 +52,7 @@
     "dist:mac:signed": "npm run build:starter-inventory && npm run build:dmg-background && npm run build && GROUNDPLAN_SIGNED=1 electron-builder --mac --config electron-builder.signed.yml --publish never",
     "verify:mac-signature": "bash tools/verify-mac-signature.sh",
     "build:dmg-background": "electron tools/make-dmg-background.cjs",
+    "preview:download": "electron tools/capture-download-page.cjs",
     "test:ui-hardcore": "node tools/run-ui-hardcore.mjs"
   },
   "dependencies": {
