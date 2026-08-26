@@ -236,6 +236,7 @@ import {
   comparePlanWith,
   planShowBrief,
   setShowBrief,
+  persistShowBrief,
   planCableSchedule,
   planLegend,
   planLoad,
@@ -5035,7 +5036,7 @@ app.whenReady().then(async () => {
 
   handle('plan:show-brief', () => (session ? planShowBrief() : null));
 
-  handle('plan:show-brief-set', (_event, patch: Record<string, unknown>) => {
+  handle('plan:show-brief-set', async (_event, patch: Record<string, unknown>) => {
     if (!session) return { ok: false, reason: 'no plan is open' };
     let brief: unknown = null;
     // The brief lives in the sidecar, so this is a companion write rather than
@@ -5051,6 +5052,9 @@ app.whenReady().then(async () => {
       // fails a strict census — same reasoning as plan:identity-set.
       { skipRoundTripVerify: true },
     );
+    // Straight to disk. The sidecar is the brief's only home, and waiting for
+    // a document save meant a brief typed at plan creation never reached it.
+    if (reply.ok) await persistShowBrief(session);
     return { ...reply, brief };
   });
 

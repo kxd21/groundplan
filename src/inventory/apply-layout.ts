@@ -68,6 +68,8 @@ export interface ApplyFullLayoutResult {
   stagesPlaced: number;
   created: number[];
   seating?: LayoutRecipeApplyResult['seating'];
+  /** Gear the recipe named that is not on the plan. Reported, never fatal. */
+  missingGear?: string[];
 }
 
 const CHAIR_NAME_RE = /chair|seat|stool|chiavari/i;
@@ -179,9 +181,13 @@ export function applyFullLayoutRecipe(
 
   const existingChairs = chairCount(session);
   if (existingChairs > 0 && !options.replaceExistingSeating) {
+    // Said in the user's terms, not the caller's. The old wording — "Pass
+    // replaceExistingSeating to rebuild seating" — reached a real toast on a
+    // freshly created plan and told the person at the keyboard to change an
+    // argument they have never heard of.
     return {
       ...empty,
-      reason: `plan already has ${existingChairs} chairs. Pass replaceExistingSeating to rebuild seating`,
+      reason: `This plan already has ${existingChairs.toLocaleString()} chairs. Clear the seating first, or choose Replace seating.`,
     };
   }
 
@@ -376,27 +382,29 @@ export function applyFullLayoutRecipe(
     session.refresh();
   }
 
+  /*
+   * Gear the recipe expected to see by name.
+   *
+   * This USED TO throw the whole apply away. A recipe naming four pieces of
+   * gear could place 664 chairs, two stages and every stair unit, and one
+   * unrecognised speaker rolled all of it back — the user clicked "Apply
+   * complete layout", waited two seconds, and got an empty room and a sentence
+   * about a Barco projector.
+   *
+   * It is a sanity check on the RECIPE, not a correctness gate on the user's
+   * plan. Everything that landed is real and wanted; what is missing is worth
+   * saying, and worth saying by name, but not worth destroying the rest of the
+   * work to say it.
+   */
+  const missingGear: string[] = [];
   if (includeGear) {
+    const onPlan = gearNamesOnPlan(session);
+    const lower = new Set([...onPlan].map((n) => n.toLowerCase()));
     for (const name of recipe.expectations.requireGearNames ?? []) {
-      if (![...gearNamesOnPlan(session)].some((n) => n === name || n.includes(name))) {
-        const onPlan = gearNamesOnPlan(session);
-        if (!onPlan.has(name)) {
-          const found = [...onPlan].some((n) => n.toLowerCase() === name.toLowerCase());
-          if (!found) {
-            return {
-              ...empty,
-              reason: `required gear “${name}” not found on plan after apply`,
-              chairsPlaced: seated.chairsPlaced,
-              gearPlaced,
-              labelsPlaced,
-              dimensionsPlaced,
-              stagesPlaced,
-              created,
-              seating: seated.seating,
-            };
-          }
-        }
-      }
+      const want = name.toLowerCase();
+      if (onPlan.has(name) || lower.has(want)) continue;
+      if ([...onPlan].some((n) => n.includes(name))) continue;
+      missingGear.push(name);
     }
   }
 
@@ -420,11 +428,17 @@ export function applyFullLayoutRecipe(
     includeGear ? `${gearPlaced} gear` : null,
     includeStage ? `${stagesPlaced} ${stagesPlaced === 1 ? 'stage' : 'stages'}` : null,
   ].filter(Boolean);
+  const shortfall = missingGear.length
+    ? ` · ${missingGear.length} item${missingGear.length === 1 ? '' : 's'} not placed: ${missingGear
+        .slice(0, 3)
+        .join(', ')}${missingGear.length > 3 ? '…' : ''}`
+    : '';
   return {
     ok: true,
+    missingGear: missingGear.length ? missingGear : undefined,
     status: fittedToRoom
-      ? `Applied kit · fitted to room · ${parts.join(' · ')}`
-      : `Applied kit · ${parts.join(' · ')}`,
+      ? `Applied kit · fitted to room · ${parts.join(' · ')}${shortfall}`
+      : `Applied kit · ${parts.join(' · ')}${shortfall}`,
     chairsPlaced: seated.chairsPlaced,
     gearPlaced,
     labelsPlaced,

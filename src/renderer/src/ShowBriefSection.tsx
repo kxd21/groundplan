@@ -399,7 +399,12 @@ export function ReviewCard({
               : spare > 0
                 ? ` · ${spare.toLocaleString()} spare`
                 : ` · ${(-spare).toLocaleString()} short`),
-      ok: seats.shortfall == null ? null : seats.shortfall <= 0,
+      // Green only when the count is actually right. Materially over is as
+      // wrong as under — see `assessReadiness`.
+      ok:
+        seats.shortfall == null || seats.target == null
+          ? null
+          : seats.shortfall <= 0 && !(spare! > 20 && spare! > seats.target * 0.1),
     });
 
     if (report.layoutLabel) out.push({ label: 'Layout', value: report.layoutLabel, ok: null });
@@ -407,10 +412,13 @@ export function ReviewCard({
     // Only report on things the brief actually asked for. A stage nobody
     // wanted is not a missing stage.
     if (report.stage.required != null) {
+      const undersized = report.issues.some((i) => i.id === 'stage-undersized');
       out.push({
         label: 'Stage',
-        value: report.stage.found ? 'On the drawing' : 'Not drawn',
-        ok: report.stage.found,
+        value: report.stage.found
+          ? (report.stage.sizeText ?? 'On the drawing')
+          : 'Not drawn',
+        ok: report.stage.found && !undersized,
       });
     }
     if (report.screens.required != null) {

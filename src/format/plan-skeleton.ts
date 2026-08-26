@@ -257,11 +257,27 @@ interface NameField {
  */
 const SETTINGS_NAME_TO_TABLE = 29;
 
-/** True when a length-prefixed string here looks like a name somebody typed. */
+/**
+ * True when a length-prefixed string here looks like a name somebody typed.
+ *
+ * The range includes the latin-1 letters, not just ASCII. It used to stop at
+ * `\x7e`, and the record is written in latin-1 — so naming a plan "Café Royal"
+ * or "Ünïcödé" put byte 0xe9 in the room-name field, this refused to see a name
+ * there, `locateSettingsNames` found nothing, and the blank-plan verifier
+ * rejected the file GROUNDPLAN HAD JUST BUILT with "the settings record does
+ * not hold the three names". A plan could not be created with an accented name
+ * at all, and the message blamed the plan's shape rather than the four letters
+ * the user typed. (An emoji was fine, because it is not representable in
+ * latin-1 and gets substituted to ASCII on the way in — so the failure hit
+ * French, German and Spanish venue names and spared the decorative ones.)
+ *
+ * Requiring at least one ASCII alphanumeric is what keeps the hunt honest: a
+ * run of high bytes that happens to sit in the record is still not a name.
+ */
 function plausibleName(block: Buffer, at: number): NameField | null {
   const c = readCString(block, at);
   if (!c || c.text.length < 2) return null;
-  if (!/^[\x20-\x7e]+$/.test(c.text) || !/[A-Za-z0-9]/.test(c.text)) return null;
+  if (!/^[\x20-\x7e\xa0-\xff]+$/.test(c.text) || !/[A-Za-z0-9]/.test(c.text)) return null;
   return { text: c.text, at, end: c.end };
 }
 

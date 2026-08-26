@@ -2853,9 +2853,17 @@ export function App() {
     }
   }, [doc]);
 
+  /*
+   * Re-read on every document revision, not just when the path changes.
+   *
+   * Keying on the path alone meant the panel kept a stale brief through every
+   * reload of the SAME file — reopening it, restoring a version, an edit made
+   * anywhere but this panel's own save — and went on measuring the drawing
+   * against a headcount the sidecar no longer held.
+   */
   useEffect(() => {
     void refreshBrief();
-  }, [refreshBrief, doc?.path]);
+  }, [refreshBrief, doc?.path, doc?.revision]);
 
   const saveShowBrief = useCallback(
     async (patch: Partial<ShowBrief>) => {
@@ -4583,18 +4591,65 @@ export function App() {
     const hasContent = inventory.length > 0;
     return {
       stage: inventory.some((item) => /\bstage\b|\briser\b|\bdeck\b/i.test(item.name)),
-      // Screens, projection and LED walls, so a brief that asked for A/V is
-      // checked against what is on the drawing rather than assumed.
-      screens: inventory.some((item) =>
-        /\bscreen\b|\bprojector\b|\bled\b|\bmonitor\b|\bdisplay\b|\bibeam\b/i.test(item.name),
-      ),
-      accessible: inventory.filter((item) => /\bada\b|accessible|wheelchair/i.test(item.name)).length,
+      // Sum the COUNTS, not the number of matching rows. `scene.inventory` is
+      // grouped by name, so eighteen wheelchair spaces are ONE row with a count
+      // of eighteen — `.length` reported 1, and the readiness check said the
+      // room was seventeen spaces short of a requirement it already met.
+      accessible: inventory
+        .filter((item) => /\bada\b|accessible|wheelchair/i.test(item.name))
+        .reduce((sum, item) => sum + item.count, 0),
       insert: hasContent,
       seating: furnitureCounts.chairs > 0,
       repeat: setupCompleted.repeat && hasContent,
       print: setupCompleted.print && hasContent,
     };
   }, [doc?.scene.inventory, furnitureCounts.chairs, setupCompleted.repeat, setupCompleted.print]);
+
+  /*
+   * Screens on the drawing, from the A/V engine rather than from an object's
+   * name.
+   *
+   * Matching inventory names against /screen|projector|led/ is the same
+   * guess-from-a-name trick the kit picker was rewritten to stop doing, and it
+   * failed the same way: a plan carrying eight "Barco 8100 (RV)" projectors
+   * reported no A/V at all, so a brief that asked for screens warned about
+   * screens that were right there. `avSummary` resolves real A/V items.
+   */
+  const [screenCount, setScreenCount] = useState(0);
+  /** The stage as drawn, so a brief that named a size can be checked against it. */
+  const [drawnStage, setDrawnStage] = useState<{
+    widthFt: number;
+    depthFt: number;
+    heightIn?: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!doc) {
+      setScreenCount(0);
+      return;
+    }
+    let live = true;
+    void api
+      .avSummary()
+      .then((summary) => {
+        if (live) setScreenCount(summary?.screens ?? 0);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [doc?.revision, doc?.path]);
+
+  /*
+   * One kit apply at a time.
+   *
+   * `kitsBusy` is state, so two clicks landing in the same React tick both read
+   * `false` and both start. Double-clicking Create plan did exactly that: the
+   * kit applied, then applied again onto its own output, and the second attempt
+   * failed the "this plan already has chairs" guard — so a brand-new show
+   * greeted its owner with an error about seating it had just placed.
+   */
+  const applyingKitRef = useRef(false);
 
   const applyShowKit = useCallback(
     async (
@@ -4607,10 +4662,12 @@ export function App() {
         includeGear?: boolean;
       },
     ) => {
+      if (applyingKitRef.current) return false;
       if (!options?.assumeOpen && !doc?.editable) {
         notify('Open an editable plan to apply a kit');
         return false;
       }
+      applyingKitRef.current = true;
       const includeSeating = options?.includeSeating !== false;
       const includeGear = options?.includeGear !== false;
       const includeStage = options?.includeStage !== false;
@@ -4626,7 +4683,10 @@ export function App() {
           confirmLabel: 'Replace seating',
           danger: true,
         });
-        if (ok !== true) return false;
+        if (ok !== true) {
+          applyingKitRef.current = false;
+          return false;
+        }
         replaceExistingSeating = true;
       } else if (chairs > 0 && includeSeating) {
         replaceExistingSeating = true;
@@ -4667,6 +4727,7 @@ export function App() {
         return false;
       } finally {
         setKitsBusy(false);
+        applyingKitRef.current = false;
       }
     },
     [doc, furnitureCounts.chairs, notify, showStatus],
@@ -4714,6 +4775,7 @@ export function App() {
       setPlanBackground(null);
       setRoomSizeText(null);
       setRoomCeilingHeight(0);
+      setDrawnStage(null);
       return;
     }
     if (view !== 'plan') {
@@ -4726,6 +4788,17 @@ export function App() {
       const c = model?.seatingStatus?.clearances;
       setPlanBackground(model?.background ?? null);
       setRoomSizeText(model?.room?.sizeText ?? null);
+      // The stage the brief is measured against — its drawn SIZE, not merely
+      // that one exists. See `assessReadiness`.
+      setDrawnStage(
+        model?.stage?.widthFt != null && model?.stage?.depthFt != null
+          ? {
+              widthFt: model.stage.widthFt,
+              depthFt: model.stage.depthFt,
+              heightIn: model.stage.heightIn,
+            }
+          : null,
+      );
       setRoomCeilingHeight(model?.room?.ceilingHeight ?? 0);
       setSeatingClearances(
         c
@@ -5344,6 +5417,15 @@ export function App() {
         open={buildStageOpen}
         units={unitSystem}
         origin={stageOrigin}
+        wanted={
+          showBrief?.stageRequired
+            ? {
+                widthFt: showBrief.stageWidthFt,
+                depthFt: showBrief.stageDepthFt,
+                heightIn: showBrief.stageHeightIn,
+              }
+            : null
+        }
         disabled={!doc?.editable}
         onClose={() => setBuildStageOpen(false)}
         onBuilt={(next, created) => {
@@ -8698,7 +8780,8 @@ export function App() {
           briefBusy={briefBusy}
           onSaveBrief={(patch) => void saveShowBrief(patch)}
           onOpenGear={() => runCommand('workspace.gear')}
-          hasScreens={setupState.screens}
+          hasScreens={screenCount > 0}
+          stageSize={drawnStage}
           accessibleSeats={setupState.accessible}
           revision={printRevision}
           drawnBy={printDrawnBy}

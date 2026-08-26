@@ -22,6 +22,7 @@ import {
   curveRoomWall,
   planShowBrief,
   setShowBrief,
+  persistShowBrief,
   dimensionOneWall,
   dimensionTheRoom,
   openPlanModel,
@@ -641,6 +642,73 @@ async function main(): Promise<void> {
     check('but the brief is kept', brief?.name === 'Stale Show', brief?.name);
     check('including its headcount', brief?.targetAttendance === 200, `${brief?.targetAttendance}`);
   }
+  console.log('\nthe brief reaches disk without waiting for a plan save\n');
+  {
+    /*
+     * New Plan autosaves the .rv4 and THEN writes the brief, so a brief that
+     * only lived in memory until the next document save was a brief the user
+     * lost by quitting — with an autosaved plan sitting on disk describing
+     * nothing. The sidecar is the brief's only home; it is written on the spot.
+     */
+    const session = await open();
+    commit(session, () => createRectangularRoom(session, 60 * F, 40 * F, 'imperial'));
+    const bytes = session.file();
+    writeFileSync(planPath, bytes);
+    session.markSaved(bytes, session.body());
+    await savePlanModel(planPath, session.body());
+
+    // Describe the show, and do NOT save the plan afterwards.
+    commit(session, () => setShowBrief(session, { name: 'Unsaved Show', targetAttendance: 300 }, 'imperial'));
+    await persistShowBrief(session);
+
+    const onDisk = JSON.parse(readFileSync(companionPathFor(planPath), 'utf8')) as Record<string, unknown>;
+    const written = onDisk.showBrief as { name?: string; targetAttendance?: number } | undefined;
+    check('the sidecar holds the brief already', written?.name === 'Unsaved Show', JSON.stringify(written));
+    check('with its headcount', written?.targetAttendance === 300, `${written?.targetAttendance}`);
+
+    // And a cold open — the state a crash or a force quit leaves behind — finds it.
+    resetPlanModel();
+    const cold = new Session(planPath, readFileSync(planPath));
+    await openPlanModel(planPath, cold.loaded.document, 'imperial');
+    check('and a cold reopen still has it', planShowBrief()?.name === 'Unsaved Show', planShowBrief()?.name);
+  }
+
+  console.log('\na brief on a plan whose room came off the drawing survives saving\n');
+  {
+    /*
+     * The sidecar is only written when it holds something authored. A room read
+     * off the drawing is not authored — it can be read again — so a plan whose
+     * ONLY authored thing is the brief used to write no sidecar at all, and the
+     * show's name, client, venue and headcount went in the bin on save with
+     * nothing to recover them from. Every other block here builds its room with
+     * `createRectangularRoom`, which marks the room authored and hid this.
+     */
+    resetPlanModel();
+    rmSync(companionPathFor(planPath), { force: true });
+    writeFileSync(planPath, fixturePlanBuffer({ walls: true }));
+    const session = new Session(planPath, readFileSync(planPath));
+    await openPlanModel(planPath, session.loaded.document, 'imperial');
+
+    const view = planModelView(session, 'imperial');
+    check('the room is derived from the drawing', view.companion.derived === true, String(view.companion.derived));
+
+    commit(session, () => setShowBrief(session, { name: 'Derived Room Show', client: 'Northwind', targetAttendance: 450 }, 'imperial'));
+    const bytes = session.file();
+    writeFileSync(planPath, bytes);
+    session.markSaved(bytes, session.body());
+    await savePlanModel(planPath, session.body());
+
+    check('the sidecar is written', existsSync(companionPathFor(planPath)));
+
+    resetPlanModel();
+    const reopened = new Session(planPath, readFileSync(planPath));
+    await openPlanModel(planPath, reopened.loaded.document, 'imperial');
+    const brief = planShowBrief();
+    check('the brief survives the save', brief?.name === 'Derived Room Show', brief?.name);
+    check('with its client', brief?.client === 'Northwind', brief?.client);
+    check('and its headcount', brief?.targetAttendance === 450, `${brief?.targetAttendance}`);
+  }
+
  } finally {
   rmSync(dir, { recursive: true, force: true });
  }

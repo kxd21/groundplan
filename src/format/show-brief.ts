@@ -227,6 +227,25 @@ export function parseShowBrief(input: unknown): ShowBrief | null {
   return brief;
 }
 
+/**
+ * The validator each field is held to, by name.
+ *
+ * `parseShowBrief` ran these when READING the sidecar and `patchShowBrief` ran
+ * none of them when writing, so the two disagreed: typing 999999999999 into
+ * target attendance stored it, the panel reported a shortfall of a trillion
+ * seats, and the number silently became 500,000 the next time the plan was
+ * opened. One set of rules, applied in both directions.
+ */
+const FIELD_RULES: Partial<Record<keyof ShowBrief, (value: unknown) => unknown>> = {
+  targetAttendance: (v) => count(v, 500_000),
+  accessibleSeats: (v) => count(v, 10_000),
+  stageWidthFt: (v) => decimal(v, 2000),
+  stageDepthFt: (v) => decimal(v, 2000),
+  stageHeightIn: (v) => decimal(v, 240),
+  minAisleIn: (v) => decimal(v, 600),
+  layoutType: (v) => parseLayoutType(v),
+};
+
 /** Applies a patch, dropping keys set to empty so a cleared field really clears. */
 export function patchShowBrief(current: ShowBrief | null, patch: Partial<ShowBrief>): ShowBrief {
   const base = current ?? emptyShowBrief();
@@ -246,6 +265,16 @@ export function patchShowBrief(current: ShowBrief | null, patch: Partial<ShowBri
     // accumulates empty strings that read as "said, and said nothing".
     if (raw === undefined || raw === null || raw === '') {
       delete next[key];
+      continue;
+    }
+    const rule = FIELD_RULES[key];
+    if (rule) {
+      // A value the field cannot mean clears it rather than being stored. A
+      // negative headcount, a stage two miles wide and the string "not a
+      // number" are all the same answer: nothing was said.
+      const checked = rule(raw);
+      if (checked === undefined) delete next[key];
+      else (next as unknown as Record<string, unknown>)[key] = checked;
       continue;
     }
     (next as unknown as Record<string, unknown>)[key] = raw;

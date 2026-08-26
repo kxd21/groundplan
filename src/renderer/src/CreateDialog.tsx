@@ -133,6 +133,8 @@ interface Props {
   briefBusy?: boolean;
   onSaveBrief?: (patch: Partial<ShowBrief>) => void | Promise<void>;
   hasScreens?: boolean;
+  /** The drawn stage's size, so a brief that named one can be checked. */
+  stageSize?: { widthFt: number; depthFt: number; heightIn?: number } | null;
   accessibleSeats?: number;
   revision?: string;
   drawnBy?: string;
@@ -218,6 +220,7 @@ export default function CreateDialog({
   briefBusy,
   onSaveBrief,
   hasScreens,
+  stageSize,
   accessibleSeats,
   revision,
   drawnBy,
@@ -349,6 +352,7 @@ export default function CreateDialog({
             briefBusy={briefBusy}
             onSaveBrief={onSaveBrief}
             hasScreens={hasScreens}
+            stageSize={stageSize}
             accessibleSeats={accessibleSeats}
             revision={revision}
             drawnBy={drawnBy}

@@ -22,8 +22,9 @@ import {
 import type { RVDocument } from '../format/rv.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../format/rv.js';
 import { indexDocument, type DocumentIndex } from '../format/edit.js';
-import { placeGear } from '../format/place.js';
+import { placeGear, placeFromLibrary } from '../format/place.js';
 import { importSymbol } from '../format/symbol.js';
+import { readLibrary } from '../format/library.js';
 import { readFileSync } from 'node:fs';
 import { loadBuffer } from '../format/index.js';
 import { createLabel, createDimension } from '../format/annotate.js';
@@ -451,23 +452,43 @@ export function applyLayoutRecipeGear(
     // box. The rebuild of a 2,234-seat show came out with 2,395 furniture
     // primitives against the original's 6,941, and the difference was almost
     // entirely symbols that were never brought across.
-    const placed =
-      symbol && loadSymbolSource(symbol.path)
-        ? importSymbol(
+    //
+    // WHICH route depends on what the source holds. A shape LIBRARY keeps its
+    // definitions as typed roots — `RVAVItem`, `RVChair` — whose name lives in
+    // a record beside the object rather than in a label inside it. Copying one
+    // across with `importSymbol` brings the drawing and loses the identity: it
+    // lands as an `RVAVItem` with no labels, and every consumer that reads the
+    // plan by walking named `RVShape`s — the schedule, the pull sheet, the
+    // report, the gear allocation — cannot see it.
+    //
+    // That is not theoretical. "Speaker" and "Podium/Lectern" resolve to a
+    // `.stk` library, so applying the arena kit placed both, counted neither,
+    // failed its own `requireGearNames` check, and rolled the WHOLE layout
+    // back — 664 chairs and a stage discarded because two speakers were
+    // invisible to the schedule. `placeFromLibrary` rebuilds the outline as a
+    // proper named placement, which is what every other object on the plan is.
+    const source = symbol ? loadSymbolSource(symbol.path) : null;
+    const fromLibrary =
+      source != null &&
+      readLibrary(source).some((e) => e.name.trim().toLowerCase() === symbol!.name.trim().toLowerCase());
+
+    const placed = !source
+      ? placeGear(doc, live, name, g.xFt * UNITS_PER_FOOT, g.yFt * UNITS_PER_FOOT, known)
+      : fromLibrary
+        ? placeFromLibrary(
             doc,
-            live,
-            loadSymbolSource(symbol.path)!,
-            symbol.name,
+            source,
+            symbol!.name,
             g.xFt * UNITS_PER_FOOT,
             g.yFt * UNITS_PER_FOOT,
           )
-        : placeGear(
+        : importSymbol(
             doc,
             live,
-            name,
+            source,
+            symbol!.name,
             g.xFt * UNITS_PER_FOOT,
             g.yFt * UNITS_PER_FOOT,
-            known,
           );
     if (!placed.ok) {
       return { ok: false, reason: placed.reason ?? `failed to place ${name}`, gearPlaced };

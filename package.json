@@ -51,7 +51,8 @@
     "gear:harvest": "tsx tools/harvest-plan-symbols.ts",
     "dist:mac:signed": "npm run build:starter-inventory && npm run build:dmg-background && npm run build && GROUNDPLAN_SIGNED=1 electron-builder --mac --config electron-builder.signed.yml --publish never",
     "verify:mac-signature": "bash tools/verify-mac-signature.sh",
-    "build:dmg-background": "electron tools/make-dmg-background.cjs"
+    "build:dmg-background": "electron tools/make-dmg-background.cjs",
+    "test:ui-hardcore": "node tools/run-ui-hardcore.mjs"
   },
   "dependencies": {
     "cfb": "^1.2.2",

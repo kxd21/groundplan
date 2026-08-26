@@ -243,6 +243,12 @@ export async function savePlanModel(planPath: string, body: Buffer): Promise<voi
     !state.derived ||
     !!companion.background ||
     !!companion.stage ||
+    // The brief is authored, not derived. Without this line a plan whose room
+    // was read off the drawing — which is every plan started with "Draw
+    // custom" — wrote no sidecar at all, so a show somebody had described in
+    // full lost its name, client, venue and headcount on the next save with no
+    // warning and nothing in the file to recover it from.
+    !!companion.showBrief ||
     companion.overrides.length > 0 ||
     companion.library.length > 0;
   if (!worthKeeping) return;
@@ -481,7 +487,15 @@ export interface PlanModelView {
     chairs: number;
     tables: number;
   } | null;
-  stage: { present: boolean; buildList: Array<{ item: string; quantity: number; detail?: string }>; warnings: string[] } | null;
+  stage: {
+    present: boolean;
+    buildList: Array<{ item: string; quantity: number; detail?: string }>;
+    warnings: string[];
+    /** The largest level's footprint and the highest surface, for the brief. */
+    widthFt?: number;
+    depthFt?: number;
+    heightIn?: number;
+  } | null;
 }
 
 const STYLE_LABELS: Record<SeatingStyle, string> = {
@@ -624,8 +638,32 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
             present: true,
             buildList: stageBuildList(state.stage, stageSolution),
             warnings: [...stageSolution.notes, ...stageWarnings(state.stage)],
+            // The biggest level is the deck somebody means when they say "the
+            // stage is forty by twenty-four", and the highest surface is the
+            // number the brief asks for. Reported so the readiness check can
+            // compare what was ASKED for against what is drawn — a plan with a
+            // 12ft riser on it satisfies "a stage exists" and satisfies nothing
+            // a general session needs.
+            ...stageExtent(state.stage),
           }
         : null,
+  };
+}
+
+/** The drawn stage's headline dimensions, in the units a brief is written in. */
+function stageExtent(build: StageBuild): { widthFt?: number; depthFt?: number; heightIn?: number } {
+  let best: { width: number; depth: number } | null = null;
+  let highest = 0;
+  for (const level of build.levels) {
+    const area = level.width * level.depth;
+    if (!best || area > best.width * best.depth) best = { width: level.width, depth: level.depth };
+    if (level.height > highest) highest = level.height;
+  }
+  if (!best) return {};
+  return {
+    widthFt: Math.round((best.width / UNITS_PER_FOOT) * 10) / 10,
+    depthFt: Math.round((best.depth / UNITS_PER_FOOT) * 10) / 10,
+    heightIn: Math.round(highest / UNITS_PER_INCH),
   };
 }
 
@@ -2088,6 +2126,32 @@ export function setShowBrief(
   }
 
   return { ok: true, brief: next };
+}
+
+/**
+ * Flushes the brief to the sidecar now, without waiting for a plan save.
+ *
+ * The brief is sidecar data — the .rv4 does not hold it — and every other
+ * sidecar-only write in this file (`updatePlanBackground`) persists on the
+ * spot for the same reason. Leaving it in memory until somebody saves the
+ * document meant a brief typed into New Plan lived only in RAM: the plan was
+ * autosaved BEFORE the brief was written, so a force quit, a crash, or simply
+ * closing without saving left an autosaved plan on disk with no record of the
+ * show at all, and nothing to warn the user it had gone.
+ *
+ * Fingerprints the last body that reached disk, never the dirty in-memory one,
+ * so a brief-only write cannot claim the sidecar matches unsaved geometry.
+ */
+export async function persistShowBrief(session: Session): Promise<void> {
+  if (!state.companion?.showBrief) return;
+  state.companion.roomIsDerived = state.derived;
+  try {
+    await saveCompanion(session.path, session.savedArchiveBody(), state.companion);
+    state.freshness = 'fresh';
+  } catch {
+    // A sidecar that cannot be written must not fail the edit — the brief is
+    // still in memory and the next save will try again.
+  }
 }
 
 /**

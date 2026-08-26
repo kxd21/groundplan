@@ -31,6 +31,15 @@ interface Props {
   open: boolean;
   units: UnitSystem;
   origin: { x: number; y: number };
+  /**
+   * The stage the brief asked for, in feet and inches.
+   *
+   * A planner who wrote "40 × 24, 24 inches" into the Show Brief should not
+   * then type it a second time here — and the readiness check that sent them
+   * to this dialog is comparing against exactly these numbers, so opening on
+   * the house default guaranteed the warning came back.
+   */
+  wanted?: { widthFt?: number; depthFt?: number; heightIn?: number } | null;
   disabled?: boolean;
   onClose: () => void;
   onBuilt: (doc?: unknown, created?: number[]) => void;
@@ -42,6 +51,7 @@ export default function BuildStageDialog({
   open,
   units,
   origin,
+  wanted,
   disabled,
   onClose,
   onBuilt,
@@ -64,14 +74,15 @@ export default function BuildStageDialog({
     // Resetting to house-42 on every open made custom W×D×H easy to miss.
     setPreset('4x8');
     setTiered(false);
-    setWidthText(formatLength(24 * UNITS_PER_FOOT, units));
-    setDepthText(formatLength(16 * UNITS_PER_FOOT, units));
-    setHeightText(formatLength(24 * UNITS_PER_INCH, units));
+    // The brief wins where it has an answer; the house default fills the rest.
+    setWidthText(formatLength((wanted?.widthFt ?? 24) * UNITS_PER_FOOT, units));
+    setDepthText(formatLength((wanted?.depthFt ?? 16) * UNITS_PER_FOOT, units));
+    setHeightText(formatLength((wanted?.heightIn ?? 24) * UNITS_PER_INCH, units));
     setBackDepthText(formatLength(8 * UNITS_PER_FOOT, units));
     setBackHeightText(formatLength(24 * UNITS_PER_INCH, units));
     setStairs('front');
     setBusy(false);
-  }, [open, units]);
+  }, [open, units, wanted?.widthFt, wanted?.depthFt, wanted?.heightIn]);
 
   const isCircular = preset === 'circ';
 

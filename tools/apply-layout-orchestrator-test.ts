@@ -71,6 +71,56 @@ async function main(): Promise<void> {
     const exported = exportLayoutRecipe(session.loaded.document);
     check('export is recipe', isLayoutRecipe(exported));
     check('export chair total > 0', exported.expectations.chairs > 0, String(exported.expectations.chairs));
+
+    /*
+     * A recipe naming gear the plan does not end up with must not throw the
+     * layout away.
+     *
+     * It used to: `requireGearNames` was checked after everything was placed
+     * and any miss returned a failure, which the caller rolls back — so a live
+     * kit that landed 2,234 chairs, two stages and 127 pieces of gear was
+     * discarded whole because one speaker was not named the way the schedule
+     * names it. The check is a sanity check on the recipe. It reports; it does
+     * not destroy.
+     */
+    const out2 = join(dir, 'card-party-missing-gear.rv4');
+    const blank2 = createBlankPlan(recipeBlankPlanArgs(raw));
+    writeFileSync(out2, blank2.file!);
+    resetPlanModel();
+    const s2 = new Session(out2, readFileSync(out2));
+    await openPlanModel(out2, s2.loaded.document, 'imperial');
+    s2.checkpoint();
+    // The item exists in the catalogue — so the recipe still passes pre-flight
+    // validation — but the recipe never places it, so it cannot be on the plan
+    // afterwards. That is exactly the shape of the real failure: gear that
+    // resolves but does not end up named on the drawing.
+    const inv2 = emptyInventory();
+    mergeItems(inv2, recipeCatalogueStub(raw));
+    mergeItems(inv2, [{ name: 'Ghost Widget 9000', width: 120, height: 120 }]);
+    const withGhost = {
+      ...raw,
+      expectations: {
+        ...raw.expectations,
+        requireGearNames: [...(raw.expectations.requireGearNames ?? []), 'Ghost Widget 9000'],
+      },
+    };
+    const applied2 = applyFullLayoutRecipe(s2, withGhost, {
+      inventory: inv2,
+      replaceExistingSeating: true,
+      forceRoom: true,
+    });
+    check('a missing required item does not fail the apply', applied2.ok, applied2.reason);
+    check('and the chairs are still there', applied2.chairsPlaced === 2234, String(applied2.chairsPlaced));
+    check(
+      'and the miss is reported by name',
+      (applied2.missingGear ?? []).includes('Ghost Widget 9000'),
+      JSON.stringify(applied2.missingGear),
+    );
+    check(
+      'in the status line the user sees',
+      /Ghost Widget 9000/.test(applied2.status ?? ''),
+      applied2.status,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

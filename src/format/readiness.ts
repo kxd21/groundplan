@@ -64,7 +64,7 @@ export interface ReadinessReport {
   issues: ReadinessIssue[];
   seats: SeatCheck;
   /** Requested vs found, for the summary rows. */
-  stage: { required: boolean | undefined; found: boolean };
+  stage: { required: boolean | undefined; found: boolean; sizeText?: string };
   screens: { required: boolean | undefined; found: boolean };
   tables: { required: boolean | undefined; found: boolean };
   accessible: { required: number | undefined; found: number };
@@ -82,6 +82,8 @@ export interface PlanFacts {
   tables: number;
   /** A stage, riser or deck is on the drawing. */
   hasStage: boolean;
+  /** The drawn stage's headline size, when there is one. */
+  stageSize?: { widthFt?: number; depthFt?: number; heightIn?: number };
   /** A screen, projector or LED wall is on the drawing. */
   hasScreens: boolean;
   /** Placements tagged as accessible / wheelchair spaces. */
@@ -114,7 +116,13 @@ export function assessReadiness(
     shortfall: target == null ? null : target - facts.seats,
   };
 
-  const stage = { required: brief?.stageRequired, found: facts.hasStage };
+  const stage: ReadinessReport['stage'] = {
+    required: brief?.stageRequired,
+    found: facts.hasStage,
+    ...(facts.stageSize?.widthFt && facts.stageSize?.depthFt
+      ? { sizeText: `${facts.stageSize.widthFt}′ × ${facts.stageSize.depthFt}′` }
+      : {}),
+  };
   const screens = { required: brief?.screensRequired, found: facts.hasScreens };
   const tables = { required: brief?.tablesRequired, found: facts.tables > 0 };
   const accessible = { required: brief?.accessibleSeats, found: facts.accessibleSeats };
@@ -156,6 +164,30 @@ export function assessReadiness(
     });
   }
 
+  /*
+   * Too many seats is a problem too.
+   *
+   * "At least the target" was the whole test, so a 900-person show that landed
+   * a 2,234-seat kit reported "Everything the brief asked for is on the
+   * drawing" — with 1,334 chairs nobody ordered, the aisles they ate, and an
+   * occupant load the fire marshal will read off the drawing rather than off
+   * the brief. A few spare is normal and is not worth a word; a room set for
+   * two and a half times the guest list is not a rounding error.
+   */
+  if (seats.shortfall != null && target != null) {
+    const spare = -seats.shortfall;
+    if (spare > 20 && spare > target * 0.1) {
+      issues.push({
+        id: 'seats-excess',
+        severity: 'warning',
+        title: `${spare.toLocaleString()} more seats than the show needs`,
+        detail: `${facts.seats.toLocaleString()} drawn for ${target.toLocaleString()}. Chairs nobody ordered take the aisles and change the occupant load.`,
+        target: 'seating',
+        action: 'Open seating',
+      });
+    }
+  }
+
   if (stage.required === true && !stage.found) {
     issues.push({
       id: 'stage-missing',
@@ -164,6 +196,37 @@ export function assessReadiness(
       target: 'stage',
       action: 'Build a stage',
     });
+  }
+
+  /*
+   * A stage that exists but is the wrong stage.
+   *
+   * The brief collects a width, a depth and a height and used to do nothing
+   * with any of them: a general session that asked for 40′ × 24′ and got a
+   * 12′ × 5′ riser reported "Stage: on the drawing" and moved on. The riser
+   * satisfies "a stage exists" and satisfies nothing the show needs.
+   *
+   * The tolerance is 10% on each dimension, and only a stage that is too SMALL
+   * is worth a warning — a deck bigger than asked for is a decision somebody
+   * made on purpose, not an error.
+   */
+  if (stage.required === true && stage.found && facts.stageSize) {
+    const wantW = brief?.stageWidthFt;
+    const wantD = brief?.stageDepthFt;
+    const gotW = facts.stageSize.widthFt;
+    const gotD = facts.stageSize.depthFt;
+    const shortW = wantW != null && gotW != null && gotW < wantW * 0.9;
+    const shortD = wantD != null && gotD != null && gotD < wantD * 0.9;
+    if (shortW || shortD) {
+      issues.push({
+        id: 'stage-undersized',
+        severity: 'warning',
+        title: 'The stage on the drawing is smaller than the brief asked for',
+        detail: `${gotW ?? '?'}′ × ${gotD ?? '?'}′ drawn, ${wantW ?? '?'}′ × ${wantD ?? '?'}′ asked for.`,
+        target: 'stage',
+        action: 'Open stage',
+      });
+    }
   }
 
   if (screens.required === true && !screens.found) {

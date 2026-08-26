@@ -276,6 +276,122 @@ console.log('\nreadiness: a plan that meets the brief is ready');
   check('spare capacity reads as a negative shortfall', report.seats.shortfall === -50, `${report.seats.shortfall}`);
   check('and it says so plainly', /Everything/.test(describeReadiness(report)), describeReadiness(report));
 
+  /*
+   * Materially over the target is a warning, not a pass.
+   *
+   * "At least the target" was the whole seat test, so a 900-person show that
+   * landed a 2,234-seat kit read "Everything the brief asked for is on the
+   * drawing" — with 1,334 chairs nobody ordered and the occupant load a fire
+   * marshal reads off the drawing rather than off the brief.
+   */
+  const overSeated = assessReadiness(brief, { ...good, seats: 2234 });
+  check('a 2.6x over-seated room is not ready', overSeated.level === 'attention', overSeated.level);
+  const excess = overSeated.issues.find((i) => i.id === 'seats-excess');
+  check('and it names the excess', !!excess, overSeated.issues.map((i) => i.id).join(', '));
+  check('by how many', /1,384/.test(excess?.title ?? ''), excess?.title);
+  check('pointing at seating', excess?.target === 'seating', excess?.target);
+
+  // A handful spare is normal and must not nag. 50 over 850 is under the 10%
+  // that would make it worth a word — the `good` case above already proves it
+  // stays ready; this proves the boundary is about proportion, not a fixed
+  // number, by keeping the same 50 against a much smaller show.
+  const smallShow = assessReadiness(
+    { ...brief, targetAttendance: 100 },
+    { ...good, seats: 150 },
+  );
+  check(
+    'the same 50 spare on a 100-person show IS worth saying',
+    smallShow.issues.some((i) => i.id === 'seats-excess'),
+    smallShow.issues.map((i) => i.id).join(', '),
+  );
+  const barelyOver = assessReadiness(brief, { ...good, seats: 865 });
+  check(
+    'fifteen spare is left alone',
+    !barelyOver.issues.some((i) => i.id === 'seats-excess'),
+    barelyOver.issues.map((i) => i.id).join(', '),
+  );
+
+  /*
+   * A stage that exists but is not the stage that was asked for.
+   *
+   * The brief takes a width, a depth and a height and used to do nothing with
+   * any of them, so a general session that asked for 40′ × 24′ and got a
+   * 12′ × 5′ riser reported "Stage: on the drawing" and called itself ready.
+   */
+  const smallStage = assessReadiness(
+    { ...brief, stageRequired: true, stageWidthFt: 40, stageDepthFt: 24 },
+    { ...good, stageSize: { widthFt: 12, depthFt: 5 } },
+  );
+  check(
+    'a riser does not satisfy a forty-by-twenty-four stage',
+    smallStage.issues.some((i) => i.id === 'stage-undersized'),
+    smallStage.issues.map((i) => i.id).join(', '),
+  );
+  check(
+    'and it says both numbers',
+    /12.*5.*40.*24/s.test(smallStage.issues.find((i) => i.id === 'stage-undersized')?.detail ?? ''),
+    smallStage.issues.find((i) => i.id === 'stage-undersized')?.detail,
+  );
+  const rightStage = assessReadiness(
+    { ...brief, stageRequired: true, stageWidthFt: 40, stageDepthFt: 24 },
+    { ...good, stageSize: { widthFt: 40, depthFt: 24 } },
+  );
+  check(
+    'the stage it asked for passes',
+    !rightStage.issues.some((i) => i.id === 'stage-undersized'),
+    rightStage.issues.map((i) => i.id).join(', '),
+  );
+  const biggerStage = assessReadiness(
+    { ...brief, stageRequired: true, stageWidthFt: 40, stageDepthFt: 24 },
+    { ...good, stageSize: { widthFt: 48, depthFt: 32 } },
+  );
+  check(
+    'and a bigger deck is a decision, not an error',
+    !biggerStage.issues.some((i) => i.id === 'stage-undersized'),
+    biggerStage.issues.map((i) => i.id).join(', '),
+  );
+  const unmeasured = assessReadiness(
+    { ...brief, stageRequired: true, stageWidthFt: 40, stageDepthFt: 24 },
+    good,
+  );
+  check(
+    'a stage whose size is unknown is not accused of being small',
+    !unmeasured.issues.some((i) => i.id === 'stage-undersized'),
+    unmeasured.issues.map((i) => i.id).join(', '),
+  );
+
+  /*
+   * Writing is held to the same rules as reading.
+   *
+   * `parseShowBrief` clamped and `patchShowBrief` did not, so the two
+   * disagreed about the same brief: a target attendance of 999,999,999,999
+   * was stored and shown, the panel reported a shortfall of a trillion seats,
+   * and the number quietly became 500,000 the next time the plan opened.
+   */
+  {
+    const junk = patchShowBrief(emptyShowBrief('Junk'), {
+      targetAttendance: 999_999_999_999,
+      accessibleSeats: -5,
+      stageWidthFt: 0,
+      minAisleIn: Number.POSITIVE_INFINITY,
+      layoutType: 'not-a-layout' as never,
+    });
+    check('an absurd headcount is clamped on the way in', junk.targetAttendance === 500_000, `${junk.targetAttendance}`);
+    check('a negative accessible count clears the field', junk.accessibleSeats === undefined, `${junk.accessibleSeats}`);
+    check('a zero stage width clears it', junk.stageWidthFt === undefined, `${junk.stageWidthFt}`);
+    check('an infinite aisle clears it', junk.minAisleIn === undefined, `${junk.minAisleIn}`);
+    check('an unknown layout type clears it', junk.layoutType === undefined, `${junk.layoutType}`);
+    check('and the name it was given survives', junk.name === 'Junk', junk.name);
+
+    // What is written is what is read back — no drift across a round trip.
+    const round = parseShowBrief(JSON.parse(JSON.stringify(junk)));
+    check(
+      'a patched brief round-trips unchanged',
+      JSON.stringify({ ...round, updatedAt: '' }) === JSON.stringify({ ...junk, updatedAt: '' }),
+      JSON.stringify(round),
+    );
+  }
+
   // Removing the stage must move it straight back to attention.
   const noStage = assessReadiness(brief, { ...good, hasStage: false });
   check('taking the stage away drops it to attention', noStage.level === 'attention');

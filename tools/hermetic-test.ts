@@ -35,6 +35,7 @@ import {
   snapshotPlanSelection,
 } from '../src/format/plan-clipboard.js';
 import { createBlankPlan } from '../src/format/blank.js';
+import { planDefaults, verifyPlanShape } from '../src/format/plan-skeleton.js';
 import { isLibrary, readLibrary } from '../src/format/library.js';
 import { GRADE, MIN_STROKE_POINTS, pointsToUnits, resolveStyle } from '../src/format/style.js';
 import { buildSchedule, entryKey, scheduleSummaryCsv, scheduleToCsv } from '../src/format/schedule.js';
@@ -812,6 +813,44 @@ async function main(): Promise<void> {
       'an open run is not filled even on a deck',
       !resolveStyle({ ...deck, pts: [0, 0, 100, 0, 100, 100] }).fill,
     );
+  }
+
+  /*
+   * A plan can be named after the venue it is for.
+   *
+   * The settings record is latin-1 and the name-hunting predicate was ASCII, so
+   * "Café Royal" wrote byte 0xe9 into the room-name field, the reader refused
+   * to see a name there, and `verifyPlanShape` rejected the file Groundplan had
+   * just built — with "the settings record does not hold the three names",
+   * which blames the plan's shape rather than the four letters somebody typed.
+   * An emoji was fine: it is not representable in latin-1 and gets substituted
+   * on the way in, so the failure hit French, German and Spanish venue names
+   * and spared the decorative ones.
+   */
+  {
+    for (const name of [
+      'Plain ASCII Show',
+      'Café Royal',
+      'Ünïcödé Röbotics',
+      'Salón de Baile',
+      'Hall 1E — East',
+      '“Quoted” Show',
+    ]) {
+      const built = createBlankPlan({ roomName: name, room: { width: 60 * 120, depth: 40 * 120 } });
+      check(`a plan can be named “${name}”`, Boolean(built.ok && built.file), built.reason);
+      if (built.ok && built.file) {
+        const reopened = loadBuffer(built.file, `${name}.rv4`).document;
+        check(
+          `  and “${name}” verifies as a Room Viewer plan`,
+          verifyPlanShape(reopened).ok,
+          verifyPlanShape(reopened).reason,
+        );
+        check(
+          `  and its three names are readable`,
+          planDefaults(reopened) != null,
+        );
+      }
+    }
   }
 
   console.log(`${checks - failures}/${checks} hermetic checks passed`);

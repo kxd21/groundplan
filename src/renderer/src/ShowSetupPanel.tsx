@@ -101,6 +101,8 @@ interface Props {
 
   /* Plan facts the readiness check needs beyond seats and tables. --------- */
   hasScreens?: boolean;
+  /** The drawn stage's size, so a brief that named one can be checked. */
+  stageSize?: { widthFt: number; depthFt: number; heightIn?: number } | null;
   accessibleSeats?: number;
 
   /* Title block, edited where the sheet is issued. ------------------------ */
@@ -157,6 +159,7 @@ export default function ShowSetupPanel({
   chairCount = 0,
   tableCount = 0,
   hasScreens = false,
+  stageSize = null,
   accessibleSeats = 0,
   revision = '',
   drawnBy = '',
@@ -204,13 +207,14 @@ export default function ShowSetupPanel({
         seats: chairCount,
         tables: tableCount,
         hasStage: completed.stage === true,
+        ...(stageSize ? { stageSize } : {}),
         hasScreens,
         accessibleSeats,
         ...(allocationSummary
           ? { gearShort: allocationSummary.short, gearUntracked: allocationSummary.untracked }
           : {}),
       }),
-    [brief, hasRoom, chairCount, tableCount, completed.stage, hasScreens, accessibleSeats, allocationSummary],
+    [brief, hasRoom, chairCount, tableCount, completed.stage, stageSize, hasScreens, accessibleSeats, allocationSummary],
   );
 
   /** Every warning goes somewhere. A warning with no route is a complaint. */

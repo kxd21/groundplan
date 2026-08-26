@@ -320,6 +320,8 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [name, setName] = useState('Untitled plan');
   /** The last name this dialog set itself, so a name the USER typed is kept. */
   const nameFollowRef = useRef('Untitled plan');
+  /** True while a creation is in flight — see `create`. */
+  const creatingRef = useRef(false);
 
   const [shape, setShape] = useState<RoomChoice>('rectangle');
   const [width, setWidth] = useState(() => formatLength(60 * FT, units));
@@ -467,8 +469,21 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     openBackground?: boolean;
     ceilingHeight?: number;
   }) => {
+    /*
+     * One creation at a time.
+     *
+     * `busy` is state, and the button's `disabled={busy}` only takes effect on
+     * the next render — so two clicks in one tick both got through and both
+     * called `api.newPlan`. The two raced over the same session: one of them
+     * came back `cancelled`, `create` returned silently, and the wizard sat on
+     * the review step with a live Create button and no plan, no message, and
+     * nothing to say what had happened. A ref is read and written in the same
+     * tick, which is what this needs.
+     */
+    if (creatingRef.current) return;
     const usingCustom = override?.custom != null || (override?.room == null && customRoom);
     if (!override && !roomReady) return;
+    creatingRef.current = true;
     setBusy(true);
     try {
       const customPrefs: CustomRoomPrefs | undefined = override?.custom
@@ -509,7 +524,12 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           );
         }),
       ]);
-      if ('cancelled' in reply && reply.cancelled) return;
+      if ('cancelled' in reply && reply.cancelled) {
+        // Not an error — the user backed out of a system dialog — but the
+        // wizard must not look like it did something.
+        onError('The plan was not created. Try again.');
+        return;
+      }
       if (!reply.ok || !('doc' in reply) || !reply.doc) {
         onError(reply.reason ?? 'the plan could not be created');
         return;
@@ -535,6 +555,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         ...(Object.keys(brief).length ? { brief } : {}),
       });
     } finally {
+      creatingRef.current = false;
       setBusy(false);
     }
   };
