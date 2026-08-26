@@ -101,7 +101,7 @@ export const COMMAND_LIST: CommandListEntry[] = [
   { id: 'mode.browse', title: 'Files', section: 'Workspace', shortcut: '⌘B' },
   { id: 'mode.place', title: 'Assets', section: 'Workspace' },
   { id: 'mode.inspect', title: 'Properties', section: 'Workspace', shortcut: '⌘⇧B' },
-  { id: 'mode.setup', title: 'Layout library', section: 'Workspace' },
+  { id: 'mode.setup', title: 'Show Setup', section: 'Workspace' },
   { id: 'mode.draw', title: 'All canvas tools', section: 'Workspace' },
   { id: 'mode.none', title: 'Hide side panels', section: 'Mode' },
   { id: 'view.fit', title: 'Zoom to fit', section: 'View', shortcut: '0' },

@@ -144,10 +144,12 @@ export const COMMAND_CATALOG: CommandDef[] = [
   },
   {
     id: 'mode.setup',
-    title: 'Layout library',
-    subtitle: 'Room-fitted kits, custom generators, and output',
+    title: 'Show Setup',
+    subtitle: 'The brief, the room, the layout, and what the plan still needs',
     section: 'Workspace',
-    keywords: ['create', 'layout', 'kit'],
+    // "layout" and "kit" stay searchable: the panel still does both, and
+    // somebody who learned the old name should still find it.
+    keywords: ['create', 'layout', 'kit', 'brief', 'show', 'readiness'],
     when: (c) => c.workspace === 'plan' && c.hasDoc,
   },
   {
