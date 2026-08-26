@@ -25,7 +25,10 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Typecheck, hermetic tests, and build
-        run: npm run check
+        # Electron needs a display for the real UI/contrast gate. GitHub's
+        # Ubuntu image includes Xvfb; without it the app waits 90 seconds for
+        # CDP and every otherwise-good release is blocked before packaging.
+        run: xvfb-run -a npm run check
       - name: Release dependency audit
         run: npm run audit:release
 
