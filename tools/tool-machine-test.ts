@@ -254,6 +254,55 @@ const misPaired = (pairs: Pair[]): Pair[] =>
   );
 }
 
+/*
+ * A cable run is one of several; a room is drawn once.
+ *
+ * Every other tool in the application stays in hand after it is used. Paths did
+ * not, which is right for a room — a plan has one — and wrong for cable, where
+ * a show has a power run and a signal run and usually several of each. Placing
+ * a run sent the user back to the rail before they could place the next one.
+ */
+{
+  const drawRun = (state: ToolState) => {
+    let s = state;
+    const effects: string[] = [];
+    for (const at of [clickAt(0), clickAt(1), clickAt(2)]) {
+      const r = reduce(s, { type: 'click', at });
+      s = r.state;
+      if (r.effect) effects.push(r.effect.do);
+    }
+    const finished = reduce(s, { type: 'finish' });
+    s = finished.state;
+    if (finished.effect) effects.push(finished.effect.do);
+    return { state: reduce(s, { type: 'settled', epoch: s.epoch, ok: true }).state, effects };
+  };
+
+  const first = drawRun(reduce(initialToolState(EDITABLE), { type: 'pick', choice: powerCableChoice }).state);
+  check('a cable run places', first.effects.includes('placeCable'), first.effects.join(', '));
+  check(
+    'and the cable tool is still in hand afterwards',
+    first.state.tool.kind === 'path',
+    first.state.tool.kind,
+  );
+  check(
+    'holding no corners from the run just placed',
+    first.state.tool.kind === 'path' && first.state.tool.points.length === 0 && !first.state.tool.closing,
+  );
+  const second = drawRun(first.state);
+  check('so a second run can be drawn without re-picking', second.effects.includes('placeCable'), second.effects.join(', '));
+
+  // A room is the other way round: one per plan, so the tool goes down.
+  const room = play(initialToolState(EDITABLE), [
+    { type: 'pick', choice: roomOutlineChoice },
+    { type: 'click', at: clickAt(0) },
+    { type: 'click', at: clickAt(1) },
+    { type: 'click', at: clickAt(2) },
+    { type: 'finish' },
+  ]);
+  const settledRoom = reduce(room.state, { type: 'settled', epoch: room.state.epoch, ok: true }).state;
+  check('a finished room puts its tool down', settledRoom.tool.kind === 'select', settledRoom.tool.kind);
+}
+
 {
   const twoCorners = play(initialToolState(EDITABLE), [
     { type: 'pick', choice: roomOutlineChoice },

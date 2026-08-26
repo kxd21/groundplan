@@ -11,7 +11,13 @@
  * which is a different position entirely.
  */
 
-import { applySnap, boundsOfMany, type Bounds } from '../src/renderer/src/snap.js';
+import {
+  applySnap,
+  boundsOfMany,
+  constrainSpanEnd,
+  spanConstraintFor,
+  type Bounds,
+} from '../src/renderer/src/snap.js';
 
 let passed = 0;
 let failed = 0;
@@ -194,6 +200,54 @@ console.log('\ngrid snapping is the fallback, not the winner');
     `centre at ${centre}`,
   );
   check('and no guide is drawn', snapped.guides.x === undefined);
+}
+
+/*
+ * Shift regularises a span.
+ *
+ * The constraint step ran only for multi-point paths, so the rectangle,
+ * ellipse, line, dimension and measure tools had no square, no circle and no
+ * way to draw a truly horizontal or vertical run except by landing the pixel
+ * exactly — in an application whose whole job is drawings that get built from.
+ */
+{
+  const from = { x: 0, y: 0 };
+
+  check('without Shift nothing is constrained', spanConstraintFor('rect', false) === 'none');
+  check('a rectangle regularises', spanConstraintFor('rect', true) === 'regular');
+  check('an ellipse regularises', spanConstraintFor('ellipse', true) === 'regular');
+  check('a line snaps to an angle', spanConstraintFor('line', true) === 'angle');
+  check('a measurement snaps to an angle', spanConstraintFor('measure', true) === 'angle');
+
+  const square = constrainSpanEnd(from, { x: 10 * F, y: 4 * F }, 'regular');
+  check('a square takes the longer side', square.x === 10 * F && square.y === 10 * F, JSON.stringify(square));
+  const back = constrainSpanEnd(from, { x: -10 * F, y: 4 * F }, 'regular');
+  check('and keeps the direction it was dragged', back.x === -10 * F && back.y === 10 * F, JSON.stringify(back));
+  // Math.sign(0) is 0; using it would collapse the shape to nothing the moment
+  // the pointer is level with its own start.
+  const flat = constrainSpanEnd(from, { x: 8 * F, y: 0 }, 'regular');
+  check('a pointer level with the start still makes a square', flat.x === 8 * F && flat.y === 8 * F, JSON.stringify(flat));
+
+  const nearlyFlat = constrainSpanEnd(from, { x: 10 * F, y: 1 * F }, 'angle');
+  check(
+    'a nearly-level line becomes exactly level',
+    Math.abs(nearlyFlat.y) < 1e-6 && nearlyFlat.x > 0,
+    JSON.stringify(nearlyFlat),
+  );
+  const nearlyUp = constrainSpanEnd(from, { x: 1 * F, y: 10 * F }, 'angle');
+  check('and a nearly-vertical one becomes vertical', Math.abs(nearlyUp.x) < 1e-6, JSON.stringify(nearlyUp));
+  const diagonal = constrainSpanEnd(from, { x: 10 * F, y: 9 * F }, 'angle');
+  check(
+    'a near-diagonal snaps to 45 degrees',
+    Math.abs(diagonal.x - diagonal.y) < 1e-6,
+    JSON.stringify(diagonal),
+  );
+  check(
+    'the constrained end keeps the length the pointer had',
+    Math.abs(Math.hypot(diagonal.x, diagonal.y) - Math.hypot(10 * F, 9 * F)) < 1e-6,
+  );
+  const nowhere = constrainSpanEnd(from, from, 'angle');
+  check('a zero-length span does not become NaN', Number.isFinite(nowhere.x) && Number.isFinite(nowhere.y));
 }
 
 console.log(`\n${passed}/${passed + failed} checks passed`);

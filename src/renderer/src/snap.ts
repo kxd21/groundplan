@@ -209,3 +209,54 @@ export function boundsOfMany(objectBounds: Map<number, Bounds>, ids: number[]) {
   return box;
 }
 
+
+/** How Shift regularises the far end of a two-click span. */
+export type SpanConstraint = 'none' | 'angle' | 'regular';
+
+/**
+ * The far end of a two-click span while Shift is held.
+ *
+ * Shift is the "make it regular" key in every drawing application anybody has
+ * used, and it did nothing here: the constraint step ran only for multi-point
+ * paths, so the rectangle, ellipse, line, dimension and measure tools had no
+ * square, no circle, and no way to draw a truly horizontal or vertical run
+ * except by landing the pixel exactly.
+ *
+ * A rectangle and an ellipse become regular by equalising their two sides — the
+ * larger one wins, so the shape follows the pointer rather than collapsing to
+ * the smaller axis. A line, a dimension or a measurement becomes regular by
+ * snapping to 45°, which covers horizontal and vertical as the cases people
+ * actually reach for.
+ */
+export function constrainSpanEnd(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  constraint: SpanConstraint,
+): { x: number; y: number } {
+  if (constraint === 'none') return { x: to.x, y: to.y };
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+
+  if (constraint === 'regular') {
+    const size = Math.max(Math.abs(dx), Math.abs(dy));
+    // Math.sign(0) is 0, which would pin the side to zero and make a shape with
+    // no width the moment the pointer is level with its start.
+    const sx = dx < 0 ? -1 : 1;
+    const sy = dy < 0 ? -1 : 1;
+    return { x: from.x + sx * size, y: from.y + sy * size };
+  }
+
+  const length = Math.hypot(dx, dy);
+  if (!(length > 0)) return { x: from.x, y: from.y };
+  const step = Math.PI / 4;
+  const snapped = Math.round(Math.atan2(dy, dx) / step) * step;
+  return { x: from.x + Math.cos(snapped) * length, y: from.y + Math.sin(snapped) * length };
+}
+
+/** The constraint a span preview implies, given whether Shift is down. */
+export function spanConstraintFor(preview: string, shift: boolean): SpanConstraint {
+  if (!shift) return 'none';
+  if (preview === 'rect' || preview === 'ellipse') return 'regular';
+  if (preview === 'line' || preview === 'measure') return 'angle';
+  return 'none';
+}

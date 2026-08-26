@@ -481,6 +481,15 @@ export interface PlanModelView {
   seatingStyles: Array<{ id: SeatingStyle; label: string; needsTable: boolean }>;
   /** Placed items, summarised — what the allocation and legend are built from. */
   itemCount: number;
+  /**
+   * Everything drawn, including the geometry that carries no inventory
+   * identity: lines, rectangles, ellipses, dimensions, cable runs.
+   *
+   * `itemCount` counts PLACED ITEMS, so it cannot move when somebody draws a
+   * line — which made "did the draw tool do anything?" unanswerable from
+   * outside the renderer, and left the drawing tools untestable.
+   */
+  primitiveCount: number;
   /** Last seating clearances / counts for the status bar. */
   seatingStatus: {
     clearances: NonNullable<PlanModelState['lastClearances']>;
@@ -624,6 +633,7 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
       needsTable: TABLE_STYLES.has(id),
     })),
     itemCount: placedItems(doc).length,
+    primitiveCount: session.scene.primitives.length,
     seatingStatus:
       state.lastClearances && state.lastSeatCounts
         ? {

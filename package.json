@@ -53,7 +53,8 @@
     "verify:mac-signature": "bash tools/verify-mac-signature.sh",
     "build:dmg-background": "electron tools/make-dmg-background.cjs",
     "preview:download": "electron tools/capture-download-page.cjs",
-    "test:ui-hardcore": "node tools/run-ui-hardcore.mjs"
+    "test:ui-hardcore": "node tools/run-ui-hardcore.mjs",
+    "test:ui-tools": "node tools/run-ui-tools.mjs"
   },
   "dependencies": {
     "cfb": "^1.2.2",

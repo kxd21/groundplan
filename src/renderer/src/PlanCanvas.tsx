@@ -10,6 +10,8 @@ import {
   snapDragDelta,
   snapPlanPoint,
   type Bounds,
+  constrainSpanEnd,
+  spanConstraintFor,
 } from './snap.js';
 import { IconPlus, IconMinus, IconFit, IconHand } from './icons.js';
 import type { PlanPoint, PointerSpec } from './tool/machine.js';
@@ -1295,7 +1297,11 @@ export function PlanCanvas({
     // a draw tool previews its own shape, a measure or dimension previews the
     // measurement, and a line wants no dimension text because it is drawing.
     if (spanFrom && pointerMode.preview !== 'none') {
-      const to = pointer ?? spanFrom;
+      const to = constrainSpanEnd(
+        spanFrom,
+        pointer ?? spanFrom,
+        spanConstraintFor(String(pointerMode.preview), shiftHeld),
+      );
       if (pointerMode.preview === 'measure') drawMeasurement(ctx, spanFrom, to, view, paper, units);
       else if (pointerMode.preview !== 'room' && pointerMode.preview !== 'cable') {
         drawShapePreview(ctx, spanFrom, to, pointerMode.preview, view);
@@ -1646,7 +1652,16 @@ export function PlanCanvas({
               pathAngleLock,
               e.shiftKey,
             )
-          : coordinate;
+          : // Shift regularises the second click of a span — square, circle, or
+            // a run locked to 45°. Only the far end: the first click sets the
+            // origin the constraint is measured from.
+            pointerMode.mode === 'span' && spanFrom
+            ? constrainSpanEnd(
+                spanFrom,
+                coordinate,
+                spanConstraintFor(String(pointerMode.preview), e.shiftKey),
+              )
+            : coordinate;
       onCanvasClick(nodeId == null ? constrained : { ...constrained, nodeId });
       return;
     }

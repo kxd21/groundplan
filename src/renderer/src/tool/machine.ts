@@ -224,7 +224,12 @@ export function stampDescription(stamp: Stamp): string {
  * the tool down so the next click selects rather than adding another corner.
  */
 export function staysAfterUse(tool: Tool): boolean {
-  return tool.kind !== 'path';
+  // A room is drawn once for a plan, so the tool goes down when it is done. A
+  // cable run is one of several — power and signal, house left and house right
+  // — and dropping the tool after every run sent the user back to the rail
+  // between each one.
+  if (tool.kind !== 'path') return true;
+  return tool.path.what === 'cable';
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +392,22 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
           ? { state: { ...state, tool: { ...state.tool, closing: false } }, effect: null }
           : { state, effect: null };
       }
-      if (staysAfterUse(state.tool)) return { state, effect: null };
+      if (staysAfterUse(state.tool)) {
+        // A path that stayed has to start empty, or the next run would carry
+        // the last one's corners and its `closing` flag would swallow the
+        // first click.
+        if (state.tool.kind === 'path') {
+          return {
+            state: {
+              ...state,
+              tool: { ...state.tool, points: [], closing: false },
+              epoch: state.epoch + 1,
+            },
+            effect: null,
+          };
+        }
+        return { state, effect: null };
+      }
       return { state: putDown(state), effect: null };
     }
 
