@@ -258,6 +258,21 @@ export default function RoomPanel({
     return { shape: roomShape, width: width.value!, depth: depth.value! };
   };
 
+  // Seed the draw-room fields from the room actually on the plan, so "Redraw
+  // room" starts from its real size rather than silently resetting it to the
+  // 40 × 30 default. Only once per open plan, so a mid-edit value is not fought.
+  const [roomSeeded, setRoomSeeded] = useState(false);
+  useEffect(() => {
+    setRoomSeeded(false);
+  }, [doc.path]);
+  useEffect(() => {
+    if (!room || roomSeeded) return;
+    width.setText(formatLength(room.width, units));
+    depth.setText(formatLength(room.height, units));
+    setRoomSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, units, roomSeeded]);
+
   // ---- Reshape / curve ----------------------------------------------------
   const [outlineMode, setOutlineMode] = useState<'walls' | 'reshape'>('walls');
   const [wallAction, setWallAction] = useState<'move' | 'length' | 'curve' | 'push' | 'round' | 'corners'>('push');
@@ -677,7 +692,35 @@ export default function RoomPanel({
   const stageDepth = useLength(16 * 120, units);
   const stageHeight = useLength(24 * 10, units);
 
-  const names = doc.scene.inventory.map((i) => i.name);
+  // Chairs and tables to place come from the plan's own shapes *and* from the
+  // persistent equipment library — the library being "what new plans get built
+  // from" — so a brand-new plan, which has drawn nothing yet, can still seat
+  // from the company's stock instead of offering an empty list.
+  const [libraryNames, setLibraryNames] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .inventoryList('', null, null)
+      .then((state) => {
+        if (!cancelled) setLibraryNames(state.items.map((item) => item.name));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.path]);
+
+  const names = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const name of [...doc.scene.inventory.map((i) => i.name), ...libraryNames]) {
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        out.push(name);
+      }
+    }
+    return out;
+  }, [doc.scene.inventory, libraryNames]);
 
   // Shapes already on the plan are the best chairs and tables to seat with,
   // because they place as the real drawn symbol rather than a box. But a plan
