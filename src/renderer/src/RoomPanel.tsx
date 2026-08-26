@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import type { NewRoomShape, NewRoomSpec } from '../../format/new-room.js';
+import { classify } from '../../inventory/classify.js';
 import type { Doc } from './App.js';
 import {
   IconChair,
@@ -31,6 +32,7 @@ import {
   IconWarning,
 } from './icons.js';
 import { SnappySlider } from './SnappySlider.js';
+import { filterSeatingAssets } from './seating-options.js';
 import type { WallEditSession } from './wall-edit.js';
 
 const api = window.groundplan;
@@ -202,6 +204,7 @@ export default function RoomPanel({
     async (
       what: string,
       call: () => Promise<{ ok: boolean; reason?: string; note?: string; doc?: unknown; created?: number[] }>,
+      selectCreated = true,
     ) => {
       setBusy(true);
       try {
@@ -211,7 +214,7 @@ export default function RoomPanel({
           return false;
         }
         if (reply.doc) onDoc(reply.doc as Doc);
-        if (reply.created?.length) onSelect(reply.created);
+        if (selectCreated && reply.created?.length) onSelect(reply.created);
         onStatus(reply.note ? `${what}. ${reply.note}` : what);
         await refresh();
         return true;
@@ -581,6 +584,8 @@ export default function RoomPanel({
       style: (crescent && needsTable ? 'crescent' : style) as never,
       focusX: focus.x,
       focusY: focus.y,
+      chairName: chair || undefined,
+      tableName: table || undefined,
       seatSpacing: seatSpacing.value ?? undefined,
       rowSpacing: rowSpacing.value ?? undefined,
       front: frontClearance.value ?? undefined,
@@ -610,6 +615,8 @@ export default function RoomPanel({
       needsTable,
       focus.x,
       focus.y,
+      chair,
+      table,
       seatSpacing.value,
       rowSpacing.value,
       frontClearance.value,
@@ -634,8 +641,10 @@ export default function RoomPanel({
     ],
   );
 
-  // Live count. Solving is pure and cheap, so this runs on every change —
-  // seeing the cost of a wider aisle is the point of the panel.
+  // Live count, settled just after the operator pauses. Running an IPC solve
+  // for every character in `4' 6"` made the panel visibly repaint while the
+  // field was still being typed; the short debounce keeps the useful live
+  // answer without making the controls feel unstable.
   useEffect(() => {
     let cancelled = false;
     if (!room) {
@@ -643,21 +652,24 @@ export default function RoomPanel({
       onSeatingStatus?.(null);
       return;
     }
-    void api.seatingPreview(seatingRequest).then((result) => {
-      if (cancelled) return;
-      setPreview(result);
-      if (result?.clearances) {
-        onSeatingStatus?.({
-          front: result.clearances.front,
-          side: result.clearances.side,
-          wing: result.clearances.wing,
-          rear: result.clearances.rear,
-          centreAisle: result.clearances.centreAisle,
-        });
-      }
-    });
+    const timer = window.setTimeout(() => {
+      void api.seatingPreview(seatingRequest).then((result) => {
+        if (cancelled) return;
+        setPreview(result);
+        if (result?.clearances) {
+          onSeatingStatus?.({
+            front: result.clearances.front,
+            side: result.clearances.side,
+            wing: result.clearances.wing,
+            rear: result.clearances.rear,
+            centreAisle: result.clearances.centreAisle,
+          });
+        }
+      });
+    }, 140);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [room, seatingRequest, onSeatingStatus]);
 
@@ -689,8 +701,6 @@ export default function RoomPanel({
   const stageDepth = useLength(16 * 120, units);
   const stageHeight = useLength(24 * 10, units);
 
-  const names = doc.scene.inventory.map((i) => i.name);
-
   // Shapes already on the plan are the best chairs and tables to seat with,
   // because they place as the real drawn symbol rather than a box. But a plan
   // that has just been created has none — so on a brand-new room the only
@@ -699,13 +709,32 @@ export default function RoomPanel({
   //
   // The equipment library is the other honest source, so offer it too, keeping
   // the plan's own shapes first and dropping anything already listed there.
-  const [libraryNames, setLibraryNames] = useState<string[]>([]);
+  type SeatingShape = { name: string; category?: string | null; view?: string | null; source: 'plan' | 'library' };
+  const planShapes: SeatingShape[] = doc.scene.inventory.map((item) => {
+    const inferred = classify(item.name);
+    return {
+      name: item.name,
+      category: item.category ?? inferred.category,
+      view: inferred.view,
+      source: 'plan',
+    };
+  });
+
+  const [libraryShapes, setLibraryShapes] = useState<SeatingShape[]>([]);
   useEffect(() => {
     let cancelled = false;
     void api
       .inventoryList('', null, null)
       .then((state) => {
-        if (!cancelled) setLibraryNames(state.items.map((item) => item.name));
+        if (cancelled) return;
+        setLibraryShapes(
+          state.items.map((item) => ({
+            name: item.name,
+            category: item.category,
+            view: item.view,
+            source: 'library' as const,
+          })),
+        );
       })
       .catch(() => {
         /* the picker still works from the plan's own shapes */
@@ -714,32 +743,37 @@ export default function RoomPanel({
       cancelled = true;
     };
   }, []);
-  const onPlan = new Set(names);
-  const fromLibrary = libraryNames.filter((name) => !onPlan.has(name));
+  const onPlan = new Set(planShapes.map((item) => item.name));
+  const availableShapes = [
+    ...planShapes,
+    ...libraryShapes.filter((item) => !onPlan.has(item.name)),
+  ].filter((item) => (item.view ?? classify(item.name).view) === 'plan');
 
-  /** Chair and table pickers offer the same two groups. */
-  const shapeOptions = (
-    <>
-      {names.length > 0 && (
-        <optgroup label="On this plan">
-          {names.map((name) => (
-            <option key={`plan:${name}`} value={name}>
-              {name}
-            </option>
-          ))}
-        </optgroup>
-      )}
-      {fromLibrary.length > 0 && (
-        <optgroup label="From the equipment library">
-          {fromLibrary.map((name) => (
-            <option key={`lib:${name}`} value={name}>
-              {name}
-            </option>
-          ))}
-        </optgroup>
-      )}
-    </>
-  );
+  const chairShapes = filterSeatingAssets(availableShapes, 'chair');
+  const tableShapes = filterSeatingAssets(availableShapes, 'table');
+
+  const shapeOptions = (items: SeatingShape[]) => {
+    const plan = items.filter((item) => item.source === 'plan');
+    const library = items.filter((item) => item.source === 'library');
+    return (
+      <>
+        {plan.length > 0 && (
+          <optgroup label="On this plan">
+            {plan.map((item) => (
+              <option key={`plan:${item.name}`} value={item.name}>{item.name}</option>
+            ))}
+          </optgroup>
+        )}
+        {library.length > 0 && (
+          <optgroup label="From the equipment library">
+            {library.map((item) => (
+              <option key={`lib:${item.name}`} value={item.name}>{item.name}</option>
+            ))}
+          </optgroup>
+        )}
+      </>
+    );
+  };
 
   if (!model) {
     return (
@@ -1613,8 +1647,8 @@ export default function RoomPanel({
               <div className="field">
                 <label htmlFor="seat-chair-name">Chair type</label>
                 <select id="seat-chair-name" value={chair} onChange={(e) => setChair(e.target.value)} disabled={!editable}>
-                  <option value="">Choose…</option>
-                  {shapeOptions}
+                  <option value="">{chairShapes.length ? 'Choose a chair…' : 'No chairs in inventory'}</option>
+                  {shapeOptions(chairShapes)}
                 </select>
               </div>
               <div className="field">
@@ -1625,8 +1659,8 @@ export default function RoomPanel({
                   onChange={(e) => setTable(e.target.value)}
                   disabled={!editable || !needsTable}
                 >
-                  <option value="">Choose…</option>
-                  {shapeOptions}
+                  <option value="">{tableShapes.length ? 'Choose a table…' : 'No tables in inventory'}</option>
+                  {shapeOptions(tableShapes)}
                 </select>
               </div>
             </div>
@@ -1660,8 +1694,9 @@ export default function RoomPanel({
                     disabled={!editable}
                     onChange={(e) => setOptimum(e.target.checked)}
                   />
-                  Optimum
+                  Maximize capacity
                 </label>
+                <small className="field-hint">Tests room orientation and stagger, then keeps the arrangement with the most seats without reducing your clearances.</small>
                 <label
                   className="check"
                   title="Leaves the stage side of every round open, so nobody is seated with their back to the screen."
@@ -1697,25 +1732,32 @@ export default function RoomPanel({
         {erdTab === 'spacing' && (
           <>
             <div className="field-row">
-              <LengthField id="seat-spacing" label="Seat spacing" field={seatSpacing} units={units} disabled={!editable} />
-              <LengthField id="row-spacing" label="Row spacing" field={rowSpacing} units={units} disabled={!editable} />
+              <LengthField id="seat-spacing" label="Chair center-to-center" hint="Distance from one chair's center to the next across a row." field={seatSpacing} units={units} disabled={!editable} />
+              <LengthField
+                id="row-spacing"
+                label={needsTable ? 'Table center-to-center' : 'Row center-to-center'}
+                hint={needsTable ? "Distance from one table's center to the next table row." : "Distance from one row's chair centers to the next row."}
+                field={rowSpacing}
+                units={units}
+                disabled={!editable}
+              />
             </div>
             <div className="field-row">
-              <LengthField id="front-clearance" label="Front" hint="Focus to the first row — stage, screen or head table." field={frontClearance} units={units} disabled={!editable} />
-              <LengthField id="rear-clearance" label="Rear" hint="Behind the last row." field={rearClearance} units={units} disabled={!editable} />
+              <LengthField id="front-clearance" label="Stage to first row" hint="Clear floor between the stage, screen or head table and the first row." field={frontClearance} units={units} disabled={!editable} />
+              <LengthField id="rear-clearance" label="Rear clearance" hint="Clear floor behind the last row." field={rearClearance} units={units} disabled={!editable} />
             </div>
             <div className="field-row">
-              <LengthField id="side-clearance" label="Side" hint="The walkway down each side that people use to reach the rows." field={sideClearance} units={units} disabled={!editable} />
-              <LengthField id="wing-clearance" label="Wing" hint="Between the centre bank and each angled wing." field={wingClearance} units={units} disabled={!editable} />
+              <LengthField id="side-clearance" label="Side aisle width" hint="Walkway down each side of the seating block." field={sideClearance} units={units} disabled={!editable} />
+              <LengthField id="wing-clearance" label="Gap between banks" hint="Clear floor between the center bank and each angled wing." field={wingClearance} units={units} disabled={!editable} />
             </div>
             <div className="field-row">
-              <LengthField id="front-wall" label="Front wall" hint="Front wall to the stage. Not the same as Front, which starts at the stage." field={frontWallClearance} units={units} disabled={!editable} />
-              <LengthField id="aisle-clearance" label="Aisle" hint="A cross aisle running side to side, every few rows." field={aisleClearance} units={units} disabled={!editable} />
+              <LengthField id="front-wall" label="Wall to stage" hint="Clear floor between the front wall and the back of the stage." field={frontWallClearance} units={units} disabled={!editable} />
+              <LengthField id="aisle-clearance" label="Cross-aisle width" hint="Side-to-side aisle inserted after each row block." field={aisleClearance} units={units} disabled={!editable} />
             </div>
             <div className="field-row">
-              <LengthField id="centre-aisle" label="Centre aisle" hint="One aisle straight down the middle. Zero means none." field={centreAisle} units={units} disabled={!editable} />
+              <LengthField id="centre-aisle" label="Center aisle width" hint="Front-to-back aisle through the middle of the seating. Zero means none." field={centreAisle} units={units} disabled={!editable} />
               <div className="field">
-                <label htmlFor="rows-per-block">Rows per block</label>
+                <label htmlFor="rows-per-block">Rows between cross aisles</label>
                 <input
                   id="rows-per-block"
                   type="number"
@@ -1773,9 +1815,12 @@ export default function RoomPanel({
                       checked={showSightlineMarkers}
                       onChange={(event) => onShowSightlineMarkersChange(event.target.checked)}
                     />
-                    Show seat grades on the plan
+                    Color seats by sightline result
                   </label>
                 )}
+                <p className="field-hint">
+                  Seat colors show whether each chair has a clear view, is blocked, too close, too far away, or too far off-axis from the screen.
+                </p>
               </>
             ) : (
               <p className="hint">Loading A/V summary…</p>
@@ -1791,7 +1836,7 @@ export default function RoomPanel({
                 instead of facing across the room. Zero is a single straight block.
               </p>
               <SnappySlider
-                label="Bank splay"
+                label="Wing angle"
                 values={[0, 15, 30, 45, 60]}
                 defaultValue={0}
                 min={0}
@@ -1920,6 +1965,7 @@ export default function RoomPanel({
               void run(
                 seatingPlacementMode === 'add' ? 'Seating section added' : 'Seating placed',
                 () => api.seatingApply(seatingRequest, chair, table || undefined),
+                false,
               ).then((ok) => {
                 if (ok) onSeatingApplied?.();
               })
@@ -1936,7 +1982,11 @@ export default function RoomPanel({
             }
           >
             <IconPlus size={14} />
-            {seatingPlacementMode === 'add' ? 'Add seating section' : 'Place seating'}
+            {seatingPlacementMode === 'add'
+              ? 'Add seating section'
+              : model.seatingStatus
+                ? 'Update placed seating'
+                : 'Place seating'}
           </button>
         </div>
         <p className="hint">

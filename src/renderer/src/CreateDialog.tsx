@@ -4,6 +4,7 @@ import DockTitlebar from './DockTitlebar.js';
 import ShowSetupPanel, { type ShowKitInfo } from './ShowSetupPanel.js';
 import type { ShowBrief } from '../../format/show-brief.js';
 import { IconPlus } from './icons.js';
+import { filterSeatingAssets } from './seating-options.js';
 
 type SeatKind = 'round' | 'theatre' | 'schoolroom';
 
@@ -300,16 +301,8 @@ export default function CreateDialog({
    * The fallback is gone: if nothing classifies as a chair the honest answer is
    * an empty list saying so, not every object in the building.
    */
-  const planItems = inventory.filter((item) => (item.view ?? 'plan') === 'plan');
-  const chairs = planItems.filter(
-    (item) => item.category === 'chair' || (!item.category && /\bchair\b|\bstool\b/i.test(item.name)),
-  );
-  const tables = planItems.filter(
-    (item) =>
-      item.category === 'table-round' ||
-      item.category === 'table-rect' ||
-      (!item.category && /\btable\b|\bbuffet\b|\bserpentine\b/i.test(item.name)),
-  );
+  const chairs = filterSeatingAssets(inventory, 'chair');
+  const tables = filterSeatingAssets(inventory, 'table');
 
   /*
    * The dock is the show's intake, not a kit browser — the panel below runs

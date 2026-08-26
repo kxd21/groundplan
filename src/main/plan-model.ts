@@ -1222,6 +1222,9 @@ export interface SeatingRequestView {
   style: SeatingStyle;
   focusX: number;
   focusY: number;
+  /** Selected catalogue assets, so preview math uses their real footprints. */
+  chairName?: string;
+  tableName?: string;
   seatSpacing?: number;
   rowSpacing?: number;
   front?: number;
@@ -1254,8 +1257,77 @@ export interface SeatingRequestView {
   append?: boolean;
 }
 
-function planFrom(request: SeatingRequestView): SeatingPlan {
+interface FurnitureFootprint {
+  width: number;
+  depth: number;
+}
+
+function dimensionToken(token: string): number | null {
+  const cleaned = token.trim().toLowerCase();
+  const value = Number.parseFloat(cleaned);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  if (/\b(?:ft|feet|foot)\b|'/.test(cleaned)) return value * UNITS_PER_FOOT;
+  if (/\b(?:cm|centimet)/.test(cleaned)) return value * 3.937007874;
+  if (/\b(?:mm|millimet)/.test(cleaned)) return value * 0.3937007874;
+  if (/\b(?:m|metre|meter)\b/.test(cleaned) && !/mm|cm/.test(cleaned)) return value * 393.7007874;
+  return value * UNITS_PER_INCH;
+}
+
+/** Best available footprint: the actual plan symbol first, then its trade name. */
+function furnitureFootprint(session: Session, name: string | undefined, kind: 'chair' | 'table'): FurnitureFootprint {
+  const fallback = kind === 'chair' ? 18 * UNITS_PER_INCH : 60 * UNITS_PER_INCH;
+  if (!name?.trim()) return { width: fallback, depth: fallback };
+
+  const actual = placedItems(session.loaded.document).find(
+    (item) => item.name.localeCompare(name, undefined, { sensitivity: 'base' }) === 0 && item.width > 0 && item.depth > 0,
+  );
+  if (actual) return { width: actual.width, depth: actual.depth };
+
+  const pair = name.match(
+    /(\d+(?:\.\d+)?\s*(?:ft|feet|foot|in|inch(?:es)?|cm|mm|m|['"])?)[ \t]*[x×][ \t]*(\d+(?:\.\d+)?\s*(?:ft|feet|foot|in|inch(?:es)?|cm|mm|m|['"])?)/i,
+  );
+  if (pair) {
+    const width = dimensionToken(pair[1]!);
+    const depth = dimensionToken(pair[2]!);
+    if (width && depth) return { width, depth };
+  }
+
+  if (kind === 'table' && /\bround\b/i.test(name)) {
+    const diameter = name.match(/\bround\s*[-–—:]?\s*(\d+(?:\.\d+)?)\s*(?:in|inch(?:es)?|["”])?/i);
+    const parsed = diameter ? dimensionToken(`${diameter[1]}in`) : null;
+    if (parsed) return { width: parsed, depth: parsed };
+  }
+  return { width: fallback, depth: fallback };
+}
+
+/** Ground-level objects already on the drawing are unavailable floor. */
+function placedObjectReservations(session: Session, append: boolean): SeatingPlan['reserved'] {
+  const replacing = append ? new Set<number>() : new Set(state.seatingIds);
+  return placedItems(session.loaded.document)
+    .filter((item) => !replacing.has(item.nodeId))
+    .filter((item) => item.width > 0 && item.depth > 0)
+    // Overhead truss and flown fixtures do not consume seating floor.
+    .filter((item) => item.spec.obstacle || item.elevation < 7 * UNITS_PER_FOOT)
+    .map((item) => {
+      const margin = item.spec.clearance ?? 0;
+      return {
+        x: item.x - item.width / 2 - margin,
+        y: item.y - item.depth / 2 - margin,
+        width: item.width + margin * 2,
+        height: item.depth + margin * 2,
+        label: item.name,
+      };
+    });
+}
+
+function planFrom(session: Session, request: SeatingRequestView): SeatingPlan {
   const plan = createSeatingPlan(request.style, { x: request.focusX, y: request.focusY });
+  const chairFootprint = furnitureFootprint(session, request.chairName, 'chair');
+  const tableFootprint = furnitureFootprint(session, request.tableName, 'table');
+  plan.chairWidth = chairFootprint.width;
+  plan.chairDepth = chairFootprint.depth;
+  plan.tableWidth = tableFootprint.width;
+  plan.tableDepth = tableFootprint.depth;
   if (request.seatSpacing && request.seatSpacing > 0) plan.seatSpacing = request.seatSpacing;
   if (request.rowSpacing && request.rowSpacing > 0) plan.rowSpacing = request.rowSpacing;
   if (request.front != null) plan.clearances.front = Math.max(0, request.front);
@@ -1269,6 +1341,9 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
   if (request.frontWall != null) plan.clearances.frontWall = Math.max(0, request.frontWall);
   if (request.stagger != null) plan.stagger = request.stagger;
   if (request.tableDiameter && request.tableDiameter > 0) plan.tableDiameter = request.tableDiameter;
+  else if (request.tableName && /\bround\b/i.test(request.tableName)) {
+    plan.tableDiameter = Math.max(tableFootprint.width, tableFootprint.depth);
+  }
   if (request.seatsPerTable && request.seatsPerTable > 0) plan.seatsPerTable = request.seatsPerTable;
   if (request.maxSeats && request.maxSeats > 0) plan.maxSeats = request.maxSeats;
   if (request.optimum != null) plan.optimum = request.optimum;
@@ -1298,8 +1373,10 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
     ];
   }
 
-  // A stage already built takes its floor out of the count.
-  if (state.stage) plan.reserved = stageReservedAreas(state.stage);
+  // A stage and every other ground-level object already on the drawing take
+  // their real footprints out of the available seating floor.
+  plan.reserved = placedObjectReservations(session, request.append === true);
+  if (state.stage) plan.reserved.push(...stageReservedAreas(state.stage));
   return plan;
 }
 
@@ -1345,7 +1422,7 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
     };
   }
 
-  const plan = planFrom(request);
+  const plan = planFrom(session, request);
   const solution = plan.optimum ? solveOptimum(plan, room) : solveSeating(plan, room);
   // Preview must not write shared plan-model state — rapid slider updates would
   // race applySeating / planModelView seatingStatus. Return clearances locally.
@@ -1381,7 +1458,7 @@ export function applySeating(
   if (!room) return { ok: false, reason: 'draw or trace a room outline first' };
   if (!chair.trim()) return { ok: false, reason: 'choose a chair to place' };
 
-  const plan = planFrom(request);
+  const plan = planFrom(session, { ...request, chairName: chair, tableName: table ?? request.tableName });
   const solution: SeatingSolution = plan.optimum ? solveOptimum(plan, room) : solveSeating(plan, room);
   if (!solution.seats.length && !solution.tables.length) {
     return { ok: false, reason: 'that layout does not fit in this room' };
@@ -1909,7 +1986,7 @@ export function planReport(session: Session, options: ReportOptions): string {
   }
 
   let seating: SeatingSolution | undefined;
-  if (options.seating && room) seating = solveSeating(planFrom(options.seating), room);
+  if (options.seating && room) seating = solveSeating(planFrom(session, options.seating), room);
 
   let sightlines: SightlineSummary | undefined;
   if (options.screen && seating?.seats.length) {

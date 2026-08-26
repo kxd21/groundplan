@@ -3,6 +3,19 @@
 Installers for a first-time setup. Existing copies can update from
 **Help → Check for Updates** or from a signed update folder on a USB drive.
 
+### Seating planner reliability
+
+- Chair and table pickers now show only the correct top-down furniture; front,
+  side, and rear elevations and unrelated production assets stay out.
+- Live capacity uses the selected chair and table footprints, the room outline,
+  aisle settings, stages, and ground-level objects already occupying the plan.
+- Generated chairs are checked for outline overlap, not only center-point
+  overlap. Impossible chair counts around a table are reduced and explained.
+- Seating previews settle after typing instead of repeatedly clearing and
+  repainting, and placed layouts no longer select thousands of objects at once.
+- Spacing controls now use plain production terms such as **Wall to stage**,
+  **Stage to first row**, **Cross-aisle width**, and **Table center-to-center**.
+
 ### Build the show, not just the drawing
 
 - A real show brief now travels with the plan: client, venue, dates, attendance,

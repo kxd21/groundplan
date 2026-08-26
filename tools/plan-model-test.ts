@@ -281,6 +281,22 @@ async function main(): Promise<void> {
     const capped = previewSeating(session, { ...request, maxSeats: 40 });
     check('a cap is honoured in the preview', capped.seats === 40, `${capped.seats}`);
 
+    const round60 = previewSeating(session, {
+      style: 'banquet',
+      focusX: 20 * F,
+      focusY: -6 * F,
+      chairName: 'Banquet Chair',
+      tableName: 'Round 60"',
+    });
+    const round96 = previewSeating(session, {
+      style: 'banquet',
+      focusX: 20 * F,
+      focusY: -6 * F,
+      chairName: 'Banquet Chair',
+      tableName: 'Round 96"',
+    });
+    check('the chosen round-table diameter changes the capacity math', round96.tables < round60.tables, `${round96.tables} vs ${round60.tables}`);
+
     const placed = commit(session, () =>
       applySeating(session, { ...request, maxSeats: 40 }, 'Fixture Table'),
     );

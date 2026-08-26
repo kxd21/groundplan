@@ -40,6 +40,21 @@ function check(name: string, ok: boolean, detail?: string): boolean {
   return ok;
 }
 
+function seatBox(seat: { x: number; y: number; rotation: number }, width: number, depth: number) {
+  const cos = Math.abs(Math.cos(seat.rotation));
+  const sin = Math.abs(Math.sin(seat.rotation));
+  const halfW = (width * cos + depth * sin) / 2;
+  const halfD = (width * sin + depth * cos) / 2;
+  return { minX: seat.x - halfW, minY: seat.y - halfD, maxX: seat.x + halfW, maxY: seat.y + halfD };
+}
+
+function boxesOverlap(
+  a: { minX: number; minY: number; maxX: number; maxY: number },
+  b: { minX: number; minY: number; maxX: number; maxY: number },
+) {
+  return a.maxX > b.minX && a.minX < b.maxX && a.maxY > b.minY && a.minY < b.maxY;
+}
+
 const F = UNITS_PER_FOOT;
 /** A 60 x 40 ballroom with the stage at the top. */
 const hall = () => rectangularRoom(60 * F, 40 * F, 'Ballroom');
@@ -248,6 +263,72 @@ console.log('\nrounds\n');
   );
   check('bigger tables mean fewer of them', bigger.tables.length <= banquet.tables.length);
   check('but more seats each', bigger.tables[0].seats === 10);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nfurniture footprints\n');
+
+{
+  const room = hall();
+  const chairSize = 24 * UNITS_PER_INCH;
+  const plan = {
+    ...createSeatingPlan('theatre', stage),
+    seatSpacing: 12 * UNITS_PER_INCH,
+    rowSpacing: 18 * UNITS_PER_INCH,
+    chairWidth: chairSize,
+    chairDepth: chairSize,
+    splay: 30,
+  };
+  const solution = solveSeating(plan, room);
+  const boxes = solution.seats.map((seat) => seatBox(seat, chairSize, chairSize));
+  let overlap = false;
+  for (let i = 0; i < boxes.length && !overlap; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      if (boxesOverlap(boxes[i]!, boxes[j]!)) {
+        overlap = true;
+        break;
+      }
+    }
+  }
+  check('selected chair size prevents chair-on-chair overlap', !overlap, `${solution.seats.length} chairs`);
+  check('too-small spacing is explained', solution.notes.some((note) => /increased to prevent/i.test(note)));
+}
+
+{
+  const room = hall();
+  const chairSize = 18 * UNITS_PER_INCH;
+  const baselinePlan = { ...createSeatingPlan('theatre', stage), chairWidth: chairSize, chairDepth: chairSize };
+  const first = solveSeating(baselinePlan, room).seats[0]!;
+  const reserved = {
+    x: first.x + 8 * UNITS_PER_INCH,
+    y: first.y - 2 * UNITS_PER_INCH,
+    width: 4 * UNITS_PER_INCH,
+    height: 4 * UNITS_PER_INCH,
+  };
+  const solution = solveSeating({ ...baselinePlan, reserved: [reserved] }, room);
+  const reservedBox = {
+    minX: reserved.x,
+    minY: reserved.y,
+    maxX: reserved.x + reserved.width,
+    maxY: reserved.y + reserved.height,
+  };
+  check(
+    'chair outlines avoid an object even when their center points miss it',
+    solution.seats.every((seat) => !boxesOverlap(seatBox(seat, chairSize, chairSize), reservedBox)),
+  );
+}
+
+{
+  const plan = {
+    ...createSeatingPlan('banquet', stage),
+    chairWidth: 18 * UNITS_PER_INCH,
+    chairDepth: 18 * UNITS_PER_INCH,
+    seatsPerTable: 24,
+  };
+  const solution = solveSeating(plan, hall());
+  check('chairs per round table is reduced before chairs overlap', solution.tables.every((table) => table.seats < 24));
+  check('the reduced chair count is explained', solution.notes.some((note) => /Chairs per table reduced/.test(note)));
+  check('table counts match the chairs actually placed', solution.seats.length === solution.tables.reduce((sum, table) => sum + table.seats, 0));
 }
 
 // ---------------------------------------------------------------------------

@@ -161,6 +161,12 @@ export interface SeatingPlan {
   seatSpacing: number;
   /** Centre-to-centre between rows. */
   rowSpacing: number;
+  /** Actual selected chair footprint. Omitted when the catalogue has no size. */
+  chairWidth?: number;
+  chairDepth?: number;
+  /** Actual selected table footprint. Used for capacity and collision checks. */
+  tableWidth?: number;
+  tableDepth?: number;
   clearances: Clearances;
   /** Offset alternate rows by half a seat, so nobody sits behind a head. */
   stagger: boolean;
@@ -376,6 +382,47 @@ function usable(point: Point, room: RoomModel, reserved: ReservedArea[]): boolea
   );
 }
 
+/**
+ * True when an entire rotated furniture footprint is on usable floor.
+ *
+ * Checking only the insertion point let a chair whose centre was in the room
+ * hang through a wall, and let chair centres miss an obstacle while their
+ * outlines still overlapped it. The conservative axis-aligned extent below is
+ * deliberate: it never promises a fit that the drawn symbol cannot make.
+ */
+function usableFootprint(
+  point: Point,
+  width: number,
+  depth: number,
+  rotation: number,
+  room: RoomModel,
+  reserved: ReservedArea[],
+): boolean {
+  if (width <= 0 || depth <= 0) return usable(point, room, reserved);
+
+  const cos = Math.abs(Math.cos(rotation));
+  const sin = Math.abs(Math.sin(rotation));
+  const extentWidth = width * cos + depth * sin;
+  const extentDepth = width * sin + depth * cos;
+  const halfW = extentWidth / 2;
+  const halfD = extentDepth / 2;
+  const corners = [
+    { x: point.x - halfW, y: point.y - halfD },
+    { x: point.x + halfW, y: point.y - halfD },
+    { x: point.x + halfW, y: point.y + halfD },
+    { x: point.x - halfW, y: point.y + halfD },
+  ];
+  if (room.walls.length >= 3 && corners.some((corner) => !containsPoint(room, corner))) return false;
+
+  return !reserved.some(
+    (area) =>
+      point.x + halfW > area.x &&
+      point.x - halfW < area.x + area.width &&
+      point.y + halfD > area.y &&
+      point.y - halfD < area.y + area.height,
+  );
+}
+
 /** How far back a row sits, once cross aisles are counted. */
 function rowDepth(plan: SeatingPlan, row: number): number {
   const { front, frontWall, aisle, rowsPerBlock } = plan.clearances;
@@ -408,11 +455,67 @@ interface Accumulator {
   dropped: number;
   notes: string[];
   full: boolean;
+  occupied: Map<string, Array<{ minX: number; minY: number; maxX: number; maxY: number }>>;
+}
+
+function footprintBounds(point: Point, width: number, depth: number, rotation: number) {
+  const cos = Math.abs(Math.cos(rotation));
+  const sin = Math.abs(Math.sin(rotation));
+  const halfW = (width * cos + depth * sin) / 2;
+  const halfD = (width * sin + depth * cos) / 2;
+  return { minX: point.x - halfW, minY: point.y - halfD, maxX: point.x + halfW, maxY: point.y + halfD };
+}
+
+/** Claims a chair footprint in a small spatial grid, rejecting chair-on-chair overlap. */
+function claimSeat(acc: Accumulator, plan: SeatingPlan, seat: SeatPosition): boolean {
+  const width = plan.chairWidth ?? 0;
+  const depth = plan.chairDepth ?? 0;
+  if (width <= 0 || depth <= 0) return true;
+
+  const box = footprintBounds({ x: seat.x, y: seat.y }, width, depth, seat.rotation);
+  const cell = Math.max(width, depth);
+  const minCol = Math.floor(box.minX / cell);
+  const maxCol = Math.floor(box.maxX / cell);
+  const minRow = Math.floor(box.minY / cell);
+  const maxRow = Math.floor(box.maxY / cell);
+
+  for (let row = minRow; row <= maxRow; row++) {
+    for (let col = minCol; col <= maxCol; col++) {
+      for (const other of acc.occupied.get(`${col}:${row}`) ?? []) {
+        if (box.maxX > other.minX && box.minX < other.maxX && box.maxY > other.minY && box.minY < other.maxY) {
+          return false;
+        }
+      }
+    }
+  }
+
+  for (let row = minRow; row <= maxRow; row++) {
+    for (let col = minCol; col <= maxCol; col++) {
+      const key = `${col}:${row}`;
+      const bucket = acc.occupied.get(key);
+      if (bucket) bucket.push(box);
+      else acc.occupied.set(key, [box]);
+    }
+  }
+  return true;
 }
 
 function push(acc: Accumulator, plan: SeatingPlan, room: RoomModel, seat: SeatPosition): void {
   if (acc.full) return;
-  if (!usable({ x: seat.x, y: seat.y }, room, plan.reserved)) {
+  if (
+    !usableFootprint(
+      { x: seat.x, y: seat.y },
+      plan.chairWidth ?? 0,
+      plan.chairDepth ?? 0,
+      seat.rotation,
+      room,
+      plan.reserved,
+    )
+  ) {
+    acc.dropped++;
+    return;
+  }
+  if (!claimSeat(acc, plan, seat)) {
     acc.dropped++;
     return;
   }
@@ -535,8 +638,12 @@ function solveRounds(plan: SeatingPlan, room: RoomModel, acc: Accumulator): numb
   const diameter = plan.tableDiameter ?? 60 * UNITS_PER_INCH;
   const seats = Math.max(1, Math.min(24, plan.seatsPerTable ?? 8));
   // Chairs need room behind them, and a service path between tables.
-  const pitch = Math.max(plan.rowSpacing, diameter + 2 * plan.clearances.aisle);
-  const inset = plan.clearances.perimeter + diameter / 2;
+  const chairDepth = plan.chairDepth ?? 0;
+  const occupiedDiameter = diameter + 26 * UNITS_PER_INCH + chairDepth;
+  // Row spacing is table centre-to-centre for table layouts. Never let the
+  // table/chair envelopes overlap even when a smaller value was entered.
+  const pitch = Math.max(plan.rowSpacing, occupiedDiameter);
+  const inset = plan.clearances.perimeter + occupiedDiameter / 2;
 
   const { forward } = frameFor(plan, room);
   const stageSide = Math.atan2(forward.y, forward.x);
@@ -554,7 +661,7 @@ function solveRounds(plan: SeatingPlan, room: RoomModel, acc: Accumulator): numb
       const x = bounds.minX + inset + shift + col * pitch;
       if (x > bounds.maxX - inset) break;
       const centre = { x, y };
-      if (!usable(centre, room, plan.reserved)) {
+      if (!usableFootprint(centre, diameter, diameter, 0, room, plan.reserved)) {
         acc.dropped++;
         continue;
       }
@@ -562,7 +669,13 @@ function solveRounds(plan: SeatingPlan, room: RoomModel, acc: Accumulator): numb
       // it does not fit into.
       const radius = diameter / 2 + 13 * UNITS_PER_INCH;
       const arc = plan.style === 'banquet' ? 2 * Math.PI : plan.style === 'cabaret' ? Math.PI * 1.4 : Math.PI * 1.2;
-      const count = plan.style === 'banquet' ? seats : Math.max(1, Math.round((seats * arc) / (2 * Math.PI)));
+      const wanted = plan.style === 'banquet' ? seats : Math.max(1, Math.round((seats * arc) / (2 * Math.PI)));
+      const chairAcross = plan.chairWidth ?? 0;
+      const maxAround = chairAcross > 0 ? Math.max(1, Math.floor((arc * radius) / chairAcross)) : wanted;
+      const count = Math.min(wanted, maxAround);
+      if (count < wanted && !acc.notes.some((note) => note.startsWith('Chairs per table reduced'))) {
+        acc.notes.push(`Chairs per table reduced from ${wanted} to ${count} so adjacent chairs do not overlap.`);
+      }
 
       const chairs: SeatPosition[] = [];
       let blocked = false;
@@ -573,7 +686,16 @@ function solveRounds(plan: SeatingPlan, room: RoomModel, acc: Accumulator): numb
             ? (i * 2 * Math.PI) / count
             : stageSide + Math.PI - arc / 2 + (arc * (i + 0.5)) / count;
         const at = { x: x + radius * Math.cos(bearing), y: y + radius * Math.sin(bearing) };
-        if (!usable(at, room, plan.reserved)) {
+        if (
+          !usableFootprint(
+            at,
+            plan.chairWidth ?? 0,
+            plan.chairDepth ?? 0,
+            Math.atan2(y - at.y, x - at.x) + Math.PI / 2,
+            room,
+            plan.reserved,
+          )
+        ) {
           blocked = true;
           break;
         }
@@ -593,8 +715,14 @@ function solveRounds(plan: SeatingPlan, room: RoomModel, acc: Accumulator): numb
         continue;
       }
 
-      acc.tables.push({ index, x, y, rotation: 0, seats: chairs.length, width: diameter, length: diameter });
+      const seatStart = acc.seats.length;
       for (const chair of chairs) push(acc, plan, room, chair);
+      const placedChairs = acc.seats.length - seatStart;
+      if (placedChairs < 1) {
+        acc.dropped++;
+        continue;
+      }
+      acc.tables.push({ index, x, y, rotation: 0, seats: placedChairs, width: diameter, length: diameter });
       index++;
       placedInRow++;
       if (acc.full) break;
@@ -684,7 +812,9 @@ function solveReception(plan: SeatingPlan, room: RoomModel, acc: Accumulator): n
   for (let y = bounds.minY + inset; y <= bounds.maxY - inset; y += pitch) {
     for (let x = bounds.minX + inset; x <= bounds.maxX - inset; x += pitch) {
       const centre = { x, y };
-      if (!usable(centre, room, plan.reserved)) {
+      const tableWidth = plan.tableWidth ?? 30 * UNITS_PER_INCH;
+      const tableDepth = plan.tableDepth ?? tableWidth;
+      if (!usableFootprint(centre, tableWidth, tableDepth, 0, room, plan.reserved)) {
         acc.dropped++;
         continue;
       }
@@ -776,7 +906,26 @@ function sectionsFor(plan: SeatingPlan): Section[] {
  * regeneration safe and lets capacity be answered without drawing anything.
  */
 export function solveSeating(plan: SeatingPlan, room: RoomModel): SeatingSolution {
-  const acc: Accumulator = { seats: [], tables: [], dropped: 0, notes: [], full: false };
+  const acc: Accumulator = { seats: [], tables: [], dropped: 0, notes: [], full: false, occupied: new Map() };
+
+  const minimumSeatSpacing = plan.chairWidth ?? 0;
+  const minimumRowSpacing =
+    plan.style === 'schoolroom'
+      ? (plan.chairDepth ?? 0) + (plan.tableDepth ?? 0)
+      : plan.chairDepth ?? 0;
+  const requestedSeatSpacing = plan.seatSpacing;
+  const requestedRowSpacing = plan.rowSpacing;
+  if (minimumSeatSpacing > plan.seatSpacing || minimumRowSpacing > plan.rowSpacing) {
+    plan = {
+      ...plan,
+      seatSpacing: Math.max(plan.seatSpacing, minimumSeatSpacing),
+      rowSpacing: Math.max(plan.rowSpacing, minimumRowSpacing),
+    };
+    const adjusted: string[] = [];
+    if (plan.seatSpacing > requestedSeatSpacing) adjusted.push('chair spacing');
+    if (plan.rowSpacing > requestedRowSpacing) adjusted.push('row spacing');
+    acc.notes.push(`${adjusted.join(' and ')} increased to prevent the selected furniture from overlapping.`);
+  }
 
   if (plan.seatSpacing <= 0 || plan.rowSpacing <= 0) {
     return { seats: [], tables: [], rowCount: 0, dropped: 0, notes: ['Spacing must be more than zero.'] };
@@ -827,7 +976,7 @@ export function solveSeating(plan: SeatingPlan, room: RoomModel): SeatingSolutio
       const mid = { x: (first.x + last.x) / 2, y: (first.y + last.y) / 2 };
       // The table sits between the chairs and the stage.
       const toward = facing(mid, plan.focus) - Math.PI / 2;
-      const standoff = 18 * UNITS_PER_INCH;
+      const standoff = ((plan.chairDepth ?? 18 * UNITS_PER_INCH) + (plan.tableDepth ?? 18 * UNITS_PER_INCH)) / 2;
       acc.tables.push({
         index: index++,
         x: mid.x + Math.cos(toward) * standoff,
