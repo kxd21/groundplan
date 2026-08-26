@@ -111,10 +111,15 @@ async function main() {
 
   if (!reused) {
     console.log(`· launching Groundplan with CDP on ${PORT}`);
-    app = spawn('npm', ['run', 'dev', '--', '--', `--remote-debugging-port=${PORT}`], {
+    const electronArgs = [`--remote-debugging-port=${PORT}`];
+    if (process.env.CI && process.platform === 'linux') {
+      electronArgs.push('--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage');
+    }
+    app = spawn('npm', ['run', 'dev', '--', '--', ...electronArgs], {
       cwd: ROOT,
       env,
-      stdio: 'ignore',
+      // Keep local gates quiet, but never hide why Electron failed on CI.
+      stdio: process.env.CI ? 'inherit' : 'ignore',
       detached: false,
     });
     const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
