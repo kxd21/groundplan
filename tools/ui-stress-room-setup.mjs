@@ -1,30 +1,35 @@
 /**
- * Fresh UI/UX stress test for room-first New Plan + Show setup.
+ * UI stress test for the show-intake flow: New Plan → Show Setup → readiness.
  *
  *   npm run test:ui-stress-setup
  *
  * Or against an already-running CDP session:
- *   GROUNDPLAN_E2E_SAVE_PATH=~/Downloads/Groundplan-setup-stress.rv4 \\
+ *   GROUNDPLAN_E2E_SAVE_PATH=~/Downloads/Groundplan-setup-stress.rv4 \
  *     npm run dev -- -- --remote-debugging-port=9222
  *   node tools/ui-stress-room-setup.mjs
+ *
+ * What it is actually checking is one claim: a user can describe the show once,
+ * build from that description, and see whether the resulting plan satisfies it.
+ * So the assertions follow that number end to end — type 850 into New Plan, and
+ * the Review card in a saved-and-reopened plan should still be measuring the
+ * seat count against 850.
  *
  * Writes docs/audit/ui-stress-setup-report.json + screenshots.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
-import {
-  DEFAULT_CDP,
-  connectCdp,
-  sleep,
-  waitForCdpPage,
-} from './ui-cdp.mjs';
+import { DEFAULT_CDP, connectCdp, sleep, waitForCdpPage } from './ui-cdp.mjs';
 
 const AUDIT = path.join('docs', 'audit');
 const SAVE_PATH =
   process.env.GROUNDPLAN_E2E_SAVE_PATH ||
   path.join(process.env.HOME || '', 'Downloads', 'Groundplan-setup-stress.rv4');
 const CDP = process.env.GROUNDPLAN_CDP || DEFAULT_CDP;
+
+/** The headcount this whole test follows. */
+const TARGET = 850;
+const SHOW_NAME = 'Setup Stress Kickoff';
 
 fs.mkdirSync(AUDIT, { recursive: true });
 
@@ -38,7 +43,9 @@ const record = (id, ok, detail = '') => {
 
 const note = (severity, title, detail, evidence = '') => {
   findings.push({ severity, title, detail, evidence: String(evidence || '').slice(0, 320) });
-  console.log(`\n[${severity}] ${title}\n  ${detail}${evidence ? `\n  evidence: ${String(evidence).slice(0, 200)}` : ''}\n`);
+  console.log(
+    `\n[${severity}] ${title}\n  ${detail}${evidence ? `\n  evidence: ${String(evidence).slice(0, 200)}` : ''}\n`,
+  );
 };
 
 await waitForCdpPage(CDP, 20000).catch(() => {
@@ -47,10 +54,10 @@ await waitForCdpPage(CDP, 20000).catch(() => {
 });
 
 const cdp = await connectCdp({ base: CDP });
-const { ev, clickAt, key, esc, shot, clickButton, setInput, setSelect, title, close, pageErrors } = cdp;
+const { ev, clickAt, key, esc, shot, clickButton, setInput, setSelect, title, close, pageErrors } =
+  cdp;
 const click = (spec, label, opts) => clickButton(spec, label, record, opts);
-
-const probe = async (expression) => ev(expression);
+const probe = (expression) => ev(expression);
 
 const waitFor = async (expression, timeoutMs = 12000, interval = 250) => {
   const start = Date.now();
@@ -58,15 +65,81 @@ const waitFor = async (expression, timeoutMs = 12000, interval = 250) => {
     try {
       if (await ev(expression)) return true;
     } catch {
-      /* ignore transient eval errors during navigation */
+      /* transient eval errors while the renderer re-renders */
     }
     await sleep(interval);
   }
   return false;
 };
 
+/**
+ * Set a field and blur it.
+ *
+ * The brief's inputs commit on blur, not on every keystroke — `setInput` alone
+ * fires input/change and leaves the value uncommitted, which would make this
+ * test pass against a panel that never saves anything.
+ */
+const setAndCommit = async (selector, value) => {
+  await setInput(selector, value);
+  await ev(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    el.dispatchEvent(new Event('blur', { bubbles: false }));
+    el.blur();
+    return true;
+  })()`);
+  await sleep(450);
+};
+
+/** Opens the brief disclosure group whose heading matches. */
+const openBriefGroup = async (label) =>
+  ev(`(() => {
+    const b = [...document.querySelectorAll('.brief-group-head')].find((el) =>
+      new RegExp(${JSON.stringify(label)}, 'i').test(el.textContent || ''),
+    );
+    if (!b) return false;
+    b.scrollIntoView({ block: 'center' });
+    if (b.getAttribute('aria-expanded') !== 'true') b.click();
+    return true;
+  })()`);
+
+const readReview = () =>
+  probe(`(() => {
+    const card = document.querySelector('.review-card');
+    if (!card) return null;
+    const facts = {};
+    for (const row of card.querySelectorAll('.review-facts > div')) {
+      const k = (row.querySelector('dt')?.textContent || '').trim();
+      const v = (row.querySelector('dd')?.textContent || '').trim();
+      if (k) facts[k] = v;
+    }
+    return {
+      state: (card.querySelector('.review-state')?.textContent || '').trim(),
+      headline: (card.querySelector('.review-headline')?.textContent || '').trim(),
+      facts,
+      issues: [...card.querySelectorAll('.review-issues > li')].map((li) => ({
+        title: (li.querySelector('strong')?.textContent || '').trim(),
+        action: (li.querySelector('button')?.textContent || '').trim(),
+        severity: (li.className.match(/is-(blocking|warning|info)/) || [])[1] || '',
+      })),
+    };
+  })()`);
+
+const openSetupDock = async () => {
+  if (await ev(`!!document.querySelector('.create-dialog-sheet')`)) return true;
+  await ev(`(() => {
+    const b = [...document.querySelectorAll('button')].find((el) =>
+      /^Show Setup$/i.test((el.textContent || '').trim()),
+    );
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  await sleep(500);
+  return waitFor(`!!document.querySelector('.create-dialog-sheet')`, 6000);
+};
+
 const openNewPlan = async () => {
-  // Escape any open sheets first.
   await esc();
   await sleep(200);
   await esc();
@@ -85,11 +158,24 @@ const openNewPlan = async () => {
 
   if (welcomeNew) {
     await clickAt(welcomeNew.x, welcomeNew.y);
-    record('nav:welcome New plan', true);
   } else {
-    // Cmd/Ctrl+N
-    await key(78, 'KeyN', 'n', 4);
-    record('nav:shortcut New plan', true, 'meta+N');
+    await ev(`(() => {
+      const create = [...document.querySelectorAll('button')].find(
+        (el) => (el.textContent || '').trim() === 'New',
+      );
+      if (create) create.click();
+      return true;
+    })()`);
+    await sleep(300);
+    const picked = await ev(`(() => {
+      const b = [...document.querySelectorAll('[role=menuitem]')].find((el) =>
+        /^New plan/i.test((el.textContent || '').trim()),
+      );
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    if (!picked) await key(78, 'KeyN', 'n', 4);
   }
   await sleep(600);
   const open = await waitFor('!!document.querySelector(".new-plan-sheet")', 8000);
@@ -97,15 +183,7 @@ const openNewPlan = async () => {
   return open;
 };
 
-const closePlanIfOpen = async () => {
-  const hasPlan = await ev(`!!document.querySelector('canvas') && !document.querySelector('.welcome-home')`);
-  if (!hasPlan) return;
-  // Prefer discard empty if available, else just leave for next create (E2E confirmDiscard).
-  await esc();
-  await sleep(100);
-};
-
-console.log('\n=== Fresh room-setup UI stress ===\n');
+console.log('\n=== Show intake UI stress ===\n');
 console.log('title', await title());
 console.log('E2E save path', SAVE_PATH);
 try {
@@ -115,519 +193,451 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// A. New Plan dialog structure (room-first)
+// A. New Plan opens on the brief, and the brief can be skipped.
 // ---------------------------------------------------------------------------
-console.log('\n-- A. New Plan dialog (room-first) --');
-await closePlanIfOpen();
+console.log('\n-- A. New Plan: the show step --');
+await esc();
 const sheetOpen = await openNewPlan();
 await shot(path.join(AUDIT, 'ui-stress-setup-01-new-plan.png'));
 
-if (sheetOpen) {
-  const dialog = await probe(`(() => {
+if (!sheetOpen) {
+  note('critical', 'New Plan dialog never opened', 'Nothing downstream can be tested without it.');
+} else {
+  const showStep = await probe(`(() => {
     const sheet = document.querySelector('.new-plan-sheet');
-    if (!sheet) return { ok: false };
-    const text = sheet.innerText || '';
-    const quick = [...sheet.querySelectorAll('.new-plan-quick-start button')].map((b) => (b.textContent || '').replace(/\\s+/g, ' ').trim());
-    const primary = [...sheet.querySelectorAll('.new-plan-shape-grid.is-primary button')].map((b) => (b.textContent || '').replace(/\\s+/g, ' ').trim());
-    const advancedToggle = [...sheet.querySelectorAll('button')].find((b) => /More shapes|Hide more shapes/i.test(b.textContent || ''));
-    const continueOld = /Continue to room/i.test(text);
-    const eventStep = /\\bEvent\\b/.test(text) && /Name and show information/i.test(text);
-    const venueField = !!sheet.querySelector('#new-plan-venue');
-    const createBtn = [...sheet.querySelectorAll('button')].find((b) => /Create plan|Create & draw/i.test(b.textContent || ''));
+    if (!sheet) return null;
+    const steps = [...sheet.querySelectorAll('.new-plan-steps li')].map((li) =>
+      (li.querySelector('strong')?.textContent || '').trim(),
+    );
+    const skip = [...sheet.querySelectorAll('button')].find((b) =>
+      /Skip for now/i.test(b.textContent || ''),
+    );
+    const quick = [...sheet.querySelectorAll('.new-plan-quick-start button')].map((b) =>
+      (b.textContent || '').replace(/\\s+/g, ' ').trim(),
+    );
     return {
-      ok: true,
       title: (sheet.querySelector('h2')?.textContent || '').trim(),
-      blurb: (sheet.querySelector('.new-plan-head p')?.textContent || '').trim(),
+      steps,
+      brief: !!sheet.querySelector('.new-plan-brief'),
+      name: !!sheet.querySelector('#new-plan-show-name'),
+      venue: !!sheet.querySelector('#new-plan-show-venue'),
+      layout: !!sheet.querySelector('#new-plan-show-layout'),
+      guests: !!sheet.querySelector('#new-plan-guests'),
+      skip: !!skip,
       quick,
-      primary,
-      hasAdvancedToggle: !!advancedToggle,
-      advancedLabel: (advancedToggle?.textContent || '').trim(),
-      continueOld,
-      eventStep,
-      venueField,
-      createLabel: (createBtn?.textContent || '').replace(/\\s+/g, ' ').trim(),
-      footNote: (sheet.querySelector('.new-plan-foot-note')?.textContent || '').trim(),
     };
   })()`);
 
-  record('dialog:title is Build the room', /Build the room/i.test(dialog?.title || ''), dialog?.title);
-  record('dialog:no Event step', !dialog?.eventStep && !dialog?.continueOld, JSON.stringify({ eventStep: dialog?.eventStep, continueOld: dialog?.continueOld }));
-  record('dialog:no venue field in wizard', !dialog?.venueField);
-  const quick = dialog?.quick || [];
+  record('newplan:brief block present', !!showStep?.brief, showStep?.title);
   record(
-    'dialog:quick start spans boardroom to concert',
-    quick.length === 5 &&
-      quick.some((t) => /Boardroom/i.test(t)) &&
-      quick.some((t) => /Concert floor/i.test(t)) &&
-      quick.some((t) => /Draw custom/i.test(t)),
-    JSON.stringify(quick),
+    'newplan:brief asks name, venue, layout, headcount',
+    !!(showStep?.name && showStep?.venue && showStep?.layout && showStep?.guests),
+    JSON.stringify({
+      name: showStep?.name,
+      venue: showStep?.venue,
+      layout: showStep?.layout,
+      guests: showStep?.guests,
+    }),
   );
-  const cramped = await probe(`(() => {
-    const buttons = [...document.querySelectorAll('.new-plan-quick-start button')];
-    return buttons.map((b) => {
-      const r = b.getBoundingClientRect();
-      return {
-        t: (b.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
-        w: Math.round(r.width),
-        overflow: b.scrollWidth > b.clientWidth + 1,
-      };
-    });
-  })()`);
-  const tooNarrow = (cramped || []).filter((b) => b.w < 72 || b.overflow);
-  record('dialog:quick start buttons usable', tooNarrow.length === 0, JSON.stringify(cramped));
-  if (tooNarrow.length) {
-    note('high', 'New Plan quick-start buttons are cramped or clipped', 'Five scale presets must stay readable on a normal window.', JSON.stringify(tooNarrow));
-  }
-  record('dialog:primary shapes are compact', (dialog?.primary || []).length === 3, JSON.stringify(dialog?.primary));
-  record('dialog:advanced shapes collapsed', !!dialog?.hasAdvancedToggle && /More shapes/i.test(dialog?.advancedLabel || ''), dialog?.advancedLabel);
-
-  if (dialog?.continueOld || dialog?.eventStep || dialog?.venueField) {
-    note('high', 'New Plan still shows old Event / identity step', 'Room-first rewrite may not be loaded, or old fields remain.', JSON.stringify(dialog));
-  }
-  if ((dialog?.primary || []).length > 3) {
-    note('medium', 'Primary shape grid still shows advanced shapes', 'Decision load should stay at Rectangle / Circle / Draw custom.', JSON.stringify(dialog?.primary));
-  }
-
-  // Open advanced and check curve power is still available.
-  await click({ match: '/More shapes & curves/i' }, 'dialog:open advanced');
-  await sleep(200);
-  const advanced = await probe(`(() => {
-    const sheet = document.querySelector('.new-plan-sheet');
-    const shapes = [...sheet.querySelectorAll('.new-plan-shape-grid.is-advanced button')].map((b) => (b.textContent || '').replace(/\\s+/g, ' ').trim());
-    return { shapes, count: shapes.length };
-  })()`);
-  record('dialog:advanced shapes available', (advanced?.count || 0) >= 3, JSON.stringify(advanced?.shapes));
-
-  // ---------------------------------------------------------------------------
-  // B. Quick start Boardroom → room ready handoff
-  // ---------------------------------------------------------------------------
-  console.log('\n-- B. Quick start Boardroom handoff --');
-  await click({ match: '/Boardroom/i', root: '.new-plan-quick-start' }, 'quick:Boardroom');
-  const ballroomOpened = await waitFor(
-    `!document.querySelector('.new-plan-sheet') && !!document.querySelector('canvas')`,
-    15000,
+  record('newplan:brief is skippable', !!showStep?.skip);
+  record(
+    'newplan:still three steps',
+    (showStep?.steps || []).length === 3,
+    JSON.stringify(showStep?.steps),
   );
-  record('quick:Boardroom opens plan', ballroomOpened, await title());
-  record('quick:E2E file written', fs.existsSync(SAVE_PATH), SAVE_PATH);
-  await sleep(800);
-  await shot(path.join(AUDIT, 'ui-stress-setup-02-ballroom.png'));
-
-  const afterBallroom = await probe(`(() => {
-    const create = document.querySelector('.create-dialog-sheet');
-    const createText = create?.innerText || '';
-    const progress = [...document.querySelectorAll('.show-setup-progress li')].map((li) => ({
-      text: (li.textContent || '').replace(/\\s+/g, ' ').trim(),
-      current: li.classList.contains('is-current'),
-      done: li.classList.contains('is-done'),
-    }));
-    const chip = (document.querySelector('.show-setup-chip')?.textContent || '').trim();
-    const head = (document.querySelector('#create-dialog-title')?.textContent || '').trim();
-    const library = /\\bLibrary\\b/.test(createText) && /New shape/i.test(createText);
-    const applyKit = [...(create?.querySelectorAll('button') || [])].find((b) => /^Apply kit/i.test((b.textContent || '').trim()));
-    const kitNext = applyKit?.classList.contains('is-next');
-    const roomNeededActions = /Draw room outline/i.test(createText);
-    const toast = (document.querySelector('.toast')?.textContent || '').trim();
-    return {
-      createOpen: !!create,
-      head,
-      chip,
-      progress,
-      library,
-      kitNext,
-      roomNeededActions,
-      toast,
-      bodyStart: createText.slice(0, 180).replace(/\\s+/g, ' '),
-    };
-  })()`);
-
-  record('handoff:Create opens after preset', !!afterBallroom?.createOpen);
-  record('handoff:chip Room ready', /Room ready/i.test(afterBallroom?.chip || ''), afterBallroom?.chip);
-  record('handoff:progress Room done', !!afterBallroom?.progress?.[0]?.done, JSON.stringify(afterBallroom?.progress));
-  record('handoff:Library not first', !!afterBallroom?.createOpen && !/^Library/i.test(afterBallroom?.bodyStart || ''), afterBallroom?.bodyStart);
-  record('handoff:no Draw outline when room exists', !afterBallroom?.roomNeededActions);
-
-  // Quick starts auto-apply the matching kit — wait for chairs before asserting.
-  const autoKit = await waitFor(
-    `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,'')) >= 10`,
-    20000,
+  record(
+    'newplan:room shortcuts preserved',
+    (showStep?.quick || []).length >= 5 &&
+      (showStep?.quick || []).some((t) => /Draw custom/i.test(t)),
+    JSON.stringify(showStep?.quick),
   );
-  const autoChairs = await probe(
-    `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,''))`,
+
+  if (!showStep?.skip) {
+    note(
+      'high',
+      'The brief cannot be skipped',
+      'Room-first has to stay available; a required intake form is a new wall in front of the canvas.',
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // B. Describe the show, then build from it.
+  // -------------------------------------------------------------------------
+  console.log('\n-- B. Describe the show --');
+  await setInput('#new-plan-show-name', SHOW_NAME);
+  await setInput('#new-plan-show-venue', 'Stress Convention Center');
+  await setInput('#new-plan-guests', String(TARGET));
+  await setSelect(
+    '#new-plan-show-layout',
+    `[...el.options].find((o) => /Theatre/i.test(o.text))`,
   );
-  record('handoff:Boardroom auto-applies kit', autoKit && autoChairs >= 10, `chairs=${autoChairs}`);
-  if (!autoKit) {
-    note('high', 'Boardroom quick start did not auto-apply seating', 'New plan should land with the matching kit already placed.', `chairs=${autoChairs}`);
-  }
+  await sleep(300);
 
-  const zoomAfter = await probe(`(() => {
-    const labels = [...document.querySelectorAll('body *')].map((n) => (n.childNodes.length === 1 && n.textContent || '').trim()).filter((t) => /^\\d+%$/.test(t));
-    const fromBody = (document.body.innerText.match(/\\b(\\d+)%/g) || []).map((s) => Number(s));
-    return Math.min(...(fromBody.length ? fromBody : [100]));
-  })()`);
-  record('handoff:zoom not tiny', !(typeof zoomAfter === 'number' && zoomAfter < 15), `zoom≈${zoomAfter}%`);
-  if (typeof zoomAfter === 'number' && zoomAfter < 15) {
-    note('medium', 'Preset room opens extremely zoomed out', `After Ballroom create, zoom is about ${zoomAfter}% — the 60×40 room looks lost on the sheet.`, `zoom=${zoomAfter}`);
-  }
+  const typed = await probe(`(() => ({
+    name: document.querySelector('#new-plan-show-name')?.value || '',
+    venue: document.querySelector('#new-plan-show-venue')?.value || '',
+    guests: document.querySelector('#new-plan-guests')?.value || '',
+    layout: document.querySelector('#new-plan-show-layout')?.value || '',
+    summary: (document.querySelector('.new-plan-start-summary')?.innerText || '')
+      .replace(/\\s+/g, ' ')
+      .trim(),
+  }))()`);
+  record(
+    'newplan:fields hold what was typed',
+    typed?.name === SHOW_NAME && typed?.guests === String(TARGET) && typed?.layout === 'theatre',
+    JSON.stringify(typed),
+  );
+  record(
+    'newplan:summary reflects the show',
+    new RegExp(String(TARGET)).test(typed?.summary || ''),
+    typed?.summary,
+  );
 
-  if (afterBallroom?.createOpen && /^Library/i.test(afterBallroom?.bodyStart || '')) {
-    note('high', 'Create still leads with Library after room create', 'Show setup / next step should come first.', afterBallroom?.bodyStart);
-  }
+  await shot(path.join(AUDIT, 'ui-stress-setup-02-brief.png'));
 
-  // ---------------------------------------------------------------------------
-  // C. Show setup interactions
-  // ---------------------------------------------------------------------------
-  console.log('\n-- C. Show setup interactions --');
-  if (!(await ev('!!document.querySelector(".create-dialog-sheet")'))) {
-    await click({ match: '/^Setup$/i' }, 'setup:Setup panel');
-    await sleep(400);
-  }
-
-  await click({ match: '/Show details/i', root: '.create-dialog-sheet' }, 'setup:expand details');
-  await sleep(200);
-  // Prefer a direct DOM toggle in case the control is clipped in the dock.
-  await ev(`(() => {
-    const b = [...document.querySelectorAll('.create-dialog-sheet button')].find((el) =>
-      /Show details/i.test(el.textContent || ''),
-    );
-    if (!b) return false;
-    b.scrollIntoView({ block: 'center' });
-    if (b.getAttribute('aria-expanded') !== 'true') b.click();
-    return true;
-  })()`);
-  await sleep(250);
-  const details = await probe(`!!document.querySelector('#show-setup-venue')`);
-  record('setup:details expand shows venue', details);
-  if (!details) {
-    note('high', 'Show details collapse does not reveal venue fields', 'Collapsed optional section may be broken or clipped in the Create dock.');
-  }
-  if (details) {
-    await setInput('#show-setup-venue', 'Stress Venue');
-    await setInput('#show-setup-event', 'Setup Stress');
-    record('setup:details fields editable', true);
-  }
-
-  await ev(`(() => {
-    const b = [...document.querySelectorAll('.create-dialog-sheet button')].find((el) =>
-      /Start from a kit/i.test(el.textContent || ''),
-    );
-    if (!b) return false;
-    b.scrollIntoView({ block: 'center' });
-    if (b.getAttribute('aria-expanded') !== 'true') b.click();
-    return true;
-  })()`);
-  await sleep(250);
-  const kitsVisible = await ev(`!!document.querySelector('#show-kit-select')`);
-  record('setup:kit selector available', kitsVisible);
-  if (!kitsVisible) {
-    note('medium', 'Start from a kit does not reveal kit selector', 'Kit picker should be open after the room is ready.');
-  }
-
-  if (kitsVisible) {
-    const kitNames = await probe(`([...document.querySelectorAll('#show-kit-select option')].map((o) => o.textContent || '').join(' | '))`);
-    record(
-      'setup:bundled kits span 20-person to arena',
-      /Boardroom/i.test(kitNames || '') &&
-        /Banquet/i.test(kitNames || '') &&
-        /Arena|concert/i.test(kitNames || '') &&
-        /Card Party/i.test(kitNames || ''),
-      kitNames,
-    );
-    const chairsBefore = await probe(
-      `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,''))`,
-    );
-    if (chairsBefore >= 10) {
-      record('setup:Boardroom kit places chairs', true, `auto-applied chairs=${chairsBefore}`);
-    } else {
-      const picked = await setSelect(
-        '#show-kit-select',
-        `[...el.options].find((o) => /Boardroom/i.test(o.text))`,
-      );
-      record('setup:select Boardroom kit', !!picked?.ok, JSON.stringify(picked));
-      await click({ match: '/^Apply kit$/i', root: '.create-dialog-sheet' }, 'setup:Apply kit');
-      const kitApplied = await waitFor(
-        `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,'')) >= 10`,
-        20000,
-      );
-      const chairCount = await probe(
-        `Number(String((document.body.innerText.match(/Chairs:\\s*([\\d,]+)/)||[])[1]||'0').replace(/,/g,''))`,
-      );
-      record('setup:Boardroom kit places chairs', kitApplied && chairCount >= 10, `chairs=${chairCount}`);
-      if (!kitApplied) {
-        note('high', 'Applying the Boardroom kit did not place chairs', 'Show kits are the 20-person path; a silent fail is a ship blocker.', `chairs=${chairCount}`);
-      }
-    }
-    await shot(path.join(AUDIT, 'ui-stress-setup-02b-kit.png'));
-    await ev(`(() => {
-      const b = [...document.querySelectorAll('.create-dialog-sheet button')].find((el) =>
-        /Start from a kit/i.test(el.textContent || ''),
-      );
-      if (b && b.getAttribute('aria-expanded') === 'true') b.click();
-      const d = [...document.querySelectorAll('.create-dialog-sheet button')].find((el) =>
-        /Show details/i.test(el.textContent || ''),
-      );
-      if (d && d.getAttribute('aria-expanded') === 'true') d.click();
+  /*
+   * Pick a room and walk the three steps. The quick-start buttons SELECT a
+   * room rather than creating one — creation is still the last thing that
+   * happens, on the Create step, which is what "Nothing is created until the
+   * final review" in the footer promises.
+   */
+  await click({ match: '/Ballroom/i', root: '.new-plan-quick-start' }, 'newplan:quick Ballroom');
+  await sleep(300);
+  const advance = async (label) => {
+    const ok = await ev(`(() => {
+      const b = document.querySelector('.new-plan-foot .primary');
+      if (!b || b.disabled) return false;
+      b.click();
       return true;
     })()`);
-    await sleep(250);
+    record(label, !!ok);
+    await sleep(700);
+  };
+  await advance('newplan:continue to room');
+  await advance('newplan:review plan');
+  await advance('newplan:create plan');
+
+  const planOpened = await waitFor(
+    `!document.querySelector('.new-plan-sheet') && !!document.querySelector('canvas')`,
+    25000,
+  );
+  record('newplan:shortcut creates the plan', planOpened, await title());
+  record('newplan:file written', fs.existsSync(SAVE_PATH), SAVE_PATH);
+  await sleep(1400);
+
+  // -------------------------------------------------------------------------
+  // C. The brief survived, and the plan is measured against it.
+  // -------------------------------------------------------------------------
+  console.log('\n-- C. The brief drives the plan --');
+  const dockOpen = await openSetupDock();
+  record('setup:dock reachable', dockOpen);
+  await sleep(600);
+  await shot(path.join(AUDIT, 'ui-stress-setup-03-show-setup.png'));
+
+  const briefCard = await probe(`(() => {
+    const card = document.querySelector('.brief-card');
+    if (!card) return null;
+    return {
+      name: (card.querySelector('.brief-summary strong')?.textContent || '').trim(),
+      summary: (card.querySelector('.brief-summary small')?.textContent || '').trim(),
+      groups: [...card.querySelectorAll('.brief-group-head strong')].map((s) =>
+        (s.textContent || '').trim(),
+      ),
+      openGroups: card.querySelectorAll('.brief-group-body').length,
+    };
+  })()`);
+
+  record('setup:brief card shows the show', briefCard?.name === SHOW_NAME, briefCard?.name);
+  record(
+    'setup:target attendance survived creation',
+    new RegExp(TARGET.toLocaleString()).test(briefCard?.summary || ''),
+    briefCard?.summary,
+  );
+  record(
+    'setup:four progressive groups, none forced open',
+    (briefCard?.groups || []).length === 4 && briefCard?.openGroups === 0,
+    JSON.stringify(briefCard?.groups),
+  );
+
+  if (briefCard?.name !== SHOW_NAME) {
+    note(
+      'critical',
+      'The show name did not survive plan creation',
+      'The brief is the whole point of the intake step; if it is dropped at create, nothing downstream can be trusted.',
+      JSON.stringify(briefCard),
+    );
   }
 
-  await ev(`(() => {
-    const more = document.querySelector('.create-more-tools');
-    if (more && !more.open) more.open = true;
-    const details = document.querySelector('.create-stamp-banks');
-    if (details && !details.open) {
-      details.open = true;
-      details.scrollIntoView({ block: 'center' });
+  const review = await readReview();
+  record('setup:review card present', !!review, review?.state);
+  record(
+    'setup:seats read actual against target',
+    new RegExp(`of\\s*${TARGET.toLocaleString()}`).test(review?.facts?.Seats || ''),
+    JSON.stringify(review?.facts),
+  );
+  record(
+    'setup:layout requested is reported',
+    /Theatre/i.test(review?.facts?.Layout || ''),
+    review?.facts?.Layout,
+  );
+  record(
+    'setup:every warning offers a way to fix it',
+    (review?.issues || []).length === 0 || (review?.issues || []).every((i) => i.action.length > 1),
+    JSON.stringify(review?.issues),
+  );
+
+  if ((review?.issues || []).some((i) => !i.action)) {
+    note(
+      'high',
+      'A readiness warning has no action',
+      'A warning that does not name the tool that fixes it is a complaint, not a check.',
+      JSON.stringify(review?.issues),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // D. Readiness reacts to the drawing, not to steps having been visited.
+  // -------------------------------------------------------------------------
+  console.log('\n-- D. Readiness reacts --');
+  await openBriefGroup('Constraints');
+  await sleep(350);
+  const accessibleField = await probe(`!!document.querySelector('#brief-accessible')`);
+  record('setup:constraints group opens', accessibleField);
+
+  let accessibleWarned = false;
+  if (accessibleField) {
+    await setAndCommit('#brief-accessible', '12');
+    accessibleWarned = await waitFor(
+      `[...document.querySelectorAll('.review-issues > li strong')].some((s) => /accessible/i.test(s.textContent || ''))`,
+      6000,
+    );
+    record('setup:new requirement raises a warning', accessibleWarned);
+    if (!accessibleWarned) {
+      note(
+        'high',
+        'Stating a requirement did not change readiness',
+        'Twelve accessible spaces were required and none are drawn; the review still reported no shortfall.',
+      );
     }
-    const root = document.querySelector('[aria-label="Event scale defaults"]');
-    root?.scrollIntoView({ block: 'center' });
-    return !!root;
+
+    // …and withdrawing it clears the warning again.
+    await setAndCommit('#brief-accessible', '');
+    const cleared = await waitFor(
+      `![...document.querySelectorAll('.review-issues > li strong')].some((s) => /accessible/i.test(s.textContent || ''))`,
+      6000,
+    );
+    record('setup:withdrawing it clears the warning', cleared);
+  }
+
+  await openBriefGroup('Layout goals');
+  await sleep(350);
+  const stageToggle = await probe(`!!document.querySelector('#brief-stage')`);
+  record('setup:layout goals group opens', stageToggle);
+  if (stageToggle) {
+    const before = await readReview();
+    await ev(`(() => {
+      const el = document.querySelector('#brief-stage');
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      el.click();
+      return true;
+    })()`);
+    await sleep(900);
+    const after = await readReview();
+    record(
+      'setup:asking for a stage is reported against the drawing',
+      !!after?.facts?.Stage && after.facts.Stage !== before?.facts?.Stage,
+      JSON.stringify({ before: before?.facts?.Stage, after: after?.facts?.Stage }),
+    );
+    // Leave the brief as we found it.
+    await ev(`document.querySelector('#brief-stage')?.click()`);
+    await sleep(600);
+  }
+
+  await shot(path.join(AUDIT, 'ui-stress-setup-04-readiness.png'));
+
+  // Seats: clear the seating and the shortfall must grow.
+  const seatsBefore = await probe(`(() => {
+    const row = [...document.querySelectorAll('.review-facts > div')].find((d) =>
+      /Seats/i.test(d.querySelector('dt')?.textContent || ''),
+    );
+    return (row?.querySelector('dd')?.textContent || '').trim();
   })()`);
-  await sleep(200);
-  const scaleChips = await probe(`(() => {
-    const root = document.querySelector('[aria-label="Event scale defaults"]');
-    if (!root) return { labels: [] };
-    const r = root.getBoundingClientRect();
-    return {
-      labels: [...root.querySelectorAll('button')].map((b) => (b.textContent || '').trim()),
-      onscreen: r.top >= 0 && r.bottom <= (window.innerHeight || 0) + 8,
-    };
+  record('setup:seat row reads off the drawing', /\d/.test(seatsBefore || ''), seatsBefore);
+
+  // -------------------------------------------------------------------------
+  // E. A warning takes you to the tool that fixes it.
+  // -------------------------------------------------------------------------
+  console.log('\n-- E. Warnings link somewhere --');
+  const linked = await ev(`(() => {
+    const li = [...document.querySelectorAll('.review-issues > li')].find((el) =>
+      /seat/i.test(el.querySelector('strong')?.textContent || ''),
+    );
+    const btn = li?.querySelector('button');
+    if (!btn) return null;
+    const label = (btn.textContent || '').trim();
+    btn.click();
+    return label;
+  })()`);
+  if (linked) {
+    await sleep(900);
+    const wentSomewhere = await probe(`(() => {
+      const text = document.body.innerText || '';
+      return /Seating/i.test(text);
+    })()`);
+    record('setup:seat warning opens seating', !!wentSomewhere, linked);
+  } else {
+    record('setup:seat warning opens seating', true, 'no seat shortfall to follow — kit met the target');
+  }
+  await esc();
+  await sleep(300);
+
+  // -------------------------------------------------------------------------
+  // F. The dock holds together small, in both themes, and takes the keyboard.
+  // -------------------------------------------------------------------------
+  console.log('\n-- F. Layout, themes, keyboard --');
+  // 1100×700 is a small laptop with a dock open — the size the panel is most
+  // likely to be clipped at, and the one the spec names.
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 1100,
+    height: 700,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await sleep(600);
+  await openSetupDock();
+  await openBriefGroup('Show');
+  await sleep(400);
+
+  const clipping = await probe(`(() => {
+    const dock = document.querySelector('.create-dialog-sheet');
+    if (!dock) return null;
+    const box = dock.getBoundingClientRect();
+    const bad = [];
+    for (const el of dock.querySelectorAll('.brief-field, .brief-group, .review-facts > div, .review-issues > li, button, input, select')) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      if (r.right > box.right + 1 || r.left < box.left - 1) {
+        bad.push({ cls: el.className.toString().slice(0, 40), right: Math.round(r.right), edge: Math.round(box.right) });
+      }
+      if (el.scrollWidth > el.clientWidth + 2 && !/select|input/i.test(el.tagName)) {
+        bad.push({ cls: el.className.toString().slice(0, 40), overflow: el.scrollWidth - el.clientWidth });
+      }
+    }
+    return { viewport: { w: window.innerWidth, h: window.innerHeight }, dock: Math.round(box.width), bad: bad.slice(0, 8) };
   })()`);
   record(
-    'setup:seating scale chips',
-    (scaleChips?.labels || []).includes('~20') &&
-      (scaleChips?.labels || []).includes('Banquet') &&
-      (scaleChips?.labels || []).includes('Arena'),
-    JSON.stringify(scaleChips?.labels),
+    'layout:nothing overflows the dock',
+    (clipping?.bad || []).length === 0,
+    JSON.stringify(clipping),
   );
-  record('setup:scale chips on screen', !!scaleChips?.onscreen, JSON.stringify(scaleChips));
-  await ev(`(() => {
-    const b = [...document.querySelectorAll('[aria-label="Event scale defaults"] button')].find((el) =>
-      (el.textContent || '').trim() === '~20',
+  if ((clipping?.bad || []).length) {
+    note(
+      'high',
+      'Show Setup content spills out of the dock',
+      'The brief and review must fit the panel at the window sizes people actually use.',
+      JSON.stringify(clipping),
     );
-    if (!b) return false;
-    b.scrollIntoView({ block: 'center' });
-    b.click();
-    return true;
-  })()`);
-  record('setup:scale ~20', true, 'dom click after scroll');
-  await sleep(200);
-  const theatreArmed = await probe(
-    `!!document.querySelector('.seat-kinds [data-seat-kind="theatre"].active, .seat-kinds [data-seat-kind="theatre"][aria-pressed="true"]')`,
-  );
-  record('setup:~20 arms theatre rows', !!theatreArmed);
+  }
 
-  const groupDisabledEmpty = await probe(`(() => {
-    const b = [...document.querySelectorAll('button')].find((el) => (el.getAttribute('aria-label') || '') === 'Group selected shapes');
-    return b ? !!b.disabled : null;
-  })()`);
-  record('ux:Group disabled without a multi-selection', groupDisabledEmpty === true, String(groupDisabledEmpty));
-
-  await ev(`document.querySelector('canvas')?.focus()`);
-  await clickAt(400, 300);
-  await sleep(150);
-  await key(65, 'KeyA', 'a', 4);
-  await sleep(400);
-  let selectedN = await probe(`(() => {
-    const t = document.body.innerText || '';
-    const line = (t.match(/[^\\n]*selected[^\\n]*/i) || [''])[0].slice(0, 80);
-    return { text: line, hasSel: /selected/i.test(t) };
-  })()`);
-  if (!selectedN?.hasSel) {
-    await cdp.canvasClickFt(0, 1.5);
-    await sleep(150);
-    selectedN = await probe(`(() => {
-      const t = document.body.innerText || '';
-      const line = (t.match(/[^\\n]*selected[^\\n]*/i) || [''])[0].slice(0, 80);
-      return { text: line, hasSel: /selected/i.test(t) };
+  for (const theme of ['light', 'dark']) {
+    await ev(`(() => {
+      const app = document.querySelector('.app');
+      if (app) app.setAttribute('data-theme', ${JSON.stringify(theme)});
+      return true;
     })()`);
-  }
-  record('ux:Select All after kit', !!selectedN?.hasSel, selectedN?.text);
-  const groupedClick = await click({ aria: 'Group selected shapes' }, 'ux:Group after Select All');
-  await sleep(400);
-  const grouped = await probe(`!!document.querySelector('.toast') && /Grouped/i.test(document.querySelector('.toast')?.textContent || '')`);
-  record('ux:Group reports success', !!grouped || groupedClick);
-  await click({ aria: 'Ungroup selected shapes' }, 'ux:Ungroup');
-  await sleep(300);
-  const ungrouped = await probe(`!!document.querySelector('.toast') && /Ungrouped/i.test(document.querySelector('.toast')?.textContent || '')`);
-  record('ux:Ungroup reports success', !!ungrouped);
-
-  await click({ aria: 'Print plan to PDF' }, 'ux:open print preview');
-  await sleep(400);
-  const printOpen = await probe(`!!document.querySelector('.print-popover, [class*="print-plan"]') || /Visible layers/i.test(document.body.innerText || '')`);
-  record('ux:print preview opens', !!printOpen);
-  if (!printOpen) {
-    note('medium', 'Print preview did not open from the toolbar', 'Users need to see paper fit before exporting PDF.');
-  }
-  await esc();
-  await sleep(250);
-  const createStillOpen = await probe(`!!document.querySelector('.create-dialog-sheet')`);
-  const printClosed = await probe(`!/Visible layers/i.test(document.body.innerText || '') || !!document.querySelector('.create-dialog-sheet')`);
-  record('ux:Esc closes print not Show setup', !!createStillOpen, `createOpen=${createStillOpen}`);
-  if (!createStillOpen) {
-    note('high', 'Escape dismissed Show setup instead of print preview', 'Print is the front overlay; Esc should close it first.');
-  }
-
-  await ev(`(() => {
-    const b = [...document.querySelectorAll('.create-dialog-sheet button, .create-dialog-sheet .link-btn')].find((el) =>
-      /^Open Room panel$/i.test((el.textContent || '').trim()),
-    );
-    if (!b) return false;
-    b.scrollIntoView({ block: 'center' });
-    b.click();
-    return true;
-  })()`);
-  record('setup:Open Room panel', true, 'dom click after scroll');
-  await sleep(600);
-  const roomPanel = await probe(`(() => {
-    const createOpen = !!document.querySelector('.create-dialog-sheet');
-    const roomTab = [...document.querySelectorAll('button')].find((el) => {
-      const t = (el.textContent || '').trim();
-      return t === 'Room' && el.getAttribute('aria-current') === 'page';
-    });
-    const text = document.body.innerText || '';
-    const hasRoomCopy = /Draw custom|Redraw rectangle|2,400 sq ft|sq ft floor|Room shape/i.test(text);
-    const seatingWorkspace = !!document.querySelector('.seating-workspace, [aria-label="Seating"]') ||
-      (/Seating planner/i.test(text) && /Clearances/i.test(text));
-    return {
-      createOpen,
-      roomTab: !!roomTab,
-      hasRoomCopy,
-      seatingWorkspace,
-      title: document.title,
-    };
-  })()`);
-  const roomOk = !!roomPanel?.hasRoomCopy && !roomPanel?.seatingWorkspace;
-  record('setup:Open Room panel reaches room tools', roomOk, JSON.stringify(roomPanel));
-  if (!roomOk) {
-    note('high', 'Open Room panel did not show room tools', 'Expected Room inspector with shape / redraw controls.', JSON.stringify(roomPanel));
-  }
-  await shot(path.join(AUDIT, 'ui-stress-setup-03-room-panel.png'));
-
-  // ---------------------------------------------------------------------------
-  // D. Custom draw path (banner, no Create until room)
-  // ---------------------------------------------------------------------------
-  console.log('\n-- D. Custom draw path --');
-  await esc();
-  await sleep(200);
-  // With a plan already open, prefer New → New plan (CDP meta+N does not hit Electron menu accelerators).
-  const openedViaMenu = await ev(`(() => {
-    const create = [...document.querySelectorAll('button')].find((el) => (el.textContent || '').trim() === 'New');
-    if (create) create.click();
-    return true;
-  })()`);
-  await sleep(300);
-  const pickedNew = await ev(`(() => {
-    const b = [...document.querySelectorAll('[role=menuitem]')].find((el) => /^New plan/i.test((el.textContent || '').trim()));
-    if (!b) return false;
-    b.click();
-    return true;
-  })()`);
-  record('custom:New → New plan', !!pickedNew || openedViaMenu);
-  await sleep(700);
-  let customSheet = await waitFor('!!document.querySelector(".new-plan-sheet")', 8000);
-  if (!customSheet) {
-    customSheet = await openNewPlan();
-  }
-  record('custom:new-plan-sheet', customSheet);
-  if (customSheet) {
-    await click({ match: '/Draw custom/i', root: '.new-plan-quick-start' }, 'custom:quick Draw custom');
-    const customOpened = await waitFor(
-      `!document.querySelector('.new-plan-sheet') && !!document.querySelector('canvas')`,
-      15000,
-    );
-    record('custom:opens empty plan', customOpened, await title());
-    await sleep(900);
-    await shot(path.join(AUDIT, 'ui-stress-setup-04-custom-draw.png'));
-
-    const customState = await probe(`(() => {
-      const createOpen = !!document.querySelector('.create-dialog-sheet');
-      const banner = document.querySelector('.room-outline-banner');
-      const bannerText = (banner?.innerText || '').replace(/\\s+/g, ' ').trim();
-      const toast = (document.querySelector('.toast')?.textContent || '').trim();
-      const roomTool = document.querySelector('[data-tool-id="room"]');
-      const roomPressed = roomTool?.getAttribute('aria-pressed') === 'true' || roomTool?.classList.contains('is-on');
+    await sleep(350);
+    const painted = await probe(`(() => {
+      const pick = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, color: cs.color };
+      };
       return {
-        createOpen,
-        banner: !!banner,
-        bannerText,
-        toast,
-        roomPressed,
-        hasFinishRect: /Finish as rectangle/i.test(bannerText),
-        hasDiscard: /Discard plan/i.test(bannerText),
+        brief: pick('.brief-card'),
+        review: pick('.review-card'),
+        state: pick('.review-state'),
       };
     })()`);
-
-    record('custom:Create deferred until room', !customState?.createOpen, JSON.stringify({ createOpen: customState?.createOpen }));
-    record('custom:outline banner visible', !!customState?.banner, customState?.bannerText);
-    record('custom:banner offers Finish as rectangle', !!customState?.hasFinishRect);
-    record('custom:banner offers Discard', !!customState?.hasDiscard);
-    record('custom:room outline tool armed', !!customState?.roomPressed);
-
-    const zoom = await probe(`(() => {
-      const text = document.body.innerText || '';
-      const m = text.match(/\\b(\\d+)%\\b/);
-      return m ? Number(m[1]) : null;
-    })()`);
-    if (typeof zoom === 'number' && zoom > 0 && zoom < 15) {
-      note('medium', 'New plan opens extremely zoomed out', `Canvas zoom reported around ${zoom}% — room is hard to work with until Fit.`, `zoom=${zoom}`);
-    }
-
-    const invalidShape = await probe(`(/\\* Invalid Shape \\*/i.test(document.body.innerText || ''))`);
-    if (invalidShape) {
-      note('low', 'Inventory lists an Invalid Shape item', 'Catalog noise on a brand-new plan session.', '* Invalid Shape *');
-    }
-
-    if (customState?.createOpen) {
-      note('high', 'Create opens during custom draw', 'Canvas banner should own guidance until the outline exists.', JSON.stringify(customState));
-    }
-    if (!customState?.banner) {
-      note('high', 'Missing room-outline banner on custom create', 'Users can abandon an empty .rv4 with no recovery UI.', JSON.stringify(customState));
-    }
-
-    // Finish as rectangle recovery
-    if (customState?.hasFinishRect) {
-      await click({ match: '/Finish as rectangle/i' }, 'custom:Finish as rectangle');
-      await sleep(1000);
-      const finished = await probe(`(() => {
-        const chip = (document.querySelector('.show-setup-chip')?.textContent || '').trim();
-        const createOpen = !!document.querySelector('.create-dialog-sheet');
-        const banner = !!document.querySelector('.room-outline-banner');
-        return { chip, createOpen, banner };
-      })()`);
-      record('custom:finish-as-rect creates room', /Room ready/i.test(finished?.chip || '') || (!finished?.banner && finished?.createOpen), JSON.stringify(finished));
-      record('custom:Create opens after room exists', !!finished?.createOpen);
-      await shot(path.join(AUDIT, 'ui-stress-setup-05-finish-rect.png'));
-    }
-  } else {
-    record('custom:opens empty plan', false, 'could not reopen New Plan');
+    const transparent = Object.entries(painted || {}).filter(
+      ([, v]) => !v || /rgba\(0, 0, 0, 0\)/.test(v.bg || ''),
+    );
+    record(`theme:${theme} cards paint their own ground`, transparent.length === 0, JSON.stringify(painted));
+    await shot(path.join(AUDIT, `ui-stress-setup-05-${theme}.png`));
   }
 
-  // ---------------------------------------------------------------------------
-  // E. Vocabulary / consistency probes
-  // ---------------------------------------------------------------------------
-  console.log('\n-- E. Copy consistency --');
-  const copy = await probe(`(() => {
-    const text = document.body.innerText || '';
+  const focus = await probe(`(() => {
+    const head = document.querySelector('.brief-group-head');
+    if (!head) return null;
+    head.focus();
+    const cs = getComputedStyle(head, ':focus-visible');
+    const active = document.activeElement === head;
+    return { active, outline: cs.outlineStyle, width: cs.outlineWidth };
+  })()`);
+  record(
+    'a11y:brief groups take focus',
+    !!focus?.active,
+    JSON.stringify(focus),
+  );
+
+  const labelled = await probe(`(() => {
+    const missing = [];
+    for (const el of document.querySelectorAll('.brief-card input, .brief-card select, .review-card input')) {
+      const id = el.id;
+      const hasLabel = id ? !!document.querySelector('label[for="' + id + '"]') : false;
+      const wrapped = !!el.closest('label');
+      if (!hasLabel && !wrapped && !el.getAttribute('aria-label')) missing.push(id || el.outerHTML.slice(0, 60));
+    }
+    return missing;
+  })()`);
+  record('a11y:every brief control is labelled', (labelled || []).length === 0, JSON.stringify(labelled));
+
+  // -------------------------------------------------------------------------
+  // G. The brief outlives the session.
+  // -------------------------------------------------------------------------
+  console.log('\n-- G. Persistence --');
+  await key(83, 'KeyS', 's', 4); // Cmd/Ctrl+S
+  await sleep(1600);
+  const savedName = await probe(`(() => {
+    const el = document.querySelector('.brief-summary strong');
+    return (el?.textContent || '').trim();
+  })()`);
+  record('persist:brief still shown after save', savedName === SHOW_NAME, savedName);
+
+  // -------------------------------------------------------------------------
+  // H. Print stays reachable, and readiness is visible before it.
+  // -------------------------------------------------------------------------
+  console.log('\n-- H. Issue --');
+  const issueBlock = await probe(`(() => {
+    const card = document.querySelector('.review-card');
+    if (!card) return null;
+    const print = [...card.querySelectorAll('button')].find((b) => /Print/i.test(b.textContent || ''));
+    const state = card.querySelector('.review-state');
+    if (!print || !state) return null;
+    const pr = print.getBoundingClientRect();
+    const sr = state.getBoundingClientRect();
     return {
-      freeform: /\\bFreeform\\b/.test(text),
-      drawCustom: /Draw custom/i.test(text),
-      continueToRoom: /Continue to room/i.test(text),
-      newShowReady: /New show ready/i.test(text),
-      theatre: /Theatre/i.test(text),
-      theater: /\\bTheater\\b/.test(text),
+      hasDrawnBy: !!card.querySelector('#review-drawn-by'),
+      hasRevision: !!card.querySelector('#review-revision'),
+      printEnabled: !print.disabled,
+      readinessAbovePrint: sr.top <= pr.top,
     };
   })()`);
-  record('copy:no Freeform label', !copy?.freeform);
-  record('copy:no Continue to room', !copy?.continueToRoom);
-  record('copy:no New show ready toast', !copy?.newShowReady);
-  if (copy?.freeform) {
-    note('low', 'Freeform label still appears', 'Should be Draw custom for consistency.', 'body text match');
+  record('issue:drawn-by and revision live with the sheet', !!(issueBlock?.hasDrawnBy && issueBlock?.hasRevision), JSON.stringify(issueBlock));
+  record('issue:readiness is visible before print', !!issueBlock?.readinessAbovePrint);
+  record('issue:printing is never blocked', !!issueBlock?.printEnabled);
+
+  if (issueBlock && !issueBlock.printEnabled) {
+    note(
+      'high',
+      'Print is disabled on a plan with a room',
+      'A drawing that does not yet satisfy the brief is still a drawing somebody may need to send.',
+    );
   }
-} else {
-  note('critical', 'New Plan dialog never opened', 'Cannot stress room-first flow without the sheet.');
 }
 
+await cdp.send('Emulation.clearDeviceMetricsOverride', {}).catch(() => undefined);
 await shot(path.join(AUDIT, 'ui-stress-setup-06-final.png'));
 
 const uniqueErrors = [];
@@ -641,9 +651,13 @@ for (const err of pageErrors) {
 const crashy = uniqueErrors.filter(
   (e) => /EPIPE|Cannot read|TypeError|Unhandled|Uncaught/i.test(e.text) && !/DevTools|favicon/i.test(e.text),
 );
-record('runtime:no hard console exceptions', crashy.length === 0, crashy[0]?.text || `${uniqueErrors.length} console messages`);
+record(
+  'runtime:no hard console exceptions',
+  crashy.length === 0,
+  crashy[0]?.text || `${uniqueErrors.length} console messages`,
+);
 if (crashy.length) {
-  note('critical', 'Renderer threw while walking the setup flow', crashy[0].text, JSON.stringify(crashy.slice(0, 4)));
+  note('critical', 'Renderer threw while walking the intake flow', crashy[0].text, JSON.stringify(crashy.slice(0, 4)));
 }
 
 const passed = results.filter((r) => r.ok).length;
@@ -652,6 +666,7 @@ const report = {
   generatedAt: new Date().toISOString(),
   title: await title(),
   savePath: SAVE_PATH,
+  target: TARGET,
   summary: { passed, failed, findings: findings.length, consoleErrors: uniqueErrors.length },
   results,
   findings,
@@ -662,4 +677,5 @@ console.log(`\n=== Summary: ${passed} passed, ${failed} failed, ${findings.lengt
 console.log(`Report: ${path.join(AUDIT, 'ui-stress-setup-report.json')}`);
 
 await close();
-process.exitCode = failed > 0 || findings.some((f) => f.severity === 'critical' || f.severity === 'high') ? 1 : 0;
+process.exitCode =
+  failed > 0 || findings.some((f) => f.severity === 'critical' || f.severity === 'high') ? 1 : 0;

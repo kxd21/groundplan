@@ -1,10 +1,17 @@
 /**
- * New Plan is room-first: pick a shape (or venue preset), then land on the plan.
- * Show details (venue / event / date) belong in Show setup after the room exists.
+ * New Plan: describe the show, define the room, create.
+ *
+ * It stays room-first — every quick-start shortcut still lands on a room in one
+ * click, and the brief can be skipped outright. What changed is that the
+ * headcount somebody types is now KEPT. It used to pick a room preset and then
+ * be discarded, so the finished drawing had no idea how many people were meant
+ * to fit in it; it is now the brief's target attendance, and the readiness check
+ * measures the seat count against it for the life of the plan.
+ *
  * The same pure builder powers this preview and the main process write path.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   buildNewRoom,
@@ -20,6 +27,7 @@ import {
   type RoomModel,
 } from '../../format/room.js';
 import { formatArea, formatLength, parseLength, type UnitSystem } from '../../format/units.js';
+import { LAYOUT_TYPES, type ShowBrief } from '../../format/show-brief.js';
 import { IconDrawEllipse, IconDrawPolygon, IconDrawRect, IconPlus, IconRuler } from './icons.js';
 import type { CustomRoomAngleLock, CustomRoomPrefs } from './custom-room.js';
 
@@ -44,6 +52,8 @@ interface Props {
       applyKitId?: string;
       /** Open Background Studio so the user can import a site plan / CAD export. */
       openBackground?: boolean;
+      /** What the user said about the show, to be written to the sidecar. */
+      brief?: Partial<ShowBrief>;
     },
   ) => void;
   onCancel: () => void;
@@ -308,6 +318,8 @@ function RoomPreview({
 export default function NewPlanDialog({ units, onCreated, onCancel, onError }: Props) {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [name, setName] = useState('Untitled plan');
+  /** The last name this dialog set itself, so a name the USER typed is kept. */
+  const nameFollowRef = useRef('Untitled plan');
 
   const [shape, setShape] = useState<RoomChoice>('rectangle');
   const [width, setWidth] = useState(() => formatLength(60 * FT, units));
@@ -336,6 +348,12 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [customOptionsOpen, setCustomOptionsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [guestTarget, setGuestTarget] = useState('');
+  /* The brief, as much of it as is worth asking for before a room exists. */
+  const [showName, setShowName] = useState('');
+  const [showClient, setShowClient] = useState('');
+  const [showVenue, setShowVenue] = useState('');
+  const [showLayout, setShowLayout] = useState<ShowBrief['layoutType'] | ''>('');
+  const [briefSkipped, setBriefSkipped] = useState(false);
   const [step, setStep] = useState<NewPlanStep>('start');
   const [startChoice, setStartChoice] = useState('ballroom');
   const [suggestedKitId, setSuggestedKitId] = useState<string | undefined>('bundled:banquet-120');
@@ -345,6 +363,20 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   useEffect(() => {
     void api.roomPresets().then(setPresets);
   }, []);
+
+  /*
+   * The file takes the show's name until somebody types a different one. Two
+   * names for the same job is one more than anyone wants to keep in step, and
+   * "Untitled plan" in the recent list helps nobody.
+   */
+  useEffect(() => {
+    setName((current) => {
+      if (current !== 'Untitled plan' && current !== nameFollowRef.current) return current;
+      const next = showName.trim() || 'Untitled plan';
+      nameFollowRef.current = next;
+      return next;
+    });
+  }, [showName]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -482,11 +514,25 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         onError(reply.reason ?? 'the plan could not be created');
         return;
       }
+      /*
+       * Only send what was actually said. An empty patch writes no sidecar, so
+       * a plan created straight through the shortcuts is indistinguishable from
+       * one made before the brief existed — which is what "Skip for now" means.
+       */
+      const brief: Partial<ShowBrief> = {};
+      if (showName.trim()) brief.name = showName.trim();
+      if (showClient.trim()) brief.client = showClient.trim();
+      if (showVenue.trim()) brief.venue = showVenue.trim();
+      if (showLayout) brief.layoutType = showLayout;
+      const guests = Math.floor(Number(guestTarget));
+      if (Number.isFinite(guests) && guests > 0) brief.targetAttendance = guests;
+
       onCreated(reply.doc, {
         startRoomOutline: Boolean(customPrefs),
         customRoom: customPrefs,
         applyKitId: customPrefs ? undefined : override?.applyKitId,
         openBackground: Boolean(override?.openBackground),
+        ...(Object.keys(brief).length ? { brief } : {}),
       });
     } finally {
       setBusy(false);
@@ -554,11 +600,11 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           <div>
             <span className="new-plan-eyebrow">New plan</span>
             <h2 id="new-plan-title">
-              {step === 'start' ? 'How do you want to begin?' : step === 'room' ? 'Define the room' : 'Review and create'}
+              {step === 'start' ? 'What is the show?' : step === 'room' ? 'Define the room' : 'Review and create'}
             </h2>
             <p>
               {step === 'start'
-                ? 'Choose a familiar room, work from headcount, or trace a site plan.'
+                ? 'Describe it once and the plan gets checked against it — or skip and start from a room.'
                 : step === 'room'
                   ? 'Confirm the boundary and dimensions before anything is created.'
                   : 'Name the file and choose whether to begin with a suggested layout.'}
@@ -569,7 +615,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
 
         <ol className="new-plan-steps" aria-label="New plan progress">
           {([
-            ['start', '1', 'Starting point'],
+            ['start', '1', 'Show'],
             ['room', '2', 'Room'],
             ['review', '3', 'Create'],
           ] as const).map(([id, number, label]) => {
@@ -586,6 +632,79 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         </ol>
 
         {step === 'start' && <div className="new-plan-start-step">
+        <section className="new-plan-brief" aria-label="Show brief">
+          <div className="new-plan-brief-head">
+            <div>
+              <strong>Show brief</strong>
+              <small>Kept with the plan. Everything here can be changed later in Show Setup.</small>
+            </div>
+            <button
+              type="button"
+              className="link-btn"
+              disabled={busy}
+              onClick={() => {
+                setShowName('');
+                setShowClient('');
+                setShowVenue('');
+                setShowLayout('');
+                setGuestTarget('');
+                setBriefSkipped(true);
+                setStep('room');
+              }}
+            >
+              Skip for now
+            </button>
+          </div>
+          <div className="new-plan-brief-grid">
+            <div className="brief-field">
+              <label htmlFor="new-plan-show-name">Show name</label>
+              <input
+                id="new-plan-show-name"
+                value={showName}
+                disabled={busy}
+                placeholder="Northwind Global Kickoff"
+                onChange={(e) => {
+                  setShowName(e.target.value);
+                  setBriefSkipped(false);
+                }}
+              />
+            </div>
+            <div className="brief-field">
+              <label htmlFor="new-plan-show-client">Client</label>
+              <input
+                id="new-plan-show-client"
+                value={showClient}
+                disabled={busy}
+                onChange={(e) => setShowClient(e.target.value)}
+              />
+            </div>
+            <div className="brief-field">
+              <label htmlFor="new-plan-show-venue">Venue</label>
+              <input
+                id="new-plan-show-venue"
+                value={showVenue}
+                disabled={busy}
+                placeholder="Marriott Marquis"
+                onChange={(e) => setShowVenue(e.target.value)}
+              />
+            </div>
+            <div className="brief-field">
+              <label htmlFor="new-plan-show-layout">Layout</label>
+              <select
+                id="new-plan-show-layout"
+                value={showLayout}
+                disabled={busy}
+                onChange={(e) => setShowLayout((e.target.value || '') as ShowBrief['layoutType'] | '')}
+              >
+                <option value="">Not decided</option>
+                {LAYOUT_TYPES.map((l) => (
+                  <option key={l.id} value={l.id}>{l.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </section>
+
         <div className="new-plan-quick-start" role="radiogroup" aria-label="Common rooms">
           {QUICK_START.map((item) => (
             <button
@@ -605,7 +724,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
 
         <div className="new-plan-guest-row">
           <label htmlFor="new-plan-guests">
-            Or start from headcount
+            Target attendance
             <input
               id="new-plan-guests"
               className="num"
@@ -615,7 +734,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
               placeholder="e.g. 120"
               value={guestTarget}
               disabled={busy}
-              onChange={(e) => setGuestTarget(e.target.value)}
+              onChange={(e) => { setGuestTarget(e.target.value); setBriefSkipped(false); }}
             />
           </label>
           <button
@@ -643,14 +762,15 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
             <p className="hint">
               Suggests {suggestQuickStartForGuests(Number(guestTarget)).label} (
               {suggestQuickStartForGuests(Number(guestTarget)).width}′ ×{' '}
-              {suggestQuickStartForGuests(Number(guestTarget)).depth}′) with matching kit.
+              {suggestQuickStartForGuests(Number(guestTarget)).depth}′) with matching kit. The
+              number is kept as the show's target, and the seat count is checked against it.
             </p>
           ) : null}
         </div>
         <div className="new-plan-start-summary" role="status">
           <span><strong>Selected</strong><small>{startChoice === 'headcount' ? 'Headcount recommendation' : QUICK_START.find((item) => item.id === startChoice)?.label}</small></span>
           <span><strong>Room</strong><small>{customRoom ? (openBackgroundAfterCreate ? 'Trace from site plan' : 'Draw a custom outline') : `${width} × ${depth}`}</small></span>
-          <span><strong>Next</strong><small>Review and adjust the room</small></span>
+          <span><strong>Show</strong><small>{showName.trim() || (briefSkipped ? 'Skipped' : 'Unnamed')}{Number(guestTarget) > 0 ? ` · ${Number(guestTarget).toLocaleString()} people` : ''}</small></span>
         </div>
         </div>}
 
@@ -1199,7 +1319,7 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           <div className="new-plan-foot-meta">
             <span className="new-plan-foot-note">
               {step === 'start'
-                ? 'Nothing is created until the final review.'
+                ? 'Every field here is optional. Nothing is created until the final review.'
                 : step === 'room'
                   ? 'Room geometry stays fully editable after creation.'
                   : 'Creates an autosaved plan in Documents/Groundplan.'}

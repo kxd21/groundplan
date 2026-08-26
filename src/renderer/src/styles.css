@@ -18926,3 +18926,460 @@ a,
 .app[data-theme='dark'] .recovery-panel {
   --ink-3: #cdc3b2;
 }
+
+/* ---------------------------------------------------------------------------
+   Show brief and readiness review.
+
+   Both cards live inside the Setup pane's light-chrome scope, so they take the
+   same token vocabulary as the cards around them and add only what is new: the
+   three readiness states, and the disclosure rows the brief's field groups open
+   from. Status colours are declared locally rather than by touching --ok, which
+   has no light-theme value and is used by six other surfaces.
+--------------------------------------------------------------------------- */
+
+.brief-card,
+.review-card {
+  min-width: 0;
+  box-sizing: border-box;
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+
+  --state-ready-ink: #14663d;
+  --state-ready-bg: #e6f5ec;
+  --state-ready-line: #8fc9a5;
+}
+
+/* `.section` supplies its own title margin; here the grid gap already does. */
+.brief-card > .section-title,
+.review-card > .section-title {
+  margin-bottom: 0;
+}
+
+.brief-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.brief-summary strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.brief-summary small {
+  color: var(--ink-2);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.brief-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-2);
+  background: var(--surface);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.brief-status.is-approved {
+  color: var(--state-ready-ink);
+  background: var(--state-ready-bg);
+  border-color: var(--state-ready-line);
+}
+
+.brief-groups {
+  display: grid;
+  gap: 6px;
+}
+
+.brief-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.brief-group.is-open {
+  border-color: var(--line-strong);
+}
+
+.brief-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.brief-group-head:hover {
+  background: var(--hover, rgba(22, 135, 248, 0.07));
+}
+
+.brief-group-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.brief-group-copy strong {
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.brief-group-copy small {
+  color: var(--ink-2);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.brief-group-mark {
+  flex: none;
+  display: inline-flex;
+  color: var(--ink-2);
+}
+
+.brief-group.is-open .brief-group-mark {
+  color: var(--accent-fill);
+}
+
+.brief-group-body {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.brief-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.brief-field > label {
+  color: var(--ink-2);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.brief-field > input,
+.brief-field > select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  color: var(--ink);
+  font-size: 11.5px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+.brief-field > input:focus-visible,
+.brief-field > select:focus-visible,
+.brief-group-head:focus-visible,
+.review-issues button:focus-visible {
+  outline: 2px solid var(--accent-fill);
+  outline-offset: 1px;
+}
+
+.brief-field > small {
+  color: var(--ink-3);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.brief-pair,
+.brief-triple {
+  display: grid;
+  gap: 8px;
+}
+
+/* Side by side while the dock is wide enough, stacking on their own when it is
+   not — no breakpoint to keep in step with the dock's resizable width. */
+.brief-pair { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+.brief-triple { grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); }
+
+.brief-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.brief-toggle input {
+  flex: none;
+  accent-color: var(--accent-fill);
+}
+
+/* Review ------------------------------------------------------------------ */
+
+.review-state {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.review-state.is-ready {
+  color: var(--state-ready-ink);
+  background: var(--state-ready-bg);
+  border: 1px solid var(--state-ready-line);
+}
+
+.review-state.is-attention {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+}
+
+.review-state.is-incomplete {
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+}
+
+.review-headline {
+  margin: -2px 0 0;
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.review-facts {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.review-facts > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--surface);
+}
+
+.review-facts dt {
+  color: var(--ink-2);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.review-facts dd {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-facts dd > svg {
+  flex: none;
+  color: var(--state-ready-ink);
+}
+
+.review-facts > div.is-off dd,
+.review-facts > div.is-off dd > svg {
+  color: var(--warn);
+}
+
+.review-issues {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-issues > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.review-issues > li.is-blocking {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--line));
+  background: var(--danger-bg);
+}
+
+.review-issues > li.is-warning {
+  border-color: color-mix(in srgb, var(--warn) 32%, var(--line));
+  background: var(--warn-bg);
+}
+
+.review-issue-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.review-issue-copy strong {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.review-issue-copy small {
+  color: var(--ink-2);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.review-issues button {
+  flex: none;
+  padding: 5px 9px;
+  color: var(--ink);
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.review-issue-block {
+  display: grid;
+  gap: 9px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.review-print {
+  width: 100%;
+  justify-content: center;
+}
+
+.show-setup-kit-warning {
+  margin: 0;
+  color: var(--warn);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* Dark theme. Same structure, tones that hold on a near-black ground. */
+.app[data-theme='dark'] .brief-card,
+.app[data-theme='dark'] .review-card {
+  --state-ready-ink: #9ee0b8;
+  --state-ready-bg: rgba(32, 110, 72, 0.35);
+  --state-ready-line: rgba(110, 200, 150, 0.4);
+}
+
+/* New Plan's show brief. Sits above the room shortcuts in the same card idiom
+   the dialog already uses, and reuses `.brief-field` so a field looks the same
+   here as it does in Show Setup. */
+.new-plan-brief {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.new-plan-brief-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.new-plan-brief-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.new-plan-brief-head strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.new-plan-brief-head small {
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.new-plan-brief-head .link-btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.new-plan-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.new-plan-brief .brief-field > label {
+  font-size: 10px;
+}
+
+.new-plan-brief .brief-field > input,
+.new-plan-brief .brief-field > select {
+  font-size: 12px;
+  padding: 7px 9px;
+}
+
+/* Card heading with a state chip on the right.
+   `.show-setup-compact-card > div:first-child` above sets `display: grid` at a
+   higher specificity, so the compact card needs its own selector here. */
+.show-setup-card-head,
+.show-setup-compact-card > .show-setup-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.show-setup-card-head > h3,
+.show-setup-card-head > div {
+  min-width: 0;
+}
+
+.show-setup-card-head > .show-setup-chip {
+  flex: none;
+}
+
+.show-setup-compact-card .show-setup-card-head > div {
+  display: grid;
+  gap: 3px;
+}

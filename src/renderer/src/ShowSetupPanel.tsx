@@ -1,14 +1,34 @@
-/** Room and layout library surfaced beside the live plan canvas. */
+/**
+ * Show Setup — describe the show, build the room, lay it out, check it, issue it.
+ *
+ * The panel used to be a layout library with four identity fields hidden at the
+ * bottom, so the only thing it knew about a job was what printed on the title
+ * block. It now runs the intake in four sections that follow the order the work
+ * actually happens in, each one a compact summary that opens when somebody needs
+ * it rather than one long form:
+ *
+ *   Brief          what the show needs
+ *   Venue & room   the boundary everything else is measured inside
+ *   Layout         kits and the generators that fill it
+ *   Review & issue whether the drawing satisfies the brief, then print
+ *
+ * Nothing here wraps the existing tools. Every route, kit operation, generator,
+ * export and advanced action that was reachable before is still reachable, in
+ * the section it belongs to.
+ */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
+import { assessReadiness, type IssueTarget } from '../../format/readiness.js';
+import { suggestKit } from '../../format/kit-fit.js';
+import type { ShowBrief } from '../../format/show-brief.js';
+import { ShowBriefCard, ReviewCard, type BriefGroup } from './ShowBriefSection.js';
 import {
   IconChair,
   IconDrawPolygon,
   IconFile,
   IconLayers,
   IconPlus,
-  IconPrint,
   IconRuler,
 } from './icons.js';
 
@@ -29,6 +49,10 @@ export interface ShowKitInfo {
   event?: string;
   venue?: string;
   capacityGuests?: number;
+  /** What the kit's seating really is — see `suggestKit`. */
+  seatingKinds?: Array<'theatre' | 'schoolroom' | 'round'>;
+  hasStage?: boolean;
+  extentFt?: { width: number; depth: number };
   variantOf?: string;
 }
 
@@ -36,10 +60,13 @@ interface Props {
   editable: boolean;
   hasRoom: boolean;
   drawingRoomOutline: boolean;
-  identity: PlanIdentityFields;
   selectedCount?: number;
-  onSaveIdentity: (next: PlanIdentityFields) => void | Promise<void>;
-  identityBusy?: boolean;
+
+  /* The brief ------------------------------------------------------------ */
+  brief?: ShowBrief | null;
+  briefBusy?: boolean;
+  onSaveBrief?: (patch: Partial<ShowBrief>) => void | Promise<void>;
+
   roomSizeText?: string | null;
   onOpenRoom: () => void;
   onDrawRoomOutline: () => void;
@@ -52,6 +79,7 @@ interface Props {
   onRepeat?: () => void;
   onSeating: () => void;
   onPrint: () => void;
+  onOpenGear?: () => void;
   kits?: ShowKitInfo[];
   kitsBusy?: boolean;
   roomWidthFt?: number;
@@ -70,6 +98,17 @@ interface Props {
   onPlaceOpening?: () => void;
   chairCount?: number;
   tableCount?: number;
+
+  /* Plan facts the readiness check needs beyond seats and tables. --------- */
+  hasScreens?: boolean;
+  accessibleSeats?: number;
+
+  /* Title block, edited where the sheet is issued. ------------------------ */
+  revision?: string;
+  drawnBy?: string;
+  onRevision?: (next: string) => void;
+  onDrawnBy?: (next: string) => void;
+
   onExportSchedule?: () => void;
   onExportReport?: () => void;
   onExportPullSheet?: () => void;
@@ -83,34 +122,13 @@ interface Props {
   };
 }
 
-function sameIdentity(a: PlanIdentityFields, b: PlanIdentityFields): boolean {
-  return a.date === b.date && a.venue === b.venue && a.event === b.event && a.contact === b.contact;
-}
-
-/** Pick the bundled kit closest to the room's working scale. */
-export function suggestKitForRoom(
-  kits: ShowKitInfo[],
-  widthFt?: number,
-  depthFt?: number,
-): string | undefined {
-  if (!kits.length) return undefined;
-  const w = widthFt ?? 0;
-  const d = depthFt ?? 0;
-  const area = w * d;
-  const by = (re: RegExp) => kits.find((kit) => re.test(`${kit.name} ${kit.id}`));
-  if (w > 0 && w <= 24 && d <= 20) return by(/boardroom/i)?.id;
-  if (area > 0 && area <= 2800) return by(/banquet/i)?.id;
-  if (area > 0 && area <= 28000) return by(/arena|concert/i)?.id;
-  return by(/card.?party/i)?.id ?? kits[kits.length - 1]?.id;
-}
-
 export default function ShowSetupPanel({
   editable,
   hasRoom,
   drawingRoomOutline,
-  identity,
-  onSaveIdentity,
-  identityBusy,
+  brief = null,
+  briefBusy,
+  onSaveBrief,
   roomSizeText = null,
   onOpenRoom,
   onDrawRoomOutline,
@@ -122,6 +140,7 @@ export default function ShowSetupPanel({
   onInsert,
   onSeating,
   onPrint,
+  onOpenGear,
   kits = [],
   kitsBusy,
   roomWidthFt,
@@ -137,22 +156,32 @@ export default function ShowSetupPanel({
   onPlaceOpening,
   chairCount = 0,
   tableCount = 0,
+  hasScreens = false,
+  accessibleSeats = 0,
+  revision = '',
+  drawnBy = '',
+  onRevision,
+  onDrawnBy,
   onExportSchedule,
   onExportReport,
   onExportPullSheet,
   allocationSummary = null,
   completed = {},
 }: Props) {
-  const suggestedKit = suggestKitForRoom(kits, roomWidthFt, roomDepthFt);
   const [selectedKit, setSelectedKit] = useState('');
-  const [draft, setDraft] = useState<PlanIdentityFields>(identity);
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const identityDirtyRef = useRef(false);
+  const [briefGroup, setBriefGroup] = useState<BriefGroup | null>(null);
 
-  useEffect(() => {
-    if (!identityDirtyRef.current) setDraft(identity);
-  }, [identity.date, identity.venue, identity.event, identity.contact]);
+  /*
+   * The recommendation reads the brief, not the kit's name. When the brief is
+   * still empty this falls back to fitting the room, and returns nothing at all
+   * when there is neither — an unjustifiable suggestion gets trusted.
+   */
+  const suggestion = useMemo(
+    () => suggestKit(kits, brief, { widthFt: roomWidthFt, depthFt: roomDepthFt }),
+    [kits, brief, roomWidthFt, roomDepthFt],
+  );
+  const suggestedKit = suggestion?.kitId;
 
   useEffect(() => {
     setSelectedKit((current) => {
@@ -162,32 +191,86 @@ export default function ShowSetupPanel({
   }, [kits, suggestedKit]);
 
   const selected = kits.find((kit) => kit.id === selectedKit);
-  const dirty = !sameIdentity(draft, identity);
-  const identityFilled = Boolean(identity.venue.trim() || identity.event.trim());
   const roomStatus = drawingRoomOutline ? 'drawing' : hasRoom ? 'ready' : 'needed';
 
-  const setField = (key: keyof PlanIdentityFields, value: string) => {
-    identityDirtyRef.current = true;
-    setDraft((current) => ({ ...current, [key]: value }));
-  };
+  /*
+   * Read from the plan as it stands, never from steps that were visited. An
+   * undone kit leaves no stage behind, and this has to notice.
+   */
+  const readiness = useMemo(
+    () =>
+      assessReadiness(brief, {
+        hasRoom,
+        seats: chairCount,
+        tables: tableCount,
+        hasStage: completed.stage === true,
+        hasScreens,
+        accessibleSeats,
+        ...(allocationSummary
+          ? { gearShort: allocationSummary.short, gearUntracked: allocationSummary.untracked }
+          : {}),
+      }),
+    [brief, hasRoom, chairCount, tableCount, completed.stage, hasScreens, accessibleSeats, allocationSummary],
+  );
 
-  const saveIdentity = () => {
-    identityDirtyRef.current = false;
-    void onSaveIdentity(draft);
+  /** Every warning goes somewhere. A warning with no route is a complaint. */
+  const goTo = (target: IssueTarget) => {
+    switch (target) {
+      case 'brief':
+        setBriefGroup('layout');
+        break;
+      case 'venue':
+        setBriefGroup('venue');
+        break;
+      case 'room':
+        if (hasRoom) onOpenRoom();
+        else onDrawRoomOutline();
+        break;
+      case 'seating':
+        onSeating();
+        break;
+      case 'stage':
+        onBuildStage();
+        break;
+      case 'objects':
+        onInsert();
+        break;
+      case 'gear':
+        (onOpenGear ?? onExportPullSheet)?.();
+        break;
+      case 'issue':
+        setAdvancedOpen(true);
+        break;
+    }
   };
 
   return (
     <div className="section show-setup-section is-guided">
-      <div className="section-title show-setup-title">
-        <span>{hasRoom ? 'Layout library' : 'Room boundary'}</span>
-        <span className={`show-setup-chip is-${roomStatus}`}>
-          {roomStatus === 'ready' ? 'Room ready' : roomStatus === 'drawing' ? 'Drawing room' : 'Room needed'}
-        </span>
-      </div>
+      {/*
+        No "Show setup" heading here — the dock's own titlebar already says it,
+        and repeating it in a 300px panel costs a line for nothing. The room's
+        state moved to the room section, which is where it is acted on.
+      */}
 
+      {/* 1 — Brief. Reachable before there is anything to draw. */}
+      <ShowBriefCard
+        brief={brief}
+        busy={briefBusy}
+        editable={editable}
+        onSave={(patch) => onSaveBrief?.(patch)}
+        openGroup={briefGroup}
+        onOpenGroupHandled={() => setBriefGroup(null)}
+      />
+
+      {/* 2 — Venue & room. */}
       {!hasRoom && (
         <section className="show-setup-next-card">
-          <h3>{drawingRoomOutline ? 'Finish the room boundary' : 'Create the room boundary'}</h3>
+          <div className="show-setup-card-head">
+            <h3>{drawingRoomOutline ? 'Finish the room boundary' : 'Create the room boundary'}</h3>
+            <span className={`show-setup-chip is-${roomStatus}`}>
+              {roomStatus === 'drawing' ? 'Drawing room' : 'Room needed'}
+            </span>
+          </div>
           <p>
             {drawingRoomOutline
               ? 'Click each corner on the plan, then press Enter to close the room.'
@@ -217,14 +300,42 @@ export default function ShowSetupPanel({
       )}
 
       {hasRoom && (
+        <section className="show-setup-compact-card">
+          <div className="show-setup-card-head">
+            <div>
+              <strong>{brief?.roomName || 'Room'}</strong>
+              <small>{roomSizeText ?? 'Boundary ready'}{brief?.venue ? ` · ${brief.venue}` : ''}</small>
+            </div>
+            <span className={`show-setup-chip is-${roomStatus}`}>Room ready</span>
+          </div>
+          <div className="show-setup-compact-actions">
+            <button type="button" onClick={onOpenRoom}>Edit geometry</button>
+            {onOpenBackground && <button type="button" onClick={onOpenBackground}>{hasBackground ? 'Site plan' : 'Add site plan'}</button>}
+            {onPlaceDoor && <button type="button" disabled={!editable} onClick={onPlaceDoor}>Door</button>}
+            {onPlaceOpening && <button type="button" disabled={!editable} onClick={onPlaceOpening}>Opening</button>}
+          </div>
+        </section>
+      )}
+
+      {/* 3 — Layout. */}
+      {hasRoom && (
         <section className="show-setup-next-card">
-          <h3>Room-fitted layouts</h3>
+          <h3>Layout</h3>
           <p>Apply a complete starting point, then edit every object directly on the plan.</p>
 
           <div className="show-setup-kit-hero">
             <div className="show-setup-kit-hero-head">
               <span><IconLayers size={18} /></span>
-              <div><strong>Start from a layout kit</strong><small>Recommended · fitted to this room</small></div>
+              <div>
+                <strong>Start from a layout kit</strong>
+                <small>
+                  {suggestion && suggestion.kitId === selectedKit
+                    ? suggestion.reason
+                    : brief?.targetAttendance || brief?.layoutType
+                      ? 'Matched against the brief'
+                      : 'Set a headcount in the brief for a better match'}
+                </small>
+              </div>
             </div>
             <select
               id="show-kit-select"
@@ -246,6 +357,9 @@ export default function ShowSetupPanel({
                 <span><b>{selected.banks}</b> banks</span>
                 <span><b>{selected.gear}</b> gear</span>
               </div>
+            )}
+            {suggestion?.oversize && suggestion.kitId === selectedKit && (
+              <p className="show-setup-kit-warning">This kit is larger than the room as drawn.</p>
             )}
             <button
               type="button"
@@ -272,65 +386,17 @@ export default function ShowSetupPanel({
         </section>
       )}
 
-      {hasRoom && (
-        <section className="show-setup-next-card is-ready">
-          <h3>Output</h3>
-          <div className="show-setup-output-summary">
-            <strong>{roomSizeText ?? 'Room ready'}</strong>
-            <span>{chairCount.toLocaleString()} seats{tableCount ? ` · ${tableCount.toLocaleString()} tables` : ''}{completed.stage ? ' · stage' : ''}</span>
-          </div>
-          <button type="button" className="btn-primary show-setup-wide-action" onClick={onPrint}>
-            <IconPrint size={14} /> {completed.print ? 'Print or export again' : 'Print / export PDF'}
-          </button>
-        </section>
-      )}
-
-      {hasRoom && (
-        <section className="show-setup-compact-card">
-          <div><strong>Room</strong><small>{roomSizeText ?? 'Boundary ready'}</small></div>
-          <div className="show-setup-compact-actions">
-            <button type="button" onClick={onOpenRoom}>Edit geometry</button>
-            {onOpenBackground && <button type="button" onClick={onOpenBackground}>{hasBackground ? 'Site plan' : 'Add site plan'}</button>}
-            {onPlaceDoor && <button type="button" disabled={!editable} onClick={onPlaceDoor}>Door</button>}
-            {onPlaceOpening && <button type="button" disabled={!editable} onClick={onPlaceOpening}>Opening</button>}
-          </div>
-        </section>
-      )}
-
-      <section className="show-setup-disclosure">
-        <button
-          type="button"
-          className={`show-setup-collapse${detailsOpen ? ' is-open' : ''}`}
-          aria-expanded={detailsOpen}
-          onClick={() => setDetailsOpen((open) => !open)}
-        >
-          <span className="show-setup-phase-index">·</span>
-          <span><strong>Show details</strong><small>{identityFilled ? [identity.venue, identity.event].filter(Boolean).join(' · ') : 'Venue, event, date, and contact'}</small></span>
-        </button>
-        {detailsOpen && (
-          <div className="show-setup-identity">
-            {([
-              ['venue', 'Venue', 'Venue or building'],
-              ['event', 'Event', 'Show or event name'],
-              ['date', 'Event date', 'Optional'],
-              ['contact', 'Client / contact', 'Optional'],
-            ] as const).map(([key, label, placeholder]) => (
-              <div className="field" key={key}>
-                <label htmlFor={`show-setup-${key}`}>{label}</label>
-                <input
-                  id={`show-setup-${key}`}
-                  value={draft[key]}
-                  disabled={!editable || identityBusy}
-                  onChange={(event) => setField(key, event.target.value)}
-                  onBlur={() => { if (dirty) saveIdentity(); }}
-                  placeholder={placeholder}
-                />
-              </div>
-            ))}
-            {dirty && <button type="button" className="btn-solid" disabled={!editable || identityBusy} onClick={saveIdentity}>{identityBusy ? 'Saving…' : 'Save details'}</button>}
-          </div>
-        )}
-      </section>
+      {/* 4 — Review & issue. */}
+      <ReviewCard
+        report={readiness}
+        onGoTo={goTo}
+        revision={revision}
+        drawnBy={drawnBy}
+        onRevision={(next) => onRevision?.(next)}
+        onDrawnBy={(next) => onDrawnBy?.(next)}
+        onPrint={onPrint}
+        printDisabled={!hasRoom}
+      />
 
       <section className="show-setup-disclosure">
         <button

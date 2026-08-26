@@ -275,7 +275,7 @@ console.log('title', await ev('document.title'));
 
 const surfaces = [
   { id: 'plan-chrome', open: null },
-  { id: 'layouts', open: { text: 'Layouts' } },
+  { id: 'layouts', open: { text: 'Show Setup' } },
   { id: 'properties', open: { text: 'Properties', root: '.editor-workspace-actions' } },
   { id: 'files', open: { text: 'Files', root: '.editor-workspace-actions' } },
   // Direct tools no longer open a wrapper panel; audit the rail's armed state.

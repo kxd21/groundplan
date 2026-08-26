@@ -120,6 +120,7 @@ import WallEditHud from './WallEditHud.js';
 import WallEditToolbar from './WallEditToolbar.js';
 import CreateDialog from './CreateDialog.js';
 import DockTitlebar from './DockTitlebar.js';
+import type { ShowBrief } from '../../format/show-brief.js';
 import PlanContextMenu, { type PlanMenuEntry } from './PlanContextMenu.js';
 import InventoryItemEditor, { type EditableInventoryItem } from './InventoryItemEditor.js';
 import BackgroundLayerPanel from './BackgroundLayerPanel.js';
@@ -128,7 +129,8 @@ import { scaleBackgroundToSegment } from './background-calibrate.js';
 import PlanFolderWorkspace from './PlanFolderWorkspace.js';
 import WelcomeHome from './WelcomeHome.js';
 import { flattenInsertLeaves, matchInsertItem, type InsertGroupId } from '../../inventory/insert-catalog.js';
-import { type PlanIdentityFields, suggestKitForRoom } from './ShowSetupPanel.js';
+import { type PlanIdentityFields, type ShowKitInfo } from './ShowSetupPanel.js';
+import { suggestKit } from '../../format/kit-fit.js';
 import NewPlanDialog from './NewPlanDialog.js';
 import OpenPlanChooser from './OpenPlanChooser.js';
 import { SnappySlider } from './SnappySlider.js';
@@ -850,18 +852,18 @@ export function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   /** Last structured action ID — shown in the status bar for agents and power users. */
   const [lastCommandId, setLastCommandId] = useState<CommandId | null>(null);
-  const [layoutKits, setLayoutKits] = useState<
-    Array<{
-      id: string;
-      name: string;
-      source: 'bundled' | 'user';
-      chairs: number;
-      banks: number;
-      gear: number;
-      event?: string;
-      venue?: string;
-    }>
-  >([]);
+  // The full kit shape, not a subset: the recommendation reads seatingKinds,
+  // hasStage and extentFt, and a locally-narrowed type would silently drop them.
+  const [layoutKits, setLayoutKits] = useState<ShowKitInfo[]>([]);
+
+  /**
+   * The current brief, readable from callbacks defined before the state is.
+   *
+   * Room creation happens well above the brief state in this file and needs to
+   * know what the show asked for; a ref keeps that one read out of a dependency
+   * array that already has fourteen entries.
+   */
+  const showBriefRef = useRef<ShowBrief | null>(null);
   const [kitsBusy, setKitsBusy] = useState(false);
   const [bankPresets, setBankPresets] = useState<
     Array<{
@@ -901,7 +903,6 @@ export function App() {
   const [sightlineMarkers, setSightlineMarkers] = useState<
     Array<{ x: number; y: number; verdict: string }>
   >([]);
-  const [identityBusy, setIdentityBusy] = useState(false);
   const [setupCompleted, setSetupCompleted] = useState({
     stage: false,
     insert: false,
@@ -1848,26 +1849,15 @@ export function App() {
     dispatchTool,
   ]);
 
-  const savePlanIdentity = useCallback(
-    async (next: PlanIdentityFields) => {
-      if (!doc?.editable) return;
-      setIdentityBusy(true);
-      try {
-        const reply = await api.identitySet(next);
-        if (reply.ok && reply.doc) {
-          setDoc(reply.doc as Doc);
-          showStatus(reply.text ?? 'Show details saved');
-        } else if (reply.reason) {
-          notify(reply.reason);
-        }
-      } catch (err) {
-        notify(err instanceof Error ? err.message : String(err));
-      } finally {
-        setIdentityBusy(false);
-      }
-    },
-    [doc?.editable, notify, showStatus],
-  );
+  /*
+   * The four legacy trailer fields are no longer edited on their own.
+   *
+   * They are derived from the brief and written with it (see `setShowBrief` in
+   * the main process), so there is one author for the show's name, venue, date
+   * and contact instead of two editors that could disagree about which is
+   * right. `planIdentityFields` below still READS them, for the title block and
+   * the exports that have always read the trailer.
+   */
 
   const commitPlanBackground = useCallback(
     async (background: PlanBackground | null, message?: string) => {
@@ -2166,8 +2156,12 @@ export function App() {
         if (extent && layoutKits.length) {
           const widthFt = (extent.maxX - extent.minX) / UNITS_PER_FOOT;
           const depthFt = (extent.maxY - extent.minY) / UNITS_PER_FOOT;
-          const kitId = suggestKitForRoom(layoutKits, widthFt, depthFt);
-          if (kitId && !/card.?party/i.test(kitId)) {
+          // Score against the brief, not the kit's name. `suggestKit` returns
+          // nothing when there is neither a stated headcount nor a room to fit
+          // against, and auto-applying a guess is worse than applying nothing.
+          const pick = suggestKit(layoutKits, showBriefRef.current, { widthFt, depthFt });
+          const kitId = pick && !pick.oversize && pick.score >= 0.6 ? pick.kitId : undefined;
+          if (kitId) {
             showStatus('Room ready: applying matching kit…', 4200);
             setKitsBusy(true);
             void api
@@ -2832,6 +2826,64 @@ export function App() {
    * once a plan was open there was no way to ask for it again, so a room that
    * grew a wall could not be re-dimensioned without drawing each one by hand.
    */
+  /**
+   * The show's brief, as the sidecar holds it.
+   *
+   * Null means this plan has never had one — which is every plan made before
+   * the brief existed, and is different from an empty brief somebody started
+   * and left blank.
+   */
+  const [showBrief, setShowBrief] = useState<ShowBrief | null>(null);
+  const [briefBusy, setBriefBusy] = useState(false);
+  useEffect(() => {
+    showBriefRef.current = showBrief;
+  }, [showBrief]);
+
+  /** Re-reads the brief from the sidecar. Called on open and after a write. */
+  const refreshBrief = useCallback(async () => {
+    if (!doc) {
+      setShowBrief(null);
+      return;
+    }
+    try {
+      setShowBrief((await api.showBrief()) as ShowBrief | null);
+    } catch {
+      // A brief that cannot be read must not stop the plan being worked on.
+      setShowBrief(null);
+    }
+  }, [doc]);
+
+  useEffect(() => {
+    void refreshBrief();
+  }, [refreshBrief, doc?.path]);
+
+  const saveShowBrief = useCallback(
+    async (patch: Partial<ShowBrief>) => {
+      /*
+       * No `doc` guard. New Plan writes the brief in the same tick it adopts a
+       * freshly created plan, when this closure's `doc` is still the previous
+       * one (or null) — the main process is the authority on whether a session
+       * is open, and it refuses cleanly when there is not.
+       */
+      setBriefBusy(true);
+      try {
+        const reply = await api.showBriefSet(patch);
+        if (!reply.ok) {
+          notify(reply.reason ?? 'The show details could not be saved');
+          return;
+        }
+        if (reply.doc) setDoc(reply.doc as Doc);
+        if (reply.brief !== undefined) setShowBrief((reply.brief as ShowBrief | null) ?? null);
+        // The trailer moved too, so the title-block fields the app caches are
+        // stale until the document round-trips.
+        showStatus('Show details saved');
+      } finally {
+        setBriefBusy(false);
+      }
+    },
+    [doc, notify, showStatus],
+  );
+
   const dimensionRoomAutomatically = useCallback(
     async (options: { corners?: boolean } = {}) => {
       const reply = await api.roomDimension(options);
@@ -4531,6 +4583,12 @@ export function App() {
     const hasContent = inventory.length > 0;
     return {
       stage: inventory.some((item) => /\bstage\b|\briser\b|\bdeck\b/i.test(item.name)),
+      // Screens, projection and LED walls, so a brief that asked for A/V is
+      // checked against what is on the drawing rather than assumed.
+      screens: inventory.some((item) =>
+        /\bscreen\b|\bprojector\b|\bled\b|\bmonitor\b|\bdisplay\b|\bibeam\b/i.test(item.name),
+      ),
+      accessible: inventory.filter((item) => /\bada\b|accessible|wheelchair/i.test(item.name)).length,
       insert: hasContent,
       seating: furnitureCounts.chairs > 0,
       repeat: setupCompleted.repeat && hasContent,
@@ -5177,6 +5235,13 @@ export function App() {
               options.openBackground || options.startRoomOutline ? 'canvas' : undefined,
             );
             setCustomRoomPrefs(options.customRoom ?? null);
+            /*
+             * Write the brief before anything else touches the plan. The
+             * headcount the user typed picked the room preset a moment ago and
+             * used to end there; persisting it here is what makes the seat
+             * count checkable for the rest of the plan's life.
+             */
+            if (options.brief) void saveShowBrief(options.brief);
             setStartNewRoomOutline(options.startRoomOutline);
             setAwaitingRoomOutline(options.startRoomOutline);
             if (options.openBackground) {
@@ -6574,10 +6639,13 @@ export function App() {
               },
               {
                 id: 'layouts',
-                label: 'Layouts',
+                label: 'Show Setup',
                 icon: <IconGrid size={17} />,
                 active: workspace.mode === 'setup',
-                disabled: !doc.hasRoom,
+                // Reachable without a room: the brief is what you write BEFORE
+                // there is anything to draw, and gating it behind a room is
+                // what made the headcount a throwaway value in New Plan.
+                disabled: false,
                 onClick: () => runCommand(workspace.mode === 'setup' ? 'mode.none' : 'mode.setup'),
               },
               {
@@ -8323,9 +8391,7 @@ export function App() {
           editable={!!doc.editable}
           hasRoom={Boolean(doc.hasRoom)}
           drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
-          identity={planIdentityFields}
           selectedCount={selectedIds.length}
-          identityBusy={identityBusy}
           roomSizeText={roomSizeText}
           completed={setupState}
           canCreateLabel={canCreateLabel}
@@ -8352,7 +8418,6 @@ export function App() {
             tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
           }
           onClose={() => enterMode('canvas')}
-          onSaveIdentity={savePlanIdentity}
           onOpenRoom={openRoomPanel}
           onDrawRoomOutline={() => {
             setAwaitingRoomOutline(true);
@@ -8629,6 +8694,16 @@ export function App() {
             })();
           }}
           allocationSummary={allocationSummary}
+          brief={showBrief}
+          briefBusy={briefBusy}
+          onSaveBrief={(patch) => void saveShowBrief(patch)}
+          onOpenGear={() => runCommand('workspace.gear')}
+          hasScreens={setupState.screens}
+          accessibleSeats={setupState.accessible}
+          revision={printRevision}
+          drawnBy={printDrawnBy}
+          onRevision={setPrintRevision}
+          onDrawnBy={setPrintDrawnBy}
           bankPresets={bankPresets as never}
           onSaveBankPreset={() => {
             void (async () => {

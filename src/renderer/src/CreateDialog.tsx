@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 
 import DockTitlebar from './DockTitlebar.js';
-import ShowSetupPanel, { type PlanIdentityFields, type ShowKitInfo } from './ShowSetupPanel.js';
+import ShowSetupPanel, { type ShowKitInfo } from './ShowSetupPanel.js';
+import type { ShowBrief } from '../../format/show-brief.js';
 import { IconPlus } from './icons.js';
 
 type SeatKind = 'round' | 'theatre' | 'schoolroom';
@@ -33,9 +34,7 @@ interface Props {
   editable: boolean;
   hasRoom: boolean;
   drawingRoomOutline: boolean;
-  identity: PlanIdentityFields;
   selectedCount: number;
-  identityBusy: boolean;
   /** Live room size including ceiling when known. */
   roomSizeText?: string | null;
   completed: {
@@ -75,7 +74,6 @@ interface Props {
   seatRowLengths: string;
   seatingArmed?: boolean;
   onClose: () => void;
-  onSaveIdentity: (next: PlanIdentityFields) => void | Promise<void>;
   onOpenRoom: () => void;
   onDrawRoomOutline: () => void;
   onOpenBackground?: () => void;
@@ -87,6 +85,7 @@ interface Props {
   onRepeat: () => void;
   onSeating: () => void;
   onPrint: () => void;
+  onOpenGear?: () => void;
   onText?: (next: string) => void;
   onColor?: (next: string) => void;
   onStartText?: () => void;
@@ -128,6 +127,18 @@ interface Props {
   onExportReport?: () => void;
   onExportPullSheet?: () => void;
   allocationSummary?: { short: number; ok: number; untracked: number } | null;
+
+  /* The show brief and the facts the readiness check reads. -------------- */
+  brief?: ShowBrief | null;
+  briefBusy?: boolean;
+  onSaveBrief?: (patch: Partial<ShowBrief>) => void | Promise<void>;
+  hasScreens?: boolean;
+  accessibleSeats?: number;
+  revision?: string;
+  drawnBy?: string;
+  onRevision?: (next: string) => void;
+  onDrawnBy?: (next: string) => void;
+
   bankPresets?: BankPresetInfo[];
   onSaveBankPreset?: () => void;
   onLoadBankPreset?: (preset: BankPresetInfo) => void;
@@ -144,9 +155,7 @@ export default function CreateDialog({
   editable,
   hasRoom,
   drawingRoomOutline,
-  identity,
   selectedCount,
-  identityBusy,
   roomSizeText = null,
   completed,
   inventory,
@@ -162,7 +171,6 @@ export default function CreateDialog({
   seatRowLengths,
   seatingArmed = false,
   onClose,
-  onSaveIdentity,
   onOpenRoom,
   onDrawRoomOutline,
   onOpenBackground,
@@ -174,6 +182,7 @@ export default function CreateDialog({
   onRepeat,
   onSeating,
   onPrint,
+  onOpenGear,
   onSeatKind,
   onSeatTable,
   onSeatChair,
@@ -205,6 +214,15 @@ export default function CreateDialog({
   onExportReport,
   onExportPullSheet,
   allocationSummary,
+  brief = null,
+  briefBusy,
+  onSaveBrief,
+  hasScreens,
+  accessibleSeats,
+  revision,
+  drawnBy,
+  onRevision,
+  onDrawnBy,
   bankPresets = [],
   onSaveBankPreset,
   onLoadBankPreset,
@@ -278,13 +296,21 @@ export default function CreateDialog({
   const chairs = chairOptions.length ? chairOptions : inventory;
   const tables = tableOptions.length ? tableOptions : inventory;
 
-  const headline =
-    drawingRoomOutline ? 'Drawing room boundary' : !hasRoom ? 'Create room boundary' : 'Room-fitted kits and generators';
+  /*
+   * The dock is the show's intake, not a kit browser — the panel below runs
+   * brief, room, layout and review, so the title says so rather than naming
+   * whichever of those happens to be next.
+   */
+  const headline = drawingRoomOutline
+    ? 'Drawing room boundary'
+    : !hasRoom
+      ? 'Describe the show, then build the room'
+      : 'Brief, layout, and what the plan still needs';
   const guidance =
     !hasRoom || drawingRoomOutline
-      ? 'Import a site plan or draw the room directly on the canvas.'
+      ? 'Fill in as much of the brief as you know, then import a site plan or draw the room.'
       : layoutDone
-        ? 'Apply another room-fitted layout, tune the plan directly, or export it.'
+        ? 'Check the plan against the brief, adjust it, then issue the sheet.'
         : 'Apply a room-fitted layout or launch a custom generator.';
 
   const sheet = (
@@ -296,15 +322,15 @@ export default function CreateDialog({
         onMouseDown={(event) => event.stopPropagation()}
       >
         {docked ? (
-          <DockTitlebar title={hasRoom ? 'Layouts' : 'Room'} sub={headline} onClose={onClose} closeLabel={`Close ${hasRoom ? 'Layouts' : 'Room'}`} />
+          <DockTitlebar title="Show Setup" sub={headline} onClose={onClose} closeLabel="Close Show Setup" />
         ) : (
           <header className="create-dialog-head">
             <div>
-              <small>{hasRoom ? 'Layouts' : 'Room'}</small>
+              <small>Show Setup</small>
               <h2 id="create-dialog-title">{headline}</h2>
               <p>{guidance}</p>
             </div>
-            <button type="button" className="create-dialog-close" onClick={onClose} aria-label={`Close ${hasRoom ? 'Layouts' : 'Room'}`}>
+            <button type="button" className="create-dialog-close" onClick={onClose} aria-label="Close Show Setup">
               ×
             </button>
           </header>
@@ -316,12 +342,18 @@ export default function CreateDialog({
             editable={editable}
             hasRoom={hasRoom}
             drawingRoomOutline={drawingRoomOutline}
-            identity={identity}
             selectedCount={selectedCount}
-            identityBusy={identityBusy}
             roomSizeText={roomSizeText}
             completed={completed}
-            onSaveIdentity={onSaveIdentity}
+            brief={brief}
+            briefBusy={briefBusy}
+            onSaveBrief={onSaveBrief}
+            hasScreens={hasScreens}
+            accessibleSeats={accessibleSeats}
+            revision={revision}
+            drawnBy={drawnBy}
+            onRevision={onRevision}
+            onDrawnBy={onDrawnBy}
             onOpenRoom={onOpenRoom}
             onDrawRoomOutline={onDrawRoomOutline}
             onOpenBackground={onOpenBackground}
@@ -333,6 +365,7 @@ export default function CreateDialog({
             onRepeat={onRepeat}
             onSeating={onSeating}
             onPrint={onPrint}
+            onOpenGear={onOpenGear}
             kits={kits}
             kitsBusy={kitsBusy}
             roomWidthFt={roomWidthFt}
