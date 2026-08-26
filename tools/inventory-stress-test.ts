@@ -12,7 +12,9 @@ import { join } from 'node:path';
 
 import {
   emptyInventory,
+  ensureCategories,
   mergeItems,
+  planViewItems,
   updateInventoryItem,
   locateInventoryItem,
   type Inventory,
@@ -211,6 +213,82 @@ async function main(): Promise<void> {
   check('re-merge does not duplicate', fat.items.length === 200);
 
   rmSync(root, { recursive: true, force: true });
+
+  /*
+   * An improved classifier has to reach catalogues that already exist.
+   *
+   * Categories are STORED, and `ensureCategories` only ever filled in blanks —
+   * so two thirds of a stock catalogue sat on `not-drawn` forever and the table
+   * picker stayed a flat list no matter how much the classifier learned. It
+   * re-asks now, but only where the stored answer was the classifier's own
+   * shrug, and never where somebody chose the category by hand.
+   */
+  {
+    const stale = emptyInventory();
+    mergeItems(stale, [
+      // Rows an older build could not place, stored as its shrug.
+      { name: 'Buffet Line 12' },
+      { name: 'Serpentine 24"x48"' },
+      { name: 'Half Round' },
+      // Something a person deliberately marked as not to be drawn.
+      { name: 'Rodeo Roper' },
+      // A real category the classifier already found; not up for revision.
+      { name: 'Box Truss' },
+    ]);
+    for (const item of stale.items) {
+      item.category = 'not-drawn';
+      item.view = undefined;
+    }
+    const kept = stale.items.find((i) => i.name === 'Rodeo Roper')!;
+    kept.categoryBy = 'user';
+    const truss = stale.items.find((i) => i.name === 'Box Truss')!;
+    truss.category = 'truss';
+
+    ensureCategories(stale);
+
+    const of = (name: string) => stale.items.find((i) => i.name === name)?.category;
+    check('a stored shrug is re-asked', of('Buffet Line 12') === 'table-rect', String(of('Buffet Line 12')));
+    check('and so is a serpentine', of('Serpentine 24"x48"') === 'table-round', String(of('Serpentine 24"x48"')));
+    check('and a half round', of('Half Round') === 'table-round', String(of('Half Round')));
+    check(
+      'a category set by hand is never second-guessed',
+      of('Rodeo Roper') === 'not-drawn',
+      String(of('Rodeo Roper')),
+    );
+    check('and a category already found is left alone', of('Box Truss') === 'truss', String(of('Box Truss')));
+    check(
+      'every row gains its drawing',
+      stale.items.every((i) => i.view === 'plan'),
+      stale.items.map((i) => `${i.name}=${i.view}`).join(', '),
+    );
+  }
+
+  /*
+   * A top-down picker shows top-down drawings.
+   *
+   * 321 of the 828 rows in a stock catalogue are front, side or rear
+   * elevations — the same objects, drawn for a different view — and offering
+   * one in a plan gives you a table lying on its face.
+   */
+  {
+    const mixed = emptyInventory();
+    mergeItems(mixed, [
+      { name: 'Round 60"' },
+      { name: 'Round 60" (FV)' },
+      { name: 'Round 60" (SV)' },
+      { name: 'Barco 8100 (RV)' },
+      { name: 'Podium/Lectern' },
+    ]);
+    ensureCategories(mixed);
+    const plan = planViewItems(mixed.items).map((i) => i.name);
+    check('the elevations are left out', plan.length === 2, plan.join(', '));
+    check('and the plan drawings are kept', plan.includes('Round 60"') && plan.includes('Podium/Lectern'), plan.join(', '));
+    check(
+      'an elevation still knows what object it is',
+      mixed.items.find((i) => i.name === 'Round 60" (SV)')?.category === 'table-round',
+    );
+  }
+
 
   console.log(`\n${failed === 0 ? 'All' : failed} inventory stress check(s) ${failed === 0 ? 'passed' : 'failed'}.`);
   process.exit(failed === 0 ? 0 : 1);

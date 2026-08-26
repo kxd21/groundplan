@@ -45,6 +45,20 @@ export type Category =
   | 'person'
   | 'not-drawn';
 
+/**
+ * Which drawing of an object a catalogue entry is.
+ *
+ * Room Viewer ships every object several times over: `Buffet Line 1`,
+ * `Buffet Line 1 (FV)` and `Buffet Line 1 (SV)` are one table drawn from above,
+ * from the front and from the side. Only the plan drawing belongs in a
+ * top-down plan; the elevations are for a front or side view of the room.
+ *
+ * They were indistinguishable before, so every picker listed each object three
+ * or four times and a side-view table could be dropped into a plan — which is
+ * exactly what it looks like, a table lying on its face.
+ */
+export type ItemView = 'plan' | 'front' | 'side' | 'rear' | 'front-side';
+
 export interface Classification {
   category: Category;
   /** Why it landed here — shown in the UI so a wrong call is obvious. */
@@ -52,6 +66,26 @@ export interface Classification {
   /** Size parsed out of the description, in logical units, when present. */
   width?: number;
   height?: number;
+  /** Which drawing this is. `plan` unless the name says otherwise. */
+  view: ItemView;
+  /** The name with any view suffix removed — what the object actually is. */
+  baseName: string;
+}
+
+/**
+ * Splits `Buffet Line 1 (FV)` into the object and the drawing.
+ *
+ * The suffix is always parenthesised and always last. `(R)` is Room Viewer's
+ * older spelling of a rear view, and `(FV-SV)` marks one drawing that serves as
+ * both elevations.
+ */
+export function splitView(description: string): { baseName: string; view: ItemView } {
+  const match = /^(.*?)\s*\((FV-SV|FV|SV|RV|R)\)\s*$/i.exec(description.trim());
+  if (!match) return { baseName: description.trim(), view: 'plan' };
+  const tag = match[2]!.toUpperCase();
+  const view: ItemView =
+    tag === 'FV' ? 'front' : tag === 'SV' ? 'side' : tag === 'FV-SV' ? 'front-side' : 'rear';
+  return { baseName: match[1]!.trim() || description.trim(), view };
 }
 
 const UNITS_PER_FOOT = 120;
@@ -135,7 +169,34 @@ const MODELS: Array<[RegExp, Category, string]> = [
   // Screens.
   [/\b(projection screen|screen kit|fastfold|fast-fold|rear projection|front projection|projection surface)\b/i, 'screen', 'projection screen'],
 
-  // Furniture.
+  /*
+   * Furniture.
+   *
+   * Two thirds of a stock Room Viewer catalogue used to land in `not-drawn`,
+   * and most of it was furniture — 111 rows of buffet line alone, plus every
+   * serpentine, square, half round and bare `3' x 3'`. An uncategorised item
+   * cannot be offered in the table picker, cannot be grouped in a palette, and
+   * cannot be filtered out of one; it just swells a flat list of 828 names.
+   * These patterns are what the stock catalogue actually calls things.
+   */
+  [/\b(buffet|serving)\s*(line|table)?\b/i, 'table-rect', 'buffet line'],
+  [/\bserpentine\b/i, 'table-round', 'serpentine table'],
+  [/\b(half|quarter)\s*round\b/i, 'table-round', 'part-round table'],
+  [/\bsquare\s*\d/i, 'table-rect', 'square table'],
+  [/\bfamily\s*\d+\s*['’]?\s*x/i, 'table-rect', 'family-style table'],
+  [/\b(plate|platter)\s*\d+/i, 'table-round', 'platter'],
+  [/\bcradle\s*\d/i, 'table-rect', 'cradle'],
+  [/\bstacked\s+chairs?\b/i, 'chair', 'stacked chairs'],
+  // `18"x18"`, `18" x 18" - No Detail` — the stock chair, named by its footprint.
+  [/^\s*\d+\s*["”]?\s*x\s*\d+\s*["”]/i, 'chair', 'chair, named by its size'],
+  [/\b(piano|spinet)\b/i, 'desk', 'piano'],
+  [/\b(whiteboard|flip\s*chart|flipchart|easel)\b/i, 'desk', 'presentation board'],
+  [/\bbooth\s*\d/i, 'table-rect', 'trade-show booth'],
+  [/\bscaffold\b/i, 'riser', 'scaffold'],
+  [/\bcart\b/i, 'table-rect', 'cart'],
+  [/\b(plasma|led\s*tv|lcd\s*tv)\b/i, 'flat-panel', 'flat panel'],
+  [/\bbar\s*mat\b/i, 'table-rect', 'bar mat'],
+
   [/\b(podium|lectern|acrylic podium)\b/i, 'podium', 'podium / lectern'],
   [/\b(registration desk|desk\b|counter\b)\b/i, 'desk', 'desk'],
   [/\bround\s*\d+/i, 'table-round', 'round table'],
@@ -173,17 +234,24 @@ export function parseSize(text: string): { width?: number; height?: number } {
 
 /** Decides what a gear-list description is, for the purpose of drawing it. */
 export function classify(description: string): Classification {
-  const text = description.replace(/\s+/g, ' ').trim();
+  const raw = description.replace(/\s+/g, ' ').trim();
+  // Classify what the object IS, not which drawing of it this row holds. The
+  // suffix used to defeat every pattern below, so `Podium/Lectern` was a podium
+  // and `Podium/Lectern (SV)` was nothing at all.
+  const { baseName, view } = splitView(raw);
+  const text = baseName;
   const size = parseSize(text);
+  const at = (category: Category, reason: string, extra: Partial<Classification> = {}) =>
+    ({ category, reason, view, baseName, ...extra }) as Classification;
 
   for (const [pattern, reason] of NOT_DRAWN) {
-    if (pattern.test(text)) return { category: 'not-drawn', reason };
+    if (pattern.test(text)) return at('not-drawn', reason);
   }
   for (const [pattern, category, reason] of MODELS) {
-    if (pattern.test(text)) return { category, reason, ...size };
+    if (pattern.test(text)) return at(category, reason, size);
   }
 
-  return { category: 'not-drawn', reason: 'nothing recognisable to draw' };
+  return at('not-drawn', 'nothing recognisable to draw');
 }
 
 /**

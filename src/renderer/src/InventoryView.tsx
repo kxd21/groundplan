@@ -12,6 +12,12 @@ interface InventoryItem {
   name: string;
   department?: string;
   category?: string;
+  /**
+   * Which drawing of the object this row is: the plan view, or a front / side /
+   * rear elevation. 39% of a stock catalogue is elevations, and none of them
+   * belong in a top-down plan.
+   */
+  view?: string;
   width?: number;
   height?: number;
   sizeSource: 'parsed' | 'user' | 'unknown' | 'symbol';

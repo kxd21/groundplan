@@ -2454,6 +2454,9 @@ export function App() {
         id: item.id,
         name: item.name,
         category: item.category ?? null,
+        // Which drawing this row is. A plan picker wants the plan view; the
+        // front and side elevations are 39% of a stock catalogue.
+        view: item.view ?? null,
       })),
     [catalogInventory?.items, inventory?.items],
   );

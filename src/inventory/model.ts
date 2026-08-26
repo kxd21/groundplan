@@ -18,6 +18,7 @@ import {
   CATEGORY_LAYER,
   type Category,
   type CategoryLayer,
+  type ItemView,
 } from './classify.js';
 
 export type SizeSource = 'parsed' | 'user' | 'unknown' | 'symbol';
@@ -71,6 +72,27 @@ export interface InventoryItem {
    * stay one idea.
    */
   category?: Category;
+  /**
+   * Who decided the category.
+   *
+   * `user` means somebody set it by hand and it is never to be second-guessed.
+   * Without this there was no way to tell a considered choice from the
+   * classifier's own guess, so improving the classifier meant either leaving
+   * every existing catalogue on its old answers or overwriting decisions people
+   * had made. Absent is treated as `auto`, which is what every row written
+   * before this field existed actually was.
+   */
+  categoryBy?: 'auto' | 'user';
+  /**
+   * Which drawing of the object this row is.
+   *
+   * Room Viewer ships each object several times over — `Buffet Line 1`,
+   * `(FV)`, `(SV)` — and 321 of the 828 rows in a stock catalogue are
+   * elevations. They are real and wanted once there is a front or side view of
+   * the room to put them in; in a TOP-DOWN plan picker they are 39% of the list
+   * and every one of them is a thing you should not place.
+   */
+  view?: ItemView;
   /** Footprint in logical units (tenths of an inch). */
   width?: number;
   height?: number;
@@ -621,11 +643,52 @@ export function restoreInventoryItem(
 export function ensureCategories(inventory: Inventory): number {
   let filled = 0;
   for (const item of inventory.items) {
-    if (item.category) continue;
-    item.category = classify(item.name).category;
-    filled++;
+    const verdict = classify(item.name);
+
+    // `view` is filled even for rows that already carry a category, because it
+    // is newer than they are and an old catalogue would otherwise never gain it.
+    if (item.view === undefined) {
+      item.view = verdict.view;
+      filled++;
+    }
+
+    if (!item.category) {
+      item.category = verdict.category;
+      filled++;
+      continue;
+    }
+
+    /*
+     * Re-ask, but only where the answer was "I don't know".
+     *
+     * `not-drawn` is the classifier's own shrug, and it was two thirds of a
+     * stock catalogue — 111 rows of buffet line, every serpentine, every half
+     * round. Those rows are stored, so improving the classifier did nothing for
+     * anybody who already had a catalogue: the picker stayed a flat list.
+     *
+     * A category somebody chose by hand is never touched, and neither is a real
+     * category the classifier already found — only the shrug is revisited, and
+     * only when there is now a better answer than another shrug.
+     */
+    if (item.category === 'not-drawn' && item.categoryBy !== 'user' && verdict.category !== 'not-drawn') {
+      item.category = verdict.category;
+      filled++;
+    }
   }
   return filled;
+}
+
+/**
+ * The rows that belong in a top-down plan.
+ *
+ * An elevation is not wrong, it is just a different drawing — so this filters
+ * rather than deletes, and anything whose view is unknown is kept. Dropping a
+ * row nobody has classified yet would be the worse failure: an item that has
+ * simply gone missing is much harder to reason about than one that is listed
+ * and looks odd.
+ */
+export function planViewItems(items: InventoryItem[]): InventoryItem[] {
+  return items.filter((item) => (item.view ?? classify(item.name).view) === 'plan');
 }
 
 /** Category counts, grouped by the drawing layer each belongs to. */

@@ -4256,8 +4256,13 @@ app.whenReady().then(async () => {
       const created = inventory.items.find((i) => normaliseName(i.name) === normaliseName(name));
       if (created) {
         const forced = payload.category?.trim();
-        created.category =
-          forced && forced in CATEGORY_LABELS ? (forced as keyof typeof CATEGORY_LABELS) : classify(name).category;
+        const chosen = forced && forced in CATEGORY_LABELS;
+        created.category = chosen
+          ? (forced as keyof typeof CATEGORY_LABELS)
+          : classify(name).category;
+        // A category somebody picked is a decision, not a guess, and must
+        // survive every future improvement to the classifier.
+        created.categoryBy = chosen ? 'user' : 'auto';
         created.tracedIcon = { paths: payload.paths, width: payload.width, height: payload.height };
         if (payload.notes?.trim()) created.notes = payload.notes.trim();
         if (payload.department?.trim()) created.department = payload.department.trim();

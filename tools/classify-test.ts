@@ -7,7 +7,7 @@
  * matter.
  */
 
-import { classify, parseSize } from '../src/inventory/classify.js';
+import { classify, parseSize, splitView } from '../src/inventory/classify.js';
 
 let checks = 0;
 let failures = 0;
@@ -80,6 +80,70 @@ function expectSize(text: string, width: number, height: number): void {
 expectSize('4\' x 8\' Stage Deck', 480, 960);
 expectSize('20.5" x 8\' Box Truss - Black', 205, 960);
 expectSize('Riser 6\'x8\'', 720, 960);
+
+/*
+ * Elevation drawings are the same object, seen from somewhere else.
+ *
+ * Room Viewer ships each object several times over — `Buffet Line 1`, `(FV)`,
+ * `(SV)` — and 321 of the 828 rows in a stock catalogue are elevations. The
+ * suffix used to defeat every pattern in the classifier, so `Podium/Lectern`
+ * was a podium and `Podium/Lectern (SV)` was nothing at all, and a picker in a
+ * TOP-DOWN plan offered a table drawn from the side.
+ */
+function expectView(description: string, view: string, baseName: string): void {
+  const got = splitView(description);
+  const ok = got.view === view && got.baseName === baseName;
+  checks++;
+  if (!ok) {
+    failures++;
+    console.log(`  FAIL  ${description} — got ${got.view} / "${got.baseName}"`);
+  }
+}
+
+expectView('Buffet Line 1', 'plan', 'Buffet Line 1');
+expectView('Buffet Line 1 (FV)', 'front', 'Buffet Line 1');
+expectView('Buffet Line 1 (SV)', 'side', 'Buffet Line 1');
+expectView('Barco 8100 (RV)', 'rear', 'Barco 8100');
+expectView('Box Truss (R)', 'rear', 'Box Truss');
+expectView('Round 30" (FV-SV)', 'front-side', 'Round 30"');
+// A parenthesis that is not a view tag stays part of the name.
+expectView('Casino - Single Roulette (8\')', 'plan', 'Casino - Single Roulette (8\')');
+expectView('Obstacle Course (2 Mod)', 'plan', 'Obstacle Course (2 Mod)');
+
+// An elevation classifies as whatever the object IS.
+expect('Podium/Lectern (SV)', 'podium');
+expect('Round 60" (FV)', 'table-round');
+expect('Speaker - EAW BH853F (FV)', 'speaker');
+expect('Steps (SV)', 'stairs');
+
+/*
+ * The furniture a stock catalogue is mostly made of.
+ *
+ * Two thirds of it used to land in `not-drawn` — 111 rows of buffet line alone,
+ * plus every serpentine, square and half round. An uncategorised item cannot be
+ * offered in the table picker, grouped in a palette, or filtered out of one; it
+ * just swells a flat list of 828 names.
+ */
+expect('Buffet Line 12', 'table-rect');
+expect('Serpentine 24"x48"', 'table-round');
+expect('Half Round', 'table-round');
+expect('Quarter Round', 'table-round');
+expect('Square 3\'x3\'', 'table-rect');
+expect("Family 6'x30\"", 'table-rect');
+expect('Plate 10"', 'table-round');
+expect('Stacked Chairs', 'chair');
+expect('18"x18" - No Detail', 'chair');
+expect('18" x 18"', 'chair');
+expect('Piano - Grand', 'desk');
+expect('Whiteboard 3x5', 'desk');
+expect('Flipchart', 'desk');
+expect('Booth 10\' x 10\'', 'table-rect');
+expect('Plasma - 42"', 'flat-panel');
+
+// …without swallowing things that are not furniture.
+expect('Box Truss', 'truss');
+expect('Speaker', 'speaker');
+expect('Genie Lift', 'lift');
 
 console.log(`${checks - failures}/${checks} checks passed`);
 if (failures > 0) process.exit(1);

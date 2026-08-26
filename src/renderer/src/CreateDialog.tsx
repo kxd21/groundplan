@@ -10,6 +10,8 @@ type SeatKind = 'round' | 'theatre' | 'schoolroom';
 interface InventoryItem {
   name: string;
   category?: string | null;
+  /** Which drawing of the object this is — see `ItemView` in classify.ts. */
+  view?: string | null;
 }
 
 export interface BankPresetInfo {
@@ -286,18 +288,28 @@ export default function CreateDialog({
 
   if (!open) return null;
 
-  const chairOptions = inventory.filter(
-    (item) => item.category === 'chair' || (!item.category && /chair/i.test(item.name)),
+  /*
+   * Chairs and tables, and nothing else.
+   *
+   * Two things used to leak in. A stock catalogue is 39% ELEVATION drawings —
+   * `Round 30" (FV)` is a round table seen from the front — and offering one in
+   * a top-down plan gives you a table lying on its face. And when categories
+   * were missing the picker fell back to the WHOLE inventory, so a chair
+   * dropdown listed 828 rows of speakers, truss and cable.
+   *
+   * The fallback is gone: if nothing classifies as a chair the honest answer is
+   * an empty list saying so, not every object in the building.
+   */
+  const planItems = inventory.filter((item) => (item.view ?? 'plan') === 'plan');
+  const chairs = planItems.filter(
+    (item) => item.category === 'chair' || (!item.category && /\bchair\b|\bstool\b/i.test(item.name)),
   );
-  const tableOptions = inventory.filter(
+  const tables = planItems.filter(
     (item) =>
       item.category === 'table-round' ||
       item.category === 'table-rect' ||
-      (!item.category && /table/i.test(item.name)),
+      (!item.category && /\btable\b|\bbuffet\b|\bserpentine\b/i.test(item.name)),
   );
-  // Fall back to the full list when the catalog has no category tags yet.
-  const chairs = chairOptions.length ? chairOptions : inventory;
-  const tables = tableOptions.length ? tableOptions : inventory;
 
   /*
    * The dock is the show's intake, not a kit browser — the panel below runs
@@ -558,7 +570,7 @@ export default function CreateDialog({
                     onChange={(event) => onSeatTable(event.target.value)}
                     disabled={!editable}
                   >
-                    <option value="">Choose…</option>
+                    <option value="">{tables.length ? 'Choose…' : 'No tables in inventory'}</option>
                     {tables.map((item) => (
                       <option key={item.name} value={item.name}>
                         {item.name}
@@ -576,7 +588,7 @@ export default function CreateDialog({
                   onChange={(event) => onSeatChair(event.target.value)}
                   disabled={!editable}
                 >
-                  <option value="">Choose…</option>
+                  <option value="">{chairs.length ? 'Choose…' : 'No chairs in inventory'}</option>
                   {chairs.map((item) => (
                     <option key={item.name} value={item.name}>
                       {item.name}
