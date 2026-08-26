@@ -19383,3 +19383,14 @@ a,
   display: grid;
   gap: 3px;
 }
+
+/* One line under a field saying what it actually measures. Several of the
+   seating clearances are Room Viewer's terms and are indistinguishable from
+   their label alone — "Front" and "Front wall" are different distances. */
+.field-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 9.5px;
+  line-height: 1.35;
+}

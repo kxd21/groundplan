@@ -109,6 +109,7 @@ function useLength(initial: number, units: UnitSystem): {
 function LengthField({
   id,
   label,
+  hint,
   field,
   units,
   disabled,
@@ -116,6 +117,16 @@ function LengthField({
 }: {
   id: string;
   label: string;
+  /**
+   * What this clearance actually is.
+   *
+   * These are Room Viewer's terms and several are indistinguishable from their
+   * label alone — "Front" and "Front wall" are different distances, and so are
+   * "Aisle" and "Centre aisle". The model has always documented them; the panel
+   * never did, so the first thing an experienced planner asked on opening it
+   * was which was which.
+   */
+  hint?: string;
   field: ReturnType<typeof useLength>;
   units: UnitSystem;
   disabled?: boolean;
@@ -140,6 +151,7 @@ function LengthField({
         onChange={(e) => field.setText(e.target.value)}
         onBlur={onBlur}
       />
+      {hint ? <small className="field-hint">{hint}</small> : null}
     </div>
   );
 }
@@ -1638,7 +1650,10 @@ export default function RoomPanel({
                 />
               </div>
               <div className="field" style={{ justifyContent: 'center', gap: 8 }}>
-                <label className="check">
+                <label
+                  className="check"
+                  title="Tries each orientation and both stagger settings and keeps whichever seats the most. It never narrows the spacing you asked for — an optimum that quietly closed the aisles would be a fire risk, not a feature."
+                >
                   <input
                     type="checkbox"
                     checked={optimum}
@@ -1647,7 +1662,10 @@ export default function RoomPanel({
                   />
                   Optimum
                 </label>
-                <label className="check">
+                <label
+                  className="check"
+                  title="Leaves the stage side of every round open, so nobody is seated with their back to the screen."
+                >
                   <input
                     type="checkbox"
                     checked={crescent}
@@ -1683,19 +1701,19 @@ export default function RoomPanel({
               <LengthField id="row-spacing" label="Row spacing" field={rowSpacing} units={units} disabled={!editable} />
             </div>
             <div className="field-row">
-              <LengthField id="front-clearance" label="Front" field={frontClearance} units={units} disabled={!editable} />
-              <LengthField id="rear-clearance" label="Rear" field={rearClearance} units={units} disabled={!editable} />
+              <LengthField id="front-clearance" label="Front" hint="Focus to the first row — stage, screen or head table." field={frontClearance} units={units} disabled={!editable} />
+              <LengthField id="rear-clearance" label="Rear" hint="Behind the last row." field={rearClearance} units={units} disabled={!editable} />
             </div>
             <div className="field-row">
-              <LengthField id="side-clearance" label="Side" field={sideClearance} units={units} disabled={!editable} />
-              <LengthField id="wing-clearance" label="Wing" field={wingClearance} units={units} disabled={!editable} />
+              <LengthField id="side-clearance" label="Side" hint="The walkway down each side that people use to reach the rows." field={sideClearance} units={units} disabled={!editable} />
+              <LengthField id="wing-clearance" label="Wing" hint="Between the centre bank and each angled wing." field={wingClearance} units={units} disabled={!editable} />
             </div>
             <div className="field-row">
-              <LengthField id="front-wall" label="Front wall" field={frontWallClearance} units={units} disabled={!editable} />
-              <LengthField id="aisle-clearance" label="Aisle" field={aisleClearance} units={units} disabled={!editable} />
+              <LengthField id="front-wall" label="Front wall" hint="Front wall to the stage. Not the same as Front, which starts at the stage." field={frontWallClearance} units={units} disabled={!editable} />
+              <LengthField id="aisle-clearance" label="Aisle" hint="A cross aisle running side to side, every few rows." field={aisleClearance} units={units} disabled={!editable} />
             </div>
             <div className="field-row">
-              <LengthField id="centre-aisle" label="Centre aisle" field={centreAisle} units={units} disabled={!editable} />
+              <LengthField id="centre-aisle" label="Centre aisle" hint="One aisle straight down the middle. Zero means none." field={centreAisle} units={units} disabled={!editable} />
               <div className="field">
                 <label htmlFor="rows-per-block">Rows per block</label>
                 <input
@@ -1768,6 +1786,10 @@ export default function RoomPanel({
         {erdTab === 'design' && (
           <>
             <div className="room-slider-stack">
+              <p className="field-hint" style={{ margin: '0 0 8px' }}>
+                Splay turns the side banks in towards the stage, so the wings face the screen
+                instead of facing across the room. Zero is a single straight block.
+              </p>
               <SnappySlider
                 label="Bank splay"
                 values={[0, 15, 30, 45, 60]}
