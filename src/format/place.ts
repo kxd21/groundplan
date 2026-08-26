@@ -259,13 +259,19 @@ export function placeGear(
   /** Footprint from the equipment inventory, which beats guessing. */
   known?: { width: number; height: number },
 ): PlaceResult {
+  // An identical object already on the plan is the best template there is: it
+  // carries the real outline, including any correction somebody made by hand.
+  // Ask FIRST, even for round footprints — the special-outline branch below
+  // exists because a rectangle template cannot be resized into a circle, not
+  // because a circle is a bad thing to copy.
+  const matched = findMatchingShape(doc, description);
+
   // Circular / curved footprints cannot be made by resizing a rectangle
   // template — synthesize them so the outline is actually round.
-  if (needsSpecialOutline(description)) {
+  if (!matched && needsSpecialOutline(description)) {
     return placeSynthesized(doc, description, x, y, known);
   }
 
-  const matched = findMatchingShape(doc, description);
   const template = matched ?? findTemplateShape(doc);
   if (!template) {
     // Nothing to copy. Build the box instead — this is the new-plan case, and
@@ -359,9 +365,32 @@ function placeSynthesized(
   };
 }
 
+/**
+ * True when the name describes something actually round.
+ *
+ * This used to demand a round word AND a deck/riser/stage word, so a circular
+ * STAGE came out round and a round TABLE came out square — and the banquet
+ * round is the commonest object in this entire application. On any plan built
+ * from scratch, where there is no existing table to clone, every round in the
+ * room was drawn as a box with chairs arranged around it in a circle. It is the
+ * first thing anybody notices, and it was wrong in the drawing that gets sent
+ * to a venue.
+ *
+ * `Round 60"` is how the stock catalogue names a five-foot banquet round, so a
+ * round word followed by a measurement counts on its own.
+ */
+function isRoundFootprint(description: string): boolean {
+  if (/\bhalf.?round\b|\bquarter.?round\b/i.test(description)) return false;
+  if (/\b(circular|round)\b/i.test(description) && /\b(deck|riser|stage|table|top)\b/i.test(description)) {
+    return true;
+  }
+  // "Round 60"", "Round 72 in", "60in Round" — a round with its diameter.
+  return /\bround\b/i.test(description) && /\d/.test(description);
+}
+
 /** Picks a footprint silhouette from the stock name when placing without a library. */
 function outlineForDescription(description: string, width: number, height: number) {
-  if (/\b(circular|round)\b/i.test(description) && /\b(deck|riser|stage)\b/i.test(description)) {
+  if (isRoundFootprint(description)) {
     return circleOutline(Math.max(width, height));
   }
   if (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description)) {
@@ -373,7 +402,7 @@ function outlineForDescription(description: string, width: number, height: numbe
 /** True when cloning a rectangle template would lose the intended silhouette. */
 function needsSpecialOutline(description: string): boolean {
   return (
-    (/\b(circular|round)\b/i.test(description) && /\b(deck|riser|stage)\b/i.test(description)) ||
+    isRoundFootprint(description) ||
     (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description))
   );
 }

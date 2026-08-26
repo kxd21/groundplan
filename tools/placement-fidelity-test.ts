@@ -22,6 +22,8 @@ import { createBlankPlan } from '../src/format/blank.js';
 import { loadBuffer } from '../src/format/index.js';
 import { indexDocument } from '../src/format/edit.js';
 import { expectedSeatCount, addSeating } from '../src/format/seating.js';
+import { placeGear } from '../src/format/place.js';
+import { buildScene } from '../src/format/scene.js';
 import { UNITS_PER_FOOT as F, UNITS_PER_INCH } from '../src/format/constants.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -153,6 +155,51 @@ check(
   /Fastfold|Mixer|exact/i.test(resolveFailureMessage(fold) ?? ''),
   resolveFailureMessage(fold) ?? '',
 );
+
+/*
+ * A round table is round.
+ *
+ * The "make it round" rule demanded a round word AND a deck/riser/stage word,
+ * so a circular STAGE came out round and a banquet ROUND came out square — and
+ * the banquet round is the commonest object in this application. On any plan
+ * built from scratch, where there is no existing table to clone, every round in
+ * the room was drawn as a box with chairs arranged around it in a circle. It is
+ * the first thing anyone notices, and it was wrong on the drawing that gets
+ * sent to the venue.
+ */
+{
+  const blank = createBlankPlan({ room: { width: 60 * F, depth: 40 * F }, roomName: 'round test' });
+  const doc = loadBuffer(blank.file!, 'round-test.rv4').document;
+
+  /** Corners in the biggest outline this placement drew. */
+  const place = (name: string, size: { width: number; height: number }): number => {
+    const before = buildScene(doc).primitives.length;
+    placeGear(doc, indexDocument(doc), name, 0, 0, size);
+    return buildScene(doc)
+      .primitives.slice(before)
+      .reduce((most: number, p) => Math.max(most, (p.pts?.length ?? 0) / 2), 0);
+  };
+
+  const round60 = place('Round 60"', { width: 600, height: 600 });
+  check('a 60in banquet round is drawn round, not square', round60 > 12, `${round60} corners`);
+  const round72 = place('Round 72"', { width: 720, height: 720 });
+  check('and so is a 72in', round72 > 12, `${round72} corners`);
+
+  // The rule it already had must keep working.
+  const deck = place('Circular Stage Deck', { width: 96, height: 96 });
+  check('a circular deck is still round', deck > 12, `${deck} corners`);
+
+  // …without turning every table into a circle.
+  const six = place('6ft Table', { width: 720, height: 360 });
+  check('a rectangular table stays rectangular', six <= 5, `${six} corners`);
+  const fold = place('Fastfold  6\' x 8\'', { width: 720, height: 960 });
+  check('and so does a fastfold', fold <= 5, `${fold} corners`);
+
+  // A half round is a different silhouette again, and guessing a full circle
+  // for it would be a new wrong answer rather than a fix.
+  const half = place('Half Round', { width: 600, height: 300 });
+  check('a half round is not silently made a full circle', half <= 5, `${half} corners`);
+}
 
 for (const [name, ok, detail] of checks) {
   console.log(`${ok ? 'ok' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
