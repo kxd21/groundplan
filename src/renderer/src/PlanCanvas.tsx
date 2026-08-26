@@ -1297,16 +1297,21 @@ export function PlanCanvas({
     if (spanFrom && pointerMode.preview !== 'none') {
       const to = pointer ?? spanFrom;
       if (pointerMode.preview === 'measure') drawMeasurement(ctx, spanFrom, to, view, paper, units);
-      else if (pointerMode.preview !== 'room') drawShapePreview(ctx, spanFrom, to, pointerMode.preview, view);
-    } else if (pointerMode.preview === 'room') {
-      if (pathGuide && pathGuide.width > 0 && pathGuide.depth > 0) {
+      else if (pointerMode.preview !== 'room' && pointerMode.preview !== 'cable') {
+        drawShapePreview(ctx, spanFrom, to, pointerMode.preview, view);
+      }
+    } else if (pointerMode.preview === 'room' || pointerMode.preview === 'cable') {
+      const cable = pointerMode.preview === 'cable';
+      // The working-size guide belongs to room tracing; a cable run has no
+      // footprint to trace inside.
+      if (!cable && pathGuide && pathGuide.width > 0 && pathGuide.depth > 0) {
         drawRoomPathGuide(ctx, pathGuide, view);
       }
       const live =
         pointer && pathPoints.length
           ? constrainRoomCorner(pathPoints[pathPoints.length - 1]!, pointer, pathAngleLock, shiftHeld)
           : pointer;
-      drawRoomPathPreview(ctx, pathPoints, live, view);
+      drawRoomPathPreview(ctx, pathPoints, live, view, { closed: !cable });
     } else if (readout) {
       drawMeasurement(ctx, readout.from, readout.to, view, paper, units);
     }
@@ -2365,11 +2370,21 @@ function drawRoomPathGuide(
 }
 
 /** Live preview for the click-by-click custom room tool. */
+/**
+ * The live multi-point path.
+ *
+ * `closed` is what separates a room from a cable run: a room previews the floor
+ * it is about to enclose and the leg that will close it, and a cable run is an
+ * open polyline that does neither. Drawing a cable with the room preview filled
+ * a blue floor under it and hung a dashed line back to the first point, which
+ * is a picture of a room, not of a cable.
+ */
 function drawRoomPathPreview(
   ctx: CanvasRenderingContext2D,
   points: PlanPoint[],
   pointer: { x: number; y: number } | null,
   view: View,
+  options: { closed: boolean } = { closed: true },
 ): void {
   if (!points.length) return;
   const sx = (point: { x: number }) => point.x * view.scale + view.offsetX;
@@ -2381,7 +2396,7 @@ function drawRoomPathPreview(
 
   // The committed corners read as the future room floor; the pointer leg and
   // closing leg stay dashed so it is clear they have not been committed yet.
-  if (points.length >= 3) {
+  if (options.closed && points.length >= 3) {
     ctx.beginPath();
     ctx.moveTo(sx(points[0]), sy(points[0]));
     for (let index = 1; index < points.length; index++) ctx.lineTo(sx(points[index]), sy(points[index]));
@@ -2402,7 +2417,7 @@ function drawRoomPathPreview(
   ctx.beginPath();
   ctx.moveTo(sx(last), sy(last));
   ctx.lineTo(sx(live), sy(live));
-  if (points.length >= 2) ctx.lineTo(sx(points[0]), sy(points[0]));
+  if (options.closed && points.length >= 2) ctx.lineTo(sx(points[0]), sy(points[0]));
   ctx.strokeStyle = 'rgba(77, 148, 255, 0.72)';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([5, 4]);

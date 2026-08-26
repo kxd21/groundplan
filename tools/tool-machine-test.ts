@@ -46,6 +46,7 @@ import {
   opensProperties,
   pointerSpec,
   reduce,
+  powerCableChoice,
   roomOutlineChoice,
   staysAfterUse,
   type Capability,
@@ -197,6 +198,59 @@ const misPaired = (pairs: Pair[]): Pair[] =>
   check(
     'the closing click is not added as another corner',
     closed.effects[0]?.do === 'createRoom' && closed.effects[0].points.length === 3,
+  );
+}
+
+/*
+ * A cable run is not a room.
+ *
+ * The path tool draws both, and everything downstream assumed "room". Routing a
+ * power run back past its own start — a return leg, which is most of what cable
+ * routing is — fired `createRoom`, discarded the cable and built a room out of
+ * it. Two feet is a normal gap between cable vertices, so it took no unusual
+ * drawing to hit; the reported symptom was that cable points "operate weird and
+ * not accurately".
+ */
+{
+  const returned = play(initialToolState(EDITABLE), [
+    { type: 'pick', choice: powerCableChoice },
+    { type: 'click', at: clickAt(0) },
+    { type: 'click', at: clickAt(1) },
+    { type: 'click', at: clickAt(2) },
+    { type: 'click', at: { x: clickAt(0).x + 2, y: clickAt(0).y - 1 } },
+  ]);
+  check(
+    'a cable run passing its own start does not become a room',
+    returned.effects.length === 0,
+    returned.effects.map((e) => e.do).join(', '),
+  );
+  check(
+    'and that click is kept as a cable point',
+    returned.state.tool.kind === 'path' && returned.state.tool.points.length === 4,
+    returned.state.tool.kind === 'path' ? String(returned.state.tool.points.length) : returned.state.tool.kind,
+  );
+  const finished = reduce(returned.state, { type: 'finish' });
+  check(
+    'and Finish places the cable, all four points',
+    finished.effect?.do === 'placeCable' && finished.effect.points.length === 4,
+    finished.effect?.do,
+  );
+
+  // The preview is the other half of the same confusion: a room previews the
+  // floor it will enclose and the leg that closes it; a cable does neither.
+  check(
+    'a cable previews as an open path, not a room floor',
+    pointerSpec(returned.state).preview === 'cable',
+    String(pointerSpec(returned.state).preview),
+  );
+  const roomPath = play(initialToolState(EDITABLE), [
+    { type: 'pick', choice: roomOutlineChoice },
+    { type: 'click', at: clickAt(0) },
+  ]);
+  check(
+    'and a room still previews as a room',
+    pointerSpec(roomPath.state).preview === 'room',
+    String(pointerSpec(roomPath.state).preview),
   );
 }
 

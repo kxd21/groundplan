@@ -409,11 +409,19 @@ export function reduce(state: ToolState, event: ToolEvent): Transition {
         }
         // Click near the first corner (with enough points) closes the outline —
         // the same gesture CAD users expect for a polygon.
+        //
+        // ROOMS ONLY. This branch did not look at what was being drawn, and the
+        // path tool draws cable runs too: routing a power run back past its own
+        // start — a return leg, which is most of what cable routing is — fired
+        // `createRoom`, threw the cable away and built a room out of it. Two
+        // feet is also a normal gap between cable vertices, so it did not take
+        // an unusual drawing to hit.
         const first = tool.points[0];
         // 2 feet — hittable when the room is fitted on screen, without stealing
         // ordinary far corners. createPolygonalRoom still collapses a near-duplicate end.
         const closeTol = 2 * 120;
         if (
+          tool.path.what === 'room' &&
           first &&
           tool.points.length >= 3 &&
           Math.hypot(first.x - event.at.x, first.y - event.at.y) <= closeTol
@@ -484,7 +492,7 @@ export type PointerSpec = {
   /** Whether the raw click is hit-tested for an object to associate with. */
   associate: boolean;
   /** What the canvas rubber-bands while a span is half-made. */
-  preview: 'none' | 'measure' | 'room' | DrawShape;
+  preview: 'none' | 'measure' | 'room' | 'cable' | DrawShape;
   /** Which half of a pair the next click completes; spans only. */
   parity?: 'start' | 'end';
 };
@@ -511,7 +519,15 @@ export function pointerSpec(state: ToolState): PointerSpec {
     case 'stamp':
       return { mode: 'stamp', snap: 'grid', associate: false, preview: 'none' };
     case 'path':
-      return { mode: 'path', snap: 'grid', associate: false, preview: 'room' };
+      // A cable run is an open polyline. Previewing it as a room drew a filled
+      // floor and a dashed leg closing back to the start, so routing a cable
+      // looked like drawing a room and read as one.
+      return {
+        mode: 'path',
+        snap: 'grid',
+        associate: false,
+        preview: tool.path.what === 'cable' ? 'cable' : 'room',
+      };
     case 'span': {
       const parity = tool.from ? 'end' : 'start';
       if (tool.span.what === 'measure') {

@@ -196,6 +196,11 @@ const api = {
   checkAppUpdate: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('app:check-update'),
   /** Installs a release from a folder on a USB stick, signature checked. */
   updateFromUsb: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('app:update-from-usb'),
+  /** Whether the last update can still be undone, and to what. */
+  revertInfo: (): Promise<
+    { available: false } | { available: true; from: string; to: string; at: string }
+  > => ipcRenderer.invoke('app:revert-info'),
+  revertAppUpdate: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('app:revert-update'),
   settingsGet: (): Promise<unknown> => ipcRenderer.invoke('settings:get'),
   settingsPatch: (patch: unknown): Promise<{ ok: boolean; settings?: unknown }> =>
     ipcRenderer.invoke('settings:patch', patch),

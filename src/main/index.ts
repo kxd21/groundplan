@@ -75,6 +75,13 @@ import {
   scheduleOptions,
   shouldOfferUpdate,
 } from '../update/reminder.js';
+import {
+  canRevert,
+  clearRollback,
+  loadRollback,
+  planRevert,
+  saveRollback,
+} from '../update/rollback.js';
 import { loadBuffer } from '../format/index.js';
 import { findCatalogPath, loadCatalog, lookup, type Catalog } from '../format/catalog.js';
 import {
@@ -2275,9 +2282,26 @@ async function installStagedAppUpdate(
   await clearReminder(app.getPath('userData'));
   clearScheduledUpdateTimer();
   closeConfirmed = true;
+  /*
+   * Note which version this replaces BEFORE the swap.
+   *
+   * Once `installAppUpdate` succeeds this process is on its way out — on macOS
+   * a detached script is already waiting for it to exit — so there is no "after"
+   * in which to write anything down. If the install then fails, the note is
+   * cleared below; a rollback offer pointing at a hop that never happened is
+   * worse than no offer.
+   */
+  if (staged.version && staged.version !== currentVersion) {
+    await saveRollback(app.getPath('userData'), {
+      from: currentVersion,
+      to: staged.version,
+      at: new Date().toISOString(),
+    }).catch(() => undefined);
+  }
   const installed = await installAppUpdate(staged, appBundlePath(), () => app.quit());
   if (!installed.ok) {
     closeConfirmed = false;
+    await clearRollback(app.getPath('userData')).catch(() => undefined);
     await dialog.showMessageBox({
       type: 'error',
       message: 'The update could not be installed',
@@ -2530,6 +2554,121 @@ async function runCatalogUpdate(interactive: boolean): Promise<void> {
 }
 
 /**
+ * Goes back to the version this copy replaced.
+ *
+ * Reuses the update pipeline unchanged — fetch a signed manifest, verify the
+ * signature, verify the hash, swap — pointed at the older release rather than
+ * the newest. Nothing is kept on disk for this; every release still publishes
+ * its own manifest, so the way back is always describable.
+ *
+ * The offer only stands while the running version is the one the note says was
+ * installed. After a second update, or a manual reinstall, it is withdrawn
+ * rather than pointing somewhere the user did not come from.
+ */
+async function runAppRevert(): Promise<void> {
+  if (appUpdatePromptOpen) return;
+  appUpdatePromptOpen = true;
+  try {
+    const record = await loadRollback(app.getPath('userData'));
+    if (!canRevert(record, app.getVersion())) {
+      await dialog.showMessageBox({
+        type: 'info',
+        message: 'There is nothing to go back to',
+        detail:
+          record
+            ? `This note describes going from ${record.from} to ${record.to}, and you are running ` +
+              `${app.getVersion()}. Only the most recent update can be undone.`
+            : 'Groundplan has not updated itself on this computer, so there is no earlier version to return to.',
+        buttons: ['OK'],
+      });
+      return;
+    }
+
+    const target = record!.from;
+    const plan = await planRevert(target, {
+      currentVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    });
+
+    if (!plan.available) {
+      await dialog.showMessageBox({
+        type: 'error',
+        message: `Groundplan ${target} could not be prepared`,
+        detail: `${plan.reason ?? 'Unknown problem.'}\n\nGroundplan ${app.getVersion()} is unchanged and still works.`,
+        buttons: ['OK'],
+      });
+      return;
+    }
+
+    const size = plan.package ? `${(plan.package.bytes / 1024 / 1024).toFixed(1)} MB` : 'unknown size';
+    const answer = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Go back a version',
+      message: `Replace Groundplan ${app.getVersion()} with ${target}?`,
+      detail:
+        `${size} will be downloaded and checked against its signature before anything is replaced. ` +
+        `Groundplan will restart into ${target}.\n\n` +
+        'Your plans, gear lists and inventory are not touched — they live outside the application. ' +
+        `A plan saved by ${app.getVersion()} still opens in ${target}.\n\n` +
+        `Groundplan will offer ${plan.currentVersion} again the next time it checks for updates.`,
+      buttons: [`Install ${target}`, 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (answer.response !== 0) return;
+
+    if (!(await confirmSaveBeforeUpdate(target))) return;
+
+    const staging = join(app.getPath('userData'), 'updates');
+    await cleanStaging(staging);
+    mainWindow?.webContents.send('app:update-progress', {
+      phase: 'downloading',
+      received: 0,
+      total: plan.package?.bytes,
+    });
+
+    const staged = await stageAppUpdate(plan, staging, (received, total) => {
+      mainWindow?.webContents.send('app:update-progress', { phase: 'downloading', received, total });
+      if (total > 0) mainWindow?.setProgressBar(received / total);
+    });
+    mainWindow?.setProgressBar(-1);
+
+    if (!staged.ok) {
+      mainWindow?.webContents.send('app:update-progress', { phase: 'failed', message: staged.reason });
+      await dialog.showMessageBox({
+        type: 'error',
+        message: `Groundplan ${target} could not be downloaded`,
+        detail: `${staged.reason ?? 'The download did not finish.'}\n\nGroundplan ${app.getVersion()} is unchanged and still works.`,
+        buttons: ['OK'],
+      });
+      return;
+    }
+
+    // Going back closes the loop the note described: there is no longer an
+    // update to undo, and the next check treats the newer release as an
+    // ordinary offer rather than something being forced back on.
+    await clearRollback(app.getPath('userData')).catch(() => undefined);
+    await clearReminder(app.getPath('userData')).catch(() => undefined);
+    clearScheduledUpdateTimer();
+    closeConfirmed = true;
+    const installed = await installAppUpdate(staged, appBundlePath(), () => app.quit());
+    if (!installed.ok) {
+      closeConfirmed = false;
+      await dialog.showMessageBox({
+        type: 'error',
+        message: `Groundplan ${target} could not be installed`,
+        detail: `${installed.reason ?? 'Unknown problem.'}\n\nGroundplan ${app.getVersion()} is unchanged.`,
+        buttons: ['OK'],
+      });
+    }
+  } finally {
+    appUpdatePromptOpen = false;
+  }
+}
+
+/**
  * Installs an update from a folder on a USB stick.
  *
  * Shares the last two thirds of `runAppUpdate` — verify, stage, swap — and
@@ -2759,6 +2898,7 @@ function buildMenu(): void {
               { type: 'separator' as const },
               { label: 'Check for Updates…', click: () => void runAppUpdate(true) },
               { label: 'Install Update from USB…', click: () => void runUsbUpdate() },
+              { label: 'Go Back a Version…', click: () => void runAppRevert() },
               { type: 'separator' as const },
               {
                 label: 'Settings…',
@@ -2914,7 +3054,7 @@ function buildMenu(): void {
             { label: 'Files', click: () => mainWindow?.webContents.send('menu:mode-browse') },
             { label: 'Assets', click: () => mainWindow?.webContents.send('menu:mode-place') },
             { label: 'Properties', click: () => mainWindow?.webContents.send('menu:mode-inspect') },
-            { label: 'Layout Library', click: () => mainWindow?.webContents.send('menu:mode-setup') },
+            { label: 'Show Setup', click: () => mainWindow?.webContents.send('menu:mode-setup') },
             { label: 'All Canvas Tools', click: () => mainWindow?.webContents.send('menu:mode-draw') },
           ],
         },
@@ -2945,6 +3085,7 @@ function buildMenu(): void {
         { type: 'separator' },
         { label: 'Check for Updates…', click: () => void runAppUpdate(true) },
         { label: 'Install Update from USB…', click: () => void runUsbUpdate() },
+        { label: 'Go Back a Version…', click: () => void runAppRevert() },
       ],
     },
   ];
@@ -6622,6 +6763,19 @@ app.whenReady().then(async () => {
   handle('app:check-update', async () => {
     await runAppUpdate(true);
     await runCatalogUpdate(true);
+    return { ok: true };
+  });
+
+  /** What the settings panel needs to show, or hide, the way back. */
+  handle('app:revert-info', async () => {
+    const record = await loadRollback(app.getPath('userData'));
+    return canRevert(record, app.getVersion())
+      ? { available: true, from: record!.from, to: record!.to, at: record!.at }
+      : { available: false };
+  });
+
+  handle('app:revert-update', async () => {
+    await runAppRevert();
     return { ok: true };
   });
 

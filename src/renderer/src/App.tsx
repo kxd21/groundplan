@@ -7925,12 +7925,26 @@ export function App() {
               spanFrom={tool.tool.kind === 'span' ? tool.tool.from : null}
               pathPoints={tool.tool.kind === 'path' ? tool.tool.points : []}
               pathGuide={
-                tool.tool.kind === 'path' && customRoomPrefs?.showGuide
+                tool.tool.kind === 'path' &&
+                tool.tool.path.what === 'room' &&
+                customRoomPrefs?.showGuide
                   ? { width: customRoomPrefs.guideWidth, depth: customRoomPrefs.guideDepth }
                   : null
               }
+              /*
+               * The angle lock belongs to the ROOM being traced.
+               *
+               * It was applied to every path tool, and the path tool draws
+               * cable runs too — so after creating a plan with "Draw custom"
+               * (which sets ortho), every cable vertex was silently pulled onto
+               * the room's ortho axis and landed somewhere other than the
+               * cursor. Shift still constrains a cable by hand; a preference
+               * chosen for a different drawing no longer does it invisibly.
+               */
               pathAngleLock={
-                tool.tool.kind === 'path' ? customRoomPrefs?.angleLock ?? 'free' : 'free'
+                tool.tool.kind === 'path' && tool.tool.path.what === 'room'
+                  ? customRoomPrefs?.angleLock ?? 'free'
+                  : 'free'
               }
               readout={tool.readout}
               onCanvasClick={(at) => {

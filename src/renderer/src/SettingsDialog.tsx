@@ -104,8 +104,31 @@ interface Props {
 /** Two-level settings hub: plan behaviour and application behaviour. */
 export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onError }: Props) {
   const [section, setSection] = useState<Section>('plan');
+  /*
+   * Whether the last update can still be undone, and to what.
+   *
+   * Asked when the panel mounts rather than stored in settings: the answer
+   * depends on the running version still matching what the note says was
+   * installed, which only the main process can judge.
+   */
+  const [revert, setRevert] = useState<
+    { available: false } | { available: true; from: string; to: string; at: string } | null
+  >(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  useEffect(() => {
+    let live = true;
+    void api
+      .revertInfo()
+      .then((info) => {
+        if (live) setRevert(info);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
   const saveSequence = useRef(0);
   const saveTimer = useRef<number | null>(null);
 
@@ -503,6 +526,20 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                     <label className="setting-check"><input type="checkbox" checked={settings.app.checkOnLaunch} onChange={(event) => void patch({ app: { checkOnLaunch: event.target.checked } })} /><span><strong>Check at launch</strong><small>Look for a new Groundplan build shortly after startup.</small></span></label>
                     <button type="button" onClick={() => void api.checkAppUpdate()}>Check now</button>
                   </div>
+                  {revert?.available ? (
+                    <div className="settings-actions-row">
+                      <span>
+                        <strong>Go back to {revert.from}</strong>
+                        <small>
+                          This copy updated to {revert.to} on{' '}
+                          {new Date(revert.at).toLocaleDateString()}. If that build is causing
+                          trouble, reinstall {revert.from} — plans, gear lists and inventory are
+                          not touched.
+                        </small>
+                      </span>
+                      <button type="button" onClick={() => void api.revertAppUpdate()}>Go back…</button>
+                    </div>
+                  ) : null}
                 </section>
               </>
             )}
