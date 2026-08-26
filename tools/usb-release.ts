@@ -118,6 +118,56 @@ const manifest: AppManifest = {
 const signature = cryptoSign(null, Buffer.from(canonicalise(manifest), 'utf8'), readFileSync(keyPath, 'utf8'));
 writeFileSync(join(outDir, 'app-manifest.json'), `${JSON.stringify({ ...manifest, signature: signature.toString('base64') }, null, 2)}\n`);
 
+/*
+ * Only describe the platforms this stick actually carries.
+ *
+ * The instructions used to list Mac, Windows and Linux unconditionally, so a
+ * stick built without a Windows build told a Windows user to "Run the Setup
+ * .exe" — a file that is not in the folder. Somebody handed that stick has no
+ * way to tell a missing build from a mistake they made, and the section that
+ * would have told them (WHAT IS IN HERE) is below the instructions.
+ */
+const has = (pattern: RegExp): boolean => copied.some((name) => pattern.test(name));
+const firstRunSections: string[] = [];
+if (has(/\.dmg$/)) {
+  firstRunSections.push(
+    `Mac      Open the .dmg and drag Groundplan to Applications.
+         The first launch needs a right-click (or Control-click) on the app,
+         then Open, then Open again. macOS asks this once for an app that did
+         not come from the App Store.`,
+  );
+}
+if (has(/\.exe$/)) {
+  firstRunSections.push(
+    `Windows  Run the Setup .exe.${
+      has(/Portable-.*\.exe$/)
+        ? `
+         No admin rights? Use the Portable .exe instead — it runs from this
+         stick without installing.`
+        : ''
+    }`,
+  );
+}
+if (has(/\.AppImage$/)) {
+  firstRunSections.push(`Linux    chmod +x the .AppImage, then run it.`);
+}
+const missing = [
+  has(/\.dmg$/) ? null : 'Mac',
+  has(/\.exe$/) ? null : 'Windows',
+  has(/\.AppImage$/) ? null : 'Linux',
+].filter(Boolean);
+const firstRunInstructions = [
+  firstRunSections.join('\n\n'),
+  missing.length
+    ? `\nThis stick has no ${missing.join(' or ')} build. Ask for one that does —
+a ${missing.length === 1 ? 'copy' : 'machine'} on ${
+        missing.length === 1 ? 'that platform' : 'those platforms'
+      } cannot be installed or updated from here.`
+    : '',
+]
+  .filter(Boolean)
+  .join('\n');
+
 writeFileSync(
   join(outDir, 'README.txt'),
   `Groundplan ${version}
@@ -134,16 +184,7 @@ then pick this folder. It checks the signature before it installs anything.
 
 FIRST TIME ON THIS COMPUTER?
 ----------------------------
-Mac      Open the .dmg and drag Groundplan to Applications.
-         The first launch needs a right-click (or Control-click) on the app,
-         then Open, then Open again. macOS asks this once for an app that did
-         not come from the App Store.
-
-Windows  Run the Setup .exe.
-         No admin rights? Use the Portable .exe instead — it runs from this
-         stick without installing.
-
-Linux    chmod +x the .AppImage, then run it.
+${firstRunInstructions}
 
 
 WHAT IS IN HERE
