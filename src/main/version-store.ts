@@ -82,9 +82,30 @@ function writeManifest(planPath: string, manifest: VersionManifest): void {
   writeFileSync(manifestPath(planPath), JSON.stringify(manifest, null, 2));
 }
 
+/**
+ * Newest first, with a tiebreak that actually holds.
+ *
+ * `savedAt` is an ISO timestamp with millisecond resolution, and saving two
+ * versions in the same millisecond is not exotic — it is what happens when
+ * anything saves twice in a row, including this module's own tests, which went
+ * red roughly one run in three. A tie left the order to sort stability, so
+ * "newest" was undefined: `listVersions` could show them the wrong way round,
+ * and `saveVersion` compares the incoming bytes against "the newest" to refuse
+ * duplicates, so a tie could compare against the wrong snapshot.
+ *
+ * The manifest array is append-ordered, so a later index IS later in time. That
+ * is the tiebreak.
+ */
+function newestFirst(versions: PlanVersion[]): PlanVersion[] {
+  return versions
+    .map((version, index) => ({ version, index }))
+    .sort((a, b) => b.version.savedAt.localeCompare(a.version.savedAt) || b.index - a.index)
+    .map((entry) => entry.version);
+}
+
 /** Every saved version, newest first. */
 export function listVersions(planPath: string): PlanVersion[] {
-  return [...readManifest(planPath).versions].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  return newestFirst(readManifest(planPath).versions);
 }
 
 /**
@@ -105,7 +126,7 @@ export function saveVersion(
   const manifest = readManifest(planPath);
   const digest = createHash('sha256').update(bytes).digest('hex');
 
-  const newest = [...manifest.versions].sort((a, b) => b.savedAt.localeCompare(a.savedAt))[0];
+  const newest = newestFirst(manifest.versions)[0];
   if (newest && newest.digest === digest) {
     return {
       ok: false,

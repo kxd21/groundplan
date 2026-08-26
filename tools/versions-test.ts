@@ -160,6 +160,8 @@ console.log('\nversions are kept beside the plan');
   check('a snapshot reads back byte for byte', bytes?.toString() === 'version one', bytes?.toString());
   check('an unknown id reads back nothing', readVersion(plan, 'nope') === null);
 
+
+
   check('a version renames', renameVersion(plan, list[0]!.id, 'Final production'));
   check('and the new name sticks', listVersions(plan)[0]?.name === 'Final production');
   check('renaming to blank is refused', !renameVersion(plan, list[0]!.id, '  '));
@@ -182,6 +184,41 @@ console.log('\nversions are kept beside the plan');
   check('and prunes nothing', pruneOrphans(fresh) === 0);
 
   rmSync(dir, { recursive: true, force: true });
+}
+
+{
+  /*
+   * Versions saved inside the same millisecond still order correctly.
+   *
+   * `savedAt` is an ISO timestamp with millisecond resolution, so two saves in
+   * quick succession can carry the SAME string — which is not exotic, it is
+   * what happens whenever anything saves twice in a row. A tie left the order
+   * to sort stability, so "newest" was undefined: the list could come back the
+   * wrong way round, and `saveVersion` refuses duplicates by comparing against
+   * "the newest", so a tie could compare against the wrong snapshot. This test
+   * used to fail about one run in three, which is worse than failing every
+   * time — a flaky gate is one nobody trusts.
+   *
+   * Six saves with no delay between them: at least two will share a millisecond
+   * on any machine this runs on.
+   */
+  const burstDir = mkdtempSync(join(tmpdir(), 'groundplan-versions-burst-'));
+  const burstPlan = join(burstDir, 'Burst.rv4');
+  writeFileSync(burstPlan, Buffer.from('start'));
+  for (let i = 0; i < 6; i++) saveVersion(burstPlan, Buffer.from(`burst ${i}`), `Burst ${i}`);
+  const burst = listVersions(burstPlan);
+  check('a burst of saves all land', burst.length === 6, `${burst.length}`);
+  check('the newest of the burst is first', burst[0]?.name === 'Burst 5', burst.map((v) => v.name).join(', '));
+  check(
+    'and the whole burst reads back in the order it was saved',
+    burst.slice(0, 6).every((v, i) => v.name === `Burst ${5 - i}`),
+    burst.slice(0, 6).map((v) => v.name).join(', '),
+  );
+  check(
+    'each one still holds its own bytes',
+    burst.slice(0, 6).every((v, i) => readVersion(burstPlan, v.id)?.toString() === `burst ${5 - i}`),
+  );
+  rmSync(burstDir, { recursive: true, force: true });
 }
 
 console.log(`\n${passed}/${passed + failed} checks passed`);
