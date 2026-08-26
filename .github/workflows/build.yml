@@ -24,6 +24,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Ensure Electron runtime is installed
+        run: |
+          node node_modules/electron/install.js
+          npx electron --version
       - name: Typecheck, hermetic tests, and build
         # Electron needs a display for the real UI/contrast gate. GitHub's
         # Ubuntu image includes Xvfb; without it the app waits 90 seconds for
@@ -56,6 +60,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Ensure Electron runtime is installed
+        run: |
+          node node_modules/electron/install.js
+          npx electron --version
       - name: Cross-platform domain tests
         run: npm test
       - run: npm run ${{ matrix.script }}
