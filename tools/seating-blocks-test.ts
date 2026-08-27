@@ -68,5 +68,12 @@ const eight = solveSeating({ ...createSeatingPlan('theatre', focus), blocksAcros
 const cols8 = columns(eight.seats.map((s) => s.x), 1.5 * base.seatSpacing);
 check('eight blocks produce eight columns', cols8 === 8, `saw ${cols8} columns`);
 
+// A gridded house faces square: every chair shares one heading, not fanned onto
+// the focus the way a single wide bank is.
+const headings = new Set(four.seats.map((s) => Math.round(s.rotation * 1e6)));
+check('blocks all face the same way (a clean grid)', headings.size === 1, `${headings.size} distinct headings`);
+const fanned = new Set(single.seats.map((s) => Math.round(s.rotation * 1e6)));
+check('a single wide bank still fans onto the focus', fanned.size > 1, `${fanned.size} headings`);
+
 console.log(`\n${passed}/${passed + failed} checks passed`);
 if (failed) process.exit(1);

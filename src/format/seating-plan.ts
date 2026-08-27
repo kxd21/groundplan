@@ -469,6 +469,11 @@ function solveRows(plan: SeatingPlan, room: RoomModel, acc: Accumulator): number
   const startDepth = plan.clearances.frontWall + plan.clearances.front;
   const maxDepth = plan.clearances.depth && plan.clearances.depth > 0 ? plan.clearances.depth : 0;
 
+  // Side-by-side straight blocks are a gridded house: every chair faces square
+  // to the stage, not fanned onto the focus the way one wide bank is. Compute
+  // that one heading up front and give it to every block seat.
+  const gridRotation = facing({ x: plan.focus.x - forward.x, y: plan.focus.y - forward.y }, plan.focus);
+
   let rows = 0;
 
   for (let row = 0; row < maxRows && !acc.full; row++) {
@@ -505,7 +510,7 @@ function solveRows(plan: SeatingPlan, room: RoomModel, acc: Accumulator): number
         push(acc, plan, room, {
           x: at.x,
           y: at.y,
-          rotation: facing(at, plan.focus),
+          rotation: useBlocks ? gridRotation : facing(at, plan.focus),
           row,
           seat: i + limit,
           section: s,

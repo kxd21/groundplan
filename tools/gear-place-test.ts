@@ -72,6 +72,21 @@ const lekos = [...walk(doc)].filter((n) => n.labels.includes('Leko Light')).leng
 check('each item keeps its name in the inventory', lekos === 6, `${lekos} Leko`);
 check('no cable was drawn', [...walk(doc)].every((n) => !n.labels.some((l) => /cable/i.test(l))));
 
+// Footprint-aware staging: no two placed items overlap (a 6x8 riser must not
+// land on a neighbour the way a fixed pitch would let it).
+const placedShapes = [...walk(doc)].filter(
+  (n) => n.cls === 'RVShape' && n.labels.some((l) => /leko|source 4|riser/i.test(l)),
+);
+const overlap = (a: (typeof placedShapes)[number], b: (typeof placedShapes)[number]) =>
+  a.bounds.left < b.bounds.right && b.bounds.left < a.bounds.right && a.bounds.top < b.bounds.bottom && b.bounds.top < a.bounds.bottom;
+let overlaps = 0;
+for (let i = 0; i < placedShapes.length; i++) {
+  for (let j = i + 1; j < placedShapes.length; j++) {
+    if (overlap(placedShapes[i], placedShapes[j])) overlaps++;
+  }
+}
+check('staged items do not overlap', overlaps === 0, `${overlaps} overlapping pairs`);
+
 const saved = packContainer(original, serializeArchive(doc));
 const reread = loadBuffer(saved, 'gear.rv4').document;
 check('the plan still parses cleanly', reread.warnings.length === 0, reread.warnings.slice(0, 2).join('; '));

@@ -45,8 +45,8 @@ const result = drapePerimeter(session);
 check('the room is draped', result.ok, result.reason);
 const after = [...walk(doc)].filter((n) => n.labels.includes('Pipe and Drape')).length;
 
-// A 60x40 room is a 200 ft perimeter; at ~5 ft panels that is around 40 panels.
-check('a full run of panels is laid', after - before >= 30, `${after - before} panels`);
+// A 60x40 room is a 200 ft perimeter; at ~10 ft standard panels that is ~20.
+check('a full run of panels is laid', after - before >= 15, `${after - before} panels`);
 check('each created object is a drape panel', (result.created?.length ?? 0) === after - before);
 
 const saved = packContainer(original, serializeArchive(doc));

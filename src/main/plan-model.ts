@@ -62,7 +62,7 @@ import {
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
 import { walk, UNITS_PER_FOOT, type RVDocument } from '../format/rv.js';
 import { addRoot, appendChild, indexDocument } from '../format/edit.js';
-import { placeGear } from '../format/place.js';
+import { placeGear, parseDimensions } from '../format/place.js';
 import { createSegment, createShape } from '../format/synthesize.js';
 import { walkItems, type GearList } from '../gear/model.js';
 import { companionPathFor, loadCompanion, saveCompanion } from './companion-store.js';
@@ -450,7 +450,7 @@ export function dimensionTheRoom(session: Session, units: UnitSystem): ModelEdit
  * each wall is divided into panels of roughly `panelWidth`, and each panel is a
  * thin rectangle named so it counts in the inventory like the real thing.
  */
-export function drapePerimeter(session: Session, panelWidth = 5 * UNITS_PER_FOOT): ModelEdit {
+export function drapePerimeter(session: Session, panelWidth = 10 * UNITS_PER_FOOT): ModelEdit {
   const doc = session.loaded.document;
   const room = currentRoom(doc);
   if (!room) return { ok: false, reason: 'there is no room outline to drape' };
@@ -524,14 +524,18 @@ export function placeGearList(
   const room = currentRoom(doc);
   const bounds = room ? roomBounds(room) : null;
   const originX = bounds ? bounds.minX : 0;
-  const startY = bounds ? bounds.maxY + 10 * UNITS_PER_FOOT : 0;
-  const pitch = 8 * UNITS_PER_FOOT;
-  const perRow = 24;
+  const startY = (bounds ? bounds.maxY : 0) + 10 * UNITS_PER_FOOT;
+  // Flow the staging grid across a strip as wide as the room, so it sits neatly
+  // below the plan rather than trailing off to one side.
+  const stripWidth = bounds ? Math.max(40 * UNITS_PER_FOOT, bounds.maxX - bounds.minX) : 240 * UNITS_PER_FOOT;
+  const gap = 2 * UNITS_PER_FOOT;
   const MAX = 1500;
 
   const created: number[] = [];
   let placed = 0;
-  let cell = 0;
+  let cursorX = originX;
+  let rowY = startY;
+  let rowHeight = 0;
   let index = indexDocument(doc);
 
   for (const item of walkItems(list)) {
@@ -540,10 +544,23 @@ export function placeGearList(
     if (!description || NOT_DRAWN.test(description)) continue;
     const qty = Math.max(0, Math.min(Math.round(item.quantity || 0), 200));
 
+    // Size each staging cell to the item's own footprint so a screen or a stage
+    // deck doesn't land on top of its neighbours the way a fixed pitch would.
+    const size = parseDimensions(description);
+    const w = Math.max(2 * UNITS_PER_FOOT, size.width);
+    const h = Math.max(2 * UNITS_PER_FOOT, size.height);
+    const cellW = w + gap;
+    const cellH = h + gap;
+
     for (let n = 0; n < qty && placed < MAX; n++) {
-      const px = originX + (cell % perRow) * pitch;
-      const py = startY + Math.floor(cell / perRow) * pitch;
-      const result = placeGear(doc, index, description, px, py);
+      if (cursorX > originX && cursorX - originX + cellW > stripWidth) {
+        cursorX = originX;
+        rowY += rowHeight;
+        rowHeight = 0;
+      }
+      const cx = cursorX + w / 2;
+      const cy = rowY + h / 2;
+      const result = placeGear(doc, index, description, cx, cy, { width: w, height: h });
       if (result.ok && result.created?.length) {
         created.push(...result.created);
         placed++;
@@ -551,7 +568,8 @@ export function placeGearList(
         // name; a matched clone reuses a template already in it.
         if (result.method !== 'matched') index = indexDocument(doc);
       }
-      cell++;
+      cursorX += cellW;
+      rowHeight = Math.max(rowHeight, cellH);
     }
   }
 
