@@ -186,6 +186,13 @@ export interface SeatingPlan {
    * the angled fan that `sections`/splay produce.
    */
   blocksAcross?: number;
+  /**
+   * Confine seating to this rectangle — a zone or region of the floor. Unset
+   * fills the whole room. This is what lets several independent layouts (a main
+   * house, a VIP block, a riser bank) live on one plan at once, each solved and
+   * re-tuned without touching the others.
+   */
+  area?: { minX: number; minY: number; maxX: number; maxY: number };
   /** Round tables: diameter and seats. */
   tableDiameter?: number;
   seatsPerTable?: number;
@@ -389,8 +396,16 @@ function frameFor(plan: SeatingPlan, room: RoomModel): Frame {
 }
 
 /** True when a position is on floor that seats may use. */
-function usable(point: Point, room: RoomModel, reserved: ReservedArea[]): boolean {
+function usable(
+  point: Point,
+  room: RoomModel,
+  reserved: ReservedArea[],
+  area?: { minX: number; minY: number; maxX: number; maxY: number },
+): boolean {
   if (room.walls.length >= 3 && !containsPoint(room, point)) return false;
+  if (area && (point.x < area.minX || point.x > area.maxX || point.y < area.minY || point.y > area.maxY)) {
+    return false;
+  }
   return !reserved.some(
     (r) => point.x >= r.x && point.x <= r.x + r.width && point.y >= r.y && point.y <= r.y + r.height,
   );
@@ -432,7 +447,7 @@ interface Accumulator {
 
 function push(acc: Accumulator, plan: SeatingPlan, room: RoomModel, seat: SeatPosition): void {
   if (acc.full) return;
-  if (!usable({ x: seat.x, y: seat.y }, room, plan.reserved)) {
+  if (!usable({ x: seat.x, y: seat.y }, room, plan.reserved, plan.area)) {
     acc.dropped++;
     return;
   }
@@ -597,7 +612,7 @@ function solveRounds(plan: SeatingPlan, room: RoomModel, acc: Accumulator): numb
       const x = bounds.minX + inset + shift + col * pitch;
       if (x > bounds.maxX - inset) break;
       const centre = { x, y };
-      if (!usable(centre, room, plan.reserved)) {
+      if (!usable(centre, room, plan.reserved, plan.area)) {
         acc.dropped++;
         continue;
       }
@@ -616,7 +631,7 @@ function solveRounds(plan: SeatingPlan, room: RoomModel, acc: Accumulator): numb
             ? (i * 2 * Math.PI) / count
             : stageSide + Math.PI - arc / 2 + (arc * (i + 0.5)) / count;
         const at = { x: x + radius * Math.cos(bearing), y: y + radius * Math.sin(bearing) };
-        if (!usable(at, room, plan.reserved)) {
+        if (!usable(at, room, plan.reserved, plan.area)) {
           blocked = true;
           break;
         }
@@ -727,7 +742,7 @@ function solveReception(plan: SeatingPlan, room: RoomModel, acc: Accumulator): n
   for (let y = bounds.minY + inset; y <= bounds.maxY - inset; y += pitch) {
     for (let x = bounds.minX + inset; x <= bounds.maxX - inset; x += pitch) {
       const centre = { x, y };
-      if (!usable(centre, room, plan.reserved)) {
+      if (!usable(centre, room, plan.reserved, plan.area)) {
         acc.dropped++;
         continue;
       }

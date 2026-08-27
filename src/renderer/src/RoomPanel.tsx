@@ -206,11 +206,18 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
   const [splay, setSplay] = useState(0);
   const [blocksAcross, setBlocksAcross] = useState(1);
   const [rowsPerBlock, setRowsPerBlock] = useState(0);
+  const [region, setRegion] = useState('Main');
   const seatSpacing = useLength(20 * 10, units);
   const rowSpacing = useLength(36 * 10, units);
   const frontClearance = useLength(8 * 120, units);
   const centreAisle = useLength(0, units);
   const seatingDepth = useLength(0, units);
+  // A seating zone: 0 width/depth means fill the room. Set it to lay one layout
+  // in a defined rectangle so several houses can share the plan.
+  const zoneX = useLength(0, units);
+  const zoneY = useLength(0, units);
+  const zoneWidth = useLength(0, units);
+  const zoneDepth = useLength(0, units);
   const [preview, setPreview] = useState<SeatingPreview | null>(null);
 
   const styleInfo = model?.seatingStyles.find((s) => s.id === style);
@@ -238,8 +245,13 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
       stagger,
       splay,
       blocksAcross,
+      regionId: region.trim() || 'Main',
+      areaX: zoneX.value ?? undefined,
+      areaY: zoneY.value ?? undefined,
+      areaWidth: zoneWidth.positive ? zoneWidth.value ?? undefined : undefined,
+      areaHeight: zoneDepth.positive ? zoneDepth.value ?? undefined : undefined,
     }),
-    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, seatingDepth.value, centreAisle.value, rowsPerBlock, stagger, splay, blocksAcross],
+    [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, seatingDepth.value, centreAisle.value, rowsPerBlock, stagger, splay, blocksAcross, region, zoneX.value, zoneY.value, zoneWidth.value, zoneWidth.positive, zoneDepth.value, zoneDepth.positive],
   );
 
   // Live count. Solving is pure and cheap, so this runs on every change —
@@ -545,6 +557,24 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
         </div>
 
         <div className="field">
+          <label htmlFor="seat-region">Region</label>
+          <input
+            id="seat-region"
+            type="text"
+            list="seat-region-list"
+            value={region}
+            disabled={!editable}
+            placeholder="Main"
+            onChange={(e) => setRegion(e.target.value)}
+          />
+          <datalist id="seat-region-list">
+            {model.seatingRegions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        </div>
+
+        <div className="field">
           <label htmlFor="seat-style">Layout</label>
           <select id="seat-style" value={style} onChange={(e) => setStyle(e.target.value)} disabled={!editable}>
             {model.seatingStyles.map((s) => (
@@ -553,6 +583,15 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="field-row">
+          <LengthField id="zone-x" label="Zone X" field={zoneX} disabled={!editable} />
+          <LengthField id="zone-y" label="Zone Y" field={zoneY} disabled={!editable} />
+        </div>
+        <div className="field-row">
+          <LengthField id="zone-w" label="Zone width (0 = room)" field={zoneWidth} disabled={!editable} />
+          <LengthField id="zone-d" label="Zone depth (0 = room)" field={zoneDepth} disabled={!editable} />
         </div>
 
         <div className="field-row">
@@ -667,8 +706,9 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
           </button>
         </div>
         <p className="hint">
-          The count above is what the room will actually take — seats that fall outside the walls, inside a column or on
-          reserved floor are left out. Placing again replaces the previous layout.
+          The count above is what the area will actually take — seats outside the walls, a column, the stage or another
+          layout are left out. Each <strong>Region</strong> is its own layout: placing again replaces only that region,
+          so a main house, a VIP block and a riser bank can share the plan. Leave the zone at 0 to fill the room.
         </p>
       </div>
 

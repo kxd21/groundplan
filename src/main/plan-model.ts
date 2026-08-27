@@ -46,6 +46,7 @@ import {
   createSeatingPlan,
   solveSeating,
   STYLE_DEFAULTS,
+  type ReservedArea,
   type SeatingPlan,
   type SeatingSolution,
   type SeatingStyle,
@@ -88,32 +89,45 @@ interface PlanModelState {
    * is exactly what the user needs to judge the area by.
    */
   derivedSource: 'walls' | 'region' | 'extent' | 'none';
-  /** Objects the last seating render created. */
-  seatingIds: number[];
+  /**
+   * Seating layouts on this plan, keyed by name. Each remembers the objects it
+   * drew (so regenerating replaces only its own) and the footprint it occupies
+   * (so the other layouts reserve around it). One plan can carry a main house, a
+   * VIP block and a riser bank at once, each solved independently.
+   */
+  regions: Map<string, SeatingRegion>;
   /** The stage as last built, for the report. */
   stage: StageBuild | null;
 }
 
-const EMPTY: PlanModelState = {
-  companion: null,
-  freshness: 'missing',
-  derived: true,
-  derivedSource: 'none',
-  rendered: null,
-  seatingIds: [],
-  stage: null,
-};
+interface SeatingRegion {
+  ids: number[];
+  area?: ReservedArea;
+}
 
-let state: PlanModelState = { ...EMPTY };
+function emptyState(): PlanModelState {
+  return {
+    companion: null,
+    freshness: 'missing',
+    derived: true,
+    derivedSource: 'none',
+    rendered: null,
+    regions: new Map(),
+    stage: null,
+  };
+}
+
+let state: PlanModelState = emptyState();
 
 export function resetPlanModel(): void {
-  state = { ...EMPTY };
+  state = emptyState();
 }
 
 /** Reads the companion beside a plan, or derives one from the drawing. */
 export async function openPlanModel(planPath: string, doc: RVDocument, units: UnitSystem): Promise<void> {
   const loaded = await loadCompanion(planPath, doc, units);
   state = {
+    ...emptyState(),
     companion: loaded.companion,
     freshness: loaded.freshness,
     reason: loaded.reason,
@@ -123,8 +137,6 @@ export async function openPlanModel(planPath: string, doc: RVDocument, units: Un
     // what was last rendered. A derived one was read back off the drawing,
     // which amounts to the same thing.
     rendered: loaded.companion.rooms[0] ?? null,
-    seatingIds: [],
-    stage: null,
   };
 }
 
@@ -210,6 +222,8 @@ export interface PlanModelView {
   };
   /** Layout styles the seating panel offers. */
   seatingStyles: Array<{ id: SeatingStyle; label: string; needsTable: boolean }>;
+  /** Named seating layouts already on the plan, so the panel can re-tune them. */
+  seatingRegions: string[];
   /** Placed items, summarised — what the allocation and legend are built from. */
   itemCount: number;
   stage: { present: boolean; buildList: Array<{ item: string; quantity: number; detail?: string }>; warnings: string[] } | null;
@@ -304,6 +318,7 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
       derived: state.derived,
       path: companionPathFor(session.path),
     },
+    seatingRegions: [...state.regions.keys()],
     seatingStyles: (Object.keys(STYLE_DEFAULTS) as SeatingStyle[]).map((id) => ({
       id,
       label: STYLE_LABELS[id],
@@ -604,6 +619,13 @@ export interface SeatingRequestView {
   tableDiameter?: number;
   seatsPerTable?: number;
   maxSeats?: number;
+  /** Which named layout this run belongs to. Defaults to "Main". */
+  regionId?: string;
+  /** Confine this layout to a rectangle (a zone). Omit to fill the room. */
+  areaX?: number;
+  areaY?: number;
+  areaWidth?: number;
+  areaHeight?: number;
 }
 
 function planFrom(request: SeatingRequestView): SeatingPlan {
@@ -640,6 +662,39 @@ function planFrom(request: SeatingRequestView): SeatingPlan {
   return plan;
 }
 
+/** The layout this request targets; "Main" is the default single house. */
+function regionKey(request: SeatingRequestView): string {
+  return (request.regionId ?? 'Main').trim() || 'Main';
+}
+
+/** The zone a request confines its seating to, if any. */
+function requestArea(request: SeatingRequestView): ReservedArea | undefined {
+  if (!request.areaWidth || !request.areaHeight || request.areaWidth <= 0 || request.areaHeight <= 0) {
+    return undefined;
+  }
+  return { x: request.areaX ?? 0, y: request.areaY ?? 0, width: request.areaWidth, height: request.areaHeight };
+}
+
+/**
+ * A plan scoped to one region: confined to its zone, and reserving the stage
+ * plus every *other* region's footprint so the layouts never overlap. This is
+ * the shared reservation registry that lets several houses coexist.
+ */
+function planForRegion(request: SeatingRequestView): SeatingPlan {
+  const plan = planFrom(request);
+  const area = requestArea(request);
+  if (area) {
+    plan.area = { minX: area.x, minY: area.y, maxX: area.x + area.width, maxY: area.y + area.height };
+  }
+  const key = regionKey(request);
+  const others: ReservedArea[] = [];
+  for (const [id, region] of state.regions) {
+    if (id !== key && region.area) others.push(region.area);
+  }
+  if (others.length) plan.reserved = [...plan.reserved, ...others];
+  return plan;
+}
+
 export interface SeatingPreview {
   seats: number;
   tables: number;
@@ -653,7 +708,7 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
   const room = currentRoom(session.loaded.document);
   if (!room) return { seats: 0, tables: 0, rows: 0, dropped: 0, notes: ['This plan has no room outline yet.'] };
 
-  const solution = solveSeating(planFrom(request), room);
+  const solution = solveSeating(planForRegion(request), room);
   return {
     seats: solution.seats.length,
     tables: solution.tables.length,
@@ -663,7 +718,10 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
   };
 }
 
-/** Draws a seating layout, replacing the one this drew before. */
+/**
+ * Draws a seating layout into a named region, replacing only that region's
+ * previous run and leaving every other layout on the plan untouched.
+ */
 export function applySeating(
   session: Session,
   request: SeatingRequestView,
@@ -675,22 +733,33 @@ export function applySeating(
   if (!room) return { ok: false, reason: 'draw or trace a room outline first' };
   if (!chair.trim()) return { ok: false, reason: 'choose a chair to place' };
 
-  const plan = planFrom(request);
+  const key = regionKey(request);
+  const plan = planForRegion(request);
   const solution: SeatingSolution = solveSeating(plan, room);
   if (!solution.seats.length && !solution.tables.length) {
-    return { ok: false, reason: 'that layout does not fit in this room' };
+    return { ok: false, reason: 'that layout does not fit in this area' };
   }
   if (solution.tables.length && !table?.trim()) {
     return { ok: false, reason: 'this layout needs a table as well as a chair' };
   }
 
-  const drawn = renderSeating(doc, indexDocument(doc), solution, { chair, table }, state.seatingIds);
+  const previous = state.regions.get(key)?.ids ?? [];
+  const drawn = renderSeating(doc, indexDocument(doc), solution, { chair, table }, previous);
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
 
-  state.seatingIds = drawn.created;
+  state.regions.set(key, { ids: drawn.created, area: requestArea(request) });
   const notes = [...solution.notes];
-  if (drawn.removed) notes.unshift(`Replaced the previous layout (${drawn.removed} items).`);
+  notes.unshift(
+    drawn.removed
+      ? `Replaced the “${key}” layout (${drawn.removed} items).`
+      : `Placed the “${key}” layout.`,
+  );
   return { ok: true, created: drawn.created, note: notes.join(' ') || undefined };
+}
+
+/** Names of the seating layouts currently on the plan. */
+export function seatingRegionNames(): string[] {
+  return [...state.regions.keys()];
 }
 
 // ---------------------------------------------------------------------------
