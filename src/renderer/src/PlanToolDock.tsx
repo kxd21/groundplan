@@ -200,11 +200,15 @@ export default function PlanToolDock({
     >
       {docked ? (
         <DockTitlebar
-          title="Tools"
-          sub={activeTool ? `${activeTool.label}${activeTool.shortcut ? ` · ${activeTool.shortcut}` : ''}` : 'Build, draw, place, and measure'}
+          title="Draw tools"
+          sub={
+            activeTool
+              ? `${activeTool.label}${activeTool.shortcut ? ` · ${activeTool.shortcut}` : ''}`
+              : 'Annotate, measure, and run cables'
+          }
           trailing={customizeButton}
           onClose={onClose}
-          closeLabel="Close Tools"
+          closeLabel="Close Draw tools"
         />
       ) : (
       <header

@@ -10,6 +10,8 @@ interface Props {
   wallLengthText: string | null;
   curved: boolean;
   editable: boolean;
+  /** Slim chip beside Arrange — hides Walls/Room focus toggle. */
+  compact?: boolean;
   onNudgeIn: () => void;
   onNudgeOut: () => void;
   onStraighten: () => void;
@@ -19,8 +21,8 @@ interface Props {
 }
 
 /**
- * Top-ribbon wall tools while Room layout is open — replaces the side
- * inspector for this mode with controls that actually change walls.
+ * Top-ribbon wall tools while wall-edit is armed — gestures that change walls.
+ * Compact mode sits beside the Arrange strip instead of replacing it.
  */
 export default function WallEditToolbar({
   focus,
@@ -31,6 +33,7 @@ export default function WallEditToolbar({
   wallLengthText,
   curved,
   editable,
+  compact = false,
   onNudgeIn,
   onNudgeOut,
   onStraighten,
@@ -42,32 +45,39 @@ export default function WallEditToolbar({
   const nudgeBlocked = !editable || !hasWall || (gesture !== 'curve' && curved);
 
   return (
-    <div className="room-layout-toolbar" aria-label="Wall edit tools">
+    <div
+      className={`room-layout-toolbar${compact ? ' is-compact' : ''}`}
+      aria-label="Wall edit tools"
+    >
       <span className="text-context-mode">
         <IconDrawPolygon size={14} />
-        <b>{focus === 'walls' ? 'Edit walls' : 'Room layout'}</b>
+        <b>{compact ? 'Walls' : focus === 'walls' ? 'Edit walls' : 'Room layout'}</b>
       </span>
 
-      <div className="seg" role="group" aria-label="Workspace focus">
-        <button
-          type="button"
-          className={focus === 'walls' ? 'is-on' : ''}
-          aria-pressed={focus === 'walls'}
-          onClick={() => onFocus('walls')}
-        >
-          Walls
-        </button>
-        <button
-          type="button"
-          className={focus === 'room' ? 'is-on' : ''}
-          aria-pressed={focus === 'room'}
-          onClick={() => onFocus('room')}
-        >
-          Room
-        </button>
-      </div>
+      {!compact && (
+        <>
+          <div className="seg" role="group" aria-label="Workspace focus">
+            <button
+              type="button"
+              className={focus === 'walls' ? 'is-on' : ''}
+              aria-pressed={focus === 'walls'}
+              onClick={() => onFocus('walls')}
+            >
+              Walls
+            </button>
+            <button
+              type="button"
+              className={focus === 'room' ? 'is-on' : ''}
+              aria-pressed={focus === 'room'}
+              onClick={() => onFocus('room')}
+            >
+              Room
+            </button>
+          </div>
 
-      <span className="seg-divider" aria-hidden />
+          <span className="seg-divider" aria-hidden />
+        </>
+      )}
 
       <div className="seg" role="group" aria-label="Wall gesture">
         {(

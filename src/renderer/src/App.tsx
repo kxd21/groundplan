@@ -18,7 +18,11 @@ import { PlanCanvas } from './PlanCanvas.js';
 import { GearView, GearSummary } from './GearView.js';
 import { GearPalette } from './GearPalette.js';
 import { InventoryView, type InventoryState } from './InventoryView.js';
-import { InventoryPalette } from './InventoryPalette.js';
+import AddPanel from './AddPanel.js';
+import { ElevationCanvas, type ElevationItem } from './ElevationCanvas.js';
+import { InspectorSection, classifySelectionKind } from './InspectorSections.js';
+import { formatCollisionPrompt, type OverlapHit } from './collision-ui.js';
+import { planViewLabel, type PlanViewMode } from './plan-view.js';
 import { SettingsDialog, type SettingsAppPreferences } from './SettingsDialog.js';
 import { toSvg } from './svg.js';
 import {
@@ -30,7 +34,6 @@ import {
   avPairChoice,
   banner as toolBanner,
   drawChoice,
-  escapeAlsoClearsSelection,
   isPressed,
   labelChoice,
   opensProperties,
@@ -847,6 +850,9 @@ export function App() {
   const [insertOpen, setInsertOpen] = useState(false);
   const [insertGroup, setInsertGroup] = useState<InsertGroupId | null>(null);
   const [shapeWizardOpen, setShapeWizardOpen] = useState(false);
+  const [shapeWizardSeed, setShapeWizardSeed] = useState<import('./ShapeEditorWizard.js').ShapeWizardSeed | null>(
+    null,
+  );
   const [buildStageOpen, setBuildStageOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -865,14 +871,6 @@ export function App() {
    */
   const showBriefRef = useRef<ShowBrief | null>(null);
   const [kitsBusy, setKitsBusy] = useState(false);
-  const [bankPresets, setBankPresets] = useState<
-    Array<{
-      id: string;
-      name: string;
-      savedAt: string;
-      block: Record<string, unknown>;
-    }>
-  >([]);
   const [newItemEditor, setNewItemEditor] = useState<EditableInventoryItem | null>(null);
   const [newItemProvisional, setNewItemProvisional] = useState(false);
   const [createMenuPos, setCreateMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -936,6 +934,13 @@ export function App() {
   const [arrayGapXDraft, setArrayGapXDraft] = useState('');
   const [arrayGapYDraft, setArrayGapYDraft] = useState('');
   const [arrayDirection, setArrayDirection] = useState<'right' | 'left' | 'down' | 'up'>('right');
+  const [tableSeatsDraft, setTableSeatsDraft] = useState('10');
+  const [tableChairGapDraft, setTableChairGapDraft] = useState("1' 1\"");
+  const [tableSpacingDraft, setTableSpacingDraft] = useState("10'");
+  const [tableNumberStartDraft, setTableNumberStartDraft] = useState('1');
+  const [tableNumberOrder, setTableNumberOrder] = useState<
+    'left-right' | 'top-bottom' | 'right-left' | 'bottom-top'
+  >('left-right');
   const [wallSetbackDraft, setWallSetbackDraft] = useState("2'");
   const [wallSetbackMode, setWallSetbackMode] = useState<'each' | 'group'>('each');
   const [wallSetbackFace, setWallSetbackFace] = useState(true);
@@ -952,6 +957,17 @@ export function App() {
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [view, setView] = useState<Workspace>('plan');
   const [equipmentSource, setEquipmentSource] = useState<EquipmentSource>('inventory');
+  const [planView, setPlanView] = useState<PlanViewMode>('top');
+  const [addCategory, setAddCategory] = useState('all');
+  const [isolationFocusIds, setIsolationFocusIds] = useState<number[] | null>(null);
+  const [stageRebuild, setStageRebuild] = useState<import('../../format/stage.js').StageBuild | null>(
+    null,
+  );
+  const [collisionPending, setCollisionPending] = useState<{
+    overlaps: OverlapHit[];
+    suggested?: { x: number; y: number };
+    retry: (opts: { allowOverlap?: boolean; nudge?: boolean }) => Promise<void>;
+  } | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('layers');
   const [wallEdit, setWallEdit] = useState<import('./wall-edit.js').WallEditSession | null>(null);
   const [wallPickIndex, setWallPickIndex] = useState<number | null>(null);
@@ -1024,7 +1040,6 @@ export function App() {
   const [libCategory, setLibCategory] = useState<string | null>(null);
   const [libGrouping, setLibGrouping] = useState<'category' | 'department'>('category');
   const [paletteQuery, setPaletteQuery] = useState('');
-  const [paletteCategory, setPaletteCategory] = useState<string | null>(null);
   const [inventoryUndoNotice, setInventoryUndoNotice] = useState<string | null>(null);
   /**
    * Bumped after any inventory change.
@@ -1046,16 +1061,6 @@ export function App() {
     setInventoryUndoNotice(null);
     setInventoryVersion((v) => v + 1);
   }, []);
-  const [seatKind, setSeatKind] = useState<'round' | 'theatre' | 'schoolroom'>('round');
-  const [seatTable, setSeatTable] = useState('');
-  const [seatChair, setSeatChair] = useState('');
-  const [seatCount, setSeatCount] = useState(10);
-  const [seatRows, setSeatRows] = useState(6);
-  const [seatPerRow, setSeatPerRow] = useState(10);
-  const [seatAngle, setSeatAngle] = useState(0);
-  const [seatSpacingFt, setSeatSpacingFt] = useState(2);
-  const [seatRowSpacingFt, setSeatRowSpacingFt] = useState(3);
-  const [seatRowLengths, setSeatRowLengths] = useState('');
   const [gear, setGear] = useState<{
     path?: string;
     dirty: boolean;
@@ -1663,14 +1668,14 @@ export function App() {
       .inventoryList(
         view === 'inventory' ? libQuery : paletteQuery,
         view === 'inventory' ? libDept : null,
-        view === 'inventory' ? libCategory : paletteCategory,
+        view === 'inventory' ? libCategory : null,
       )
       .then((state) => live && setInventory(state as InventoryState))
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, [view, libQuery, libDept, libCategory, paletteQuery, paletteCategory, inventoryVersion]);
+  }, [view, libQuery, libDept, libCategory, paletteQuery, inventoryVersion]);
 
   // Insert and ObjectPalette must see every inventory row, not the palette search filter.
   useEffect(() => {
@@ -1719,7 +1724,6 @@ export function App() {
       dispatchWorkspace({ type: 'enter', mode: next });
       if (next === 'setup') {
         void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
-        void api.listBankPresets().then(setBankPresets).catch(() => undefined);
       }
     },
     [view, doc],
@@ -1737,7 +1741,6 @@ export function App() {
     setCreateMenuOpen(false);
     dispatchWorkspace({ type: 'enter', mode: 'setup' });
     void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
-    void api.listBankPresets().then(setBankPresets).catch(() => undefined);
   }, []);
 
   const refreshLayoutKits = useCallback(() => {
@@ -1747,6 +1750,7 @@ export function App() {
   const openNewShapeDialog = useCallback(() => {
     setCreateMenuOpen(false);
     enterMode('canvas');
+    setShapeWizardSeed(null);
     setShapeWizardOpen(true);
   }, []);
 
@@ -1831,7 +1835,6 @@ export function App() {
     }
     setRoomWorkspaceFocus('walls');
     openOverlay('wall-edit');
-    setSelectedIds([]);
     const { refusal } = dispatchTool({ type: 'pick', choice: SELECT });
     if (refusal) notify(refusal);
     showStatus('Edit walls on · click a wall, then Push / Curve / Length', 4500);
@@ -2125,7 +2128,14 @@ export function App() {
         dispatchTool({ type: 'settled', epoch: effect.epoch, ok: true });
         return;
       }
-      const result = await runEffect(effect, api);
+      const placeOptions = placeOnParentId != null ? { allowOverlap: true as const } : undefined;
+      const result = await runEffect(effect, {
+        ...api,
+        placeGear: (description, x, y, options) =>
+          api.placeGear(description, x, y, options ?? placeOptions),
+        inventoryPlace: (id, x, y, options) =>
+          api.inventoryPlace(id, x, y, options ?? placeOptions),
+      });
       if (effect.do === 'createRoom' && result.ok) {
         // New Plan already asked where the file should live. Finishing its
         // promised custom outline should persist it there immediately instead
@@ -2218,11 +2228,53 @@ export function App() {
           );
         }
       } else if (result.reason) {
+        if (
+          result.overlaps?.length &&
+          (effect.do === 'placeInventory' || effect.do === 'placeGear')
+        ) {
+          const overlaps = result.overlaps;
+          const suggested = result.suggested;
+          const pending = {
+            overlaps,
+            suggested,
+            retry: async (opts: { allowOverlap?: boolean; nudge?: boolean }) => {
+              setCollisionPending(null);
+              const placeOptions =
+                placeOnParentId != null
+                  ? { allowOverlap: true as const, ...opts }
+                  : opts;
+              const retryResult = await runEffect(effect, {
+                ...api,
+                placeGear: (description, x, y, options) =>
+                  api.placeGear(description, x, y, options ?? placeOptions),
+                inventoryPlace: (id, x, y, options) =>
+                  api.inventoryPlace(id, x, y, options ?? placeOptions),
+              });
+              if (retryResult.ok && retryResult.doc) {
+                setDoc(retryResult.doc as Doc);
+                if (retryResult.created?.length) {
+                  setSelectedIds(retryResult.created);
+                  setSelection(null);
+                  void attachPlacedToParent(retryResult.created);
+                }
+                setSetupCompleted((current) => ({ ...current, insert: true }));
+                showStatus(retryResult.status ?? 'Placed');
+              } else if (retryResult.reason) {
+                notify(retryResult.reason);
+              }
+              dispatchTool({ type: 'settled', epoch: effect.epoch, ok: retryResult.ok });
+            },
+          };
+          setCollisionPending(pending);
+          showStatus(formatCollisionPrompt(overlaps), 6000);
+          dispatchTool({ type: 'settled', epoch: effect.epoch, ok: false });
+          return;
+        }
         notify(result.reason);
       }
       dispatchTool({ type: 'settled', epoch: effect.epoch, ok: result.ok });
     },
-    [dispatchTool, notify, openCreateDialog, persistNewRoomOutlineIfNeeded, showStatus, customRoomPrefs, layoutKits, attachPlacedToParent],
+    [dispatchTool, notify, openCreateDialog, persistNewRoomOutlineIfNeeded, showStatus, customRoomPrefs, layoutKits, attachPlacedToParent, placeOnParentId],
   );
 
   const finishRoomOutline = useCallback(() => {
@@ -2461,11 +2513,15 @@ export function App() {
     [catalogInventory?.items, inventory?.items],
   );
 
+  const [stageRebuildOrigin, setStageRebuildOrigin] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const stageOrigin = useMemo(() => {
+    if (stageRebuildOrigin) return stageRebuildOrigin;
     const extent = doc?.scene.roomExtent;
     if (!extent) return { x: 0, y: 0 };
     return { x: (extent.minX + extent.maxX) / 2, y: extent.minY };
-  }, [doc?.scene.roomExtent]);
+  }, [doc?.scene.roomExtent, stageRebuildOrigin]);
 
   const armInsertLeaf = useCallback(
     (leafId: string) => {
@@ -2990,12 +3046,19 @@ export function App() {
         notify('This plan is read-only, so items cannot be placed on it.');
         return;
       }
-      const reply = (await api.inventoryPlace(id, x, y)) as {
+      const reply = (await api.inventoryPlace(
+        id,
+        x,
+        y,
+        placeOnParentId != null ? { allowOverlap: true } : undefined,
+      )) as {
         ok: boolean;
         reason?: string;
         doc?: Doc;
         method?: string;
         created?: number[];
+        overlaps?: Array<{ id: number; name: string; area: number; fraction: number }>;
+        suggested?: { x: number; y: number };
       };
       if (reply.ok && reply.doc) {
         const name =
@@ -3019,11 +3082,33 @@ export function App() {
           choice: { kind: 'stamp', stamp: { what: 'inventory', id, name } },
         });
         showStatus(`${placeMethodStatus(reply.method)} · still armed: click or drag again`);
+      } else if (reply.overlaps?.length) {
+        setCollisionPending({
+          overlaps: reply.overlaps,
+          suggested: reply.suggested,
+          retry: async (opts) => {
+            setCollisionPending(null);
+            const again = (await api.inventoryPlace(id, x, y, {
+              ...(placeOnParentId != null ? { allowOverlap: true } : {}),
+              ...opts,
+            })) as typeof reply;
+            if (again.ok && again.doc) {
+              setDoc(again.doc as Doc);
+              if (again.created?.length) {
+                setSelectedIds(again.created);
+                setSelection(null);
+                void attachPlacedToParent(again.created);
+              }
+              showStatus(placeMethodStatus(again.method));
+            } else if (again.reason) notify(again.reason);
+          },
+        });
+        showStatus(formatCollisionPrompt(reply.overlaps), 6000);
       } else {
         notify(reply.reason ?? 'Could not place that item');
       }
     },
-    [dispatchTool, doc, inventoryRows, notify, recentInventory, rememberRecentInventory, showStatus, attachPlacedToParent],
+    [dispatchTool, doc, inventoryRows, notify, recentInventory, rememberRecentInventory, showStatus, attachPlacedToParent, placeOnParentId],
   );
 
   /** Places one gear-list line at the drop point without arming repeat placement. */
@@ -3033,7 +3118,12 @@ export function App() {
         notify('This plan is read-only, so gear cannot be placed on it.');
         return;
       }
-      const reply = (await api.placeGear(description, x, y)) as {
+      const reply = (await api.placeGear(
+        description,
+        x,
+        y,
+        placeOnParentId != null ? { allowOverlap: true } : undefined,
+      )) as {
         ok: boolean;
         reason?: string;
         doc?: Doc;
@@ -3059,13 +3149,19 @@ export function App() {
         notify(reply.reason ?? `Could not place ${description}`);
       }
     },
-    [dispatchTool, doc, notify, showStatus, attachPlacedToParent],
+    [dispatchTool, doc, notify, showStatus, attachPlacedToParent, placeOnParentId],
   );
 
   const moveSelection = useCallback(
     async (dx: number, dy: number) => {
       if (!selectedIds.length) return;
-      applied((await api.batch('move', selectedIds, dx, dy)) as { ok: boolean; reason?: string; doc?: Doc });
+      applied(
+        (await api.batch('move', selectedIds, dx, dy, { allowOverlap: true })) as {
+          ok: boolean;
+          reason?: string;
+          doc?: Doc;
+        },
+      );
     },
     [selectedIds, applied],
   );
@@ -3150,6 +3246,98 @@ export function App() {
     }
     showStatus(reply.text ?? 'Ungrouped');
   }, [doc?.editable, notify, selectedIds, showStatus]);
+
+  const selectedTableIds = useMemo(() => {
+    if (!doc || !selectedIds.length) return [] as number[];
+    return selectedIds.filter((id) => {
+      const prim = doc.scene.primitives.find((p) => (p.selectId || p.nodeId) === id);
+      const name = prim?.owner || prim?.cls || '';
+      return classifySelectionKind([name]) === 'table';
+    });
+  }, [doc, selectedIds]);
+
+  const applyTableSeats = useCallback(async () => {
+    if (!doc?.editable || !selectedTableIds.length) return;
+    const seats = Math.round(Number(tableSeatsDraft));
+    if (!(seats >= 0 && seats <= 24)) {
+      notify('Chairs per table must be 0–24');
+      return;
+    }
+    const standoff = tableChairGapDraft.trim()
+      ? parseLength(tableChairGapDraft, unitSystem)
+      : null;
+    if (tableChairGapDraft.trim() && !(standoff != null && standoff > 0)) {
+      notify('Enter a valid chair gap');
+      return;
+    }
+    const reply = (await api.setTableSeats({
+      tableIds: selectedTableIds,
+      seats,
+      standoff: standoff ?? undefined,
+    })) as { ok: boolean; reason?: string; doc?: Doc; text?: string };
+    applied(reply);
+    if (reply.ok) showStatus(reply.text ?? `Set ${seats} chairs`, 3500);
+    else if (reply.reason) notify(reply.reason);
+  }, [
+    applied,
+    doc?.editable,
+    notify,
+    selectedTableIds,
+    showStatus,
+    tableChairGapDraft,
+    tableSeatsDraft,
+    unitSystem,
+  ]);
+
+  const applyTableAutoNumber = useCallback(async () => {
+    if (!doc?.editable || !selectedTableIds.length) return;
+    const start = Math.max(1, Math.round(Number(tableNumberStartDraft) || 1));
+    const reply = (await api.autoNumberTables({
+      tableIds: selectedTableIds,
+      start,
+      order: tableNumberOrder,
+    })) as { ok: boolean; reason?: string; doc?: Doc; text?: string; created?: number[] };
+    applied(reply);
+    if (reply.ok) {
+      if (reply.created?.length) setSelectedIds(reply.created);
+      showStatus(reply.text ?? 'Numbered tables', 3500);
+    } else if (reply.reason) notify(reply.reason);
+  }, [
+    applied,
+    doc?.editable,
+    notify,
+    selectedTableIds,
+    showStatus,
+    tableNumberOrder,
+    tableNumberStartDraft,
+  ]);
+
+  const applyTableSpacing = useCallback(async () => {
+    if (!doc?.editable || selectedTableIds.length < 2) return;
+    const spacing = parseLength(tableSpacingDraft, unitSystem);
+    if (!(spacing != null && spacing > 0)) {
+      notify('Enter a valid table spacing');
+      return;
+    }
+    const reply = (await api.spaceTables({
+      tableIds: selectedTableIds,
+      spacingX: spacing,
+      spacingY: spacing,
+      order: tableNumberOrder,
+    })) as { ok: boolean; reason?: string; doc?: Doc; text?: string };
+    applied(reply);
+    if (reply.ok) showStatus(reply.text ?? 'Spaced tables', 3500);
+    else if (reply.reason) notify(reply.reason);
+  }, [
+    applied,
+    doc?.editable,
+    notify,
+    selectedTableIds,
+    showStatus,
+    tableNumberOrder,
+    tableSpacingDraft,
+    unitSystem,
+  ]);
 
   /** Rectangular array — columns × rows with optional centre-to-centre gaps. */
   const arraySelectionGrid = useCallback(async () => {
@@ -3837,20 +4025,8 @@ export function App() {
           setBuildStageOpen(false);
           return;
         }
-        // Everything above is a modal that owns the screen. Everything the
-        // WORKSPACE has open unwinds through one rule instead of five ordered
-        // branches — newest overlay, then the exclusive room workspace, then
-        // the mode. That is the only order a user can predict, and the reducer
-        // guarantees repeated presses always terminate on a bare canvas.
-        if (escapeConsumed(workspace)) {
-          e.preventDefault();
-          if (workspace.overlays.includes('wall-edit') && workspace.overlays.length === 1) {
-            setWallPickIndex(null);
-          }
-          if (workspace.mode === 'room-layout') setWallPickIndex(null);
-          dispatchWorkspace({ type: 'escape' });
-          return;
-        }
+        // Modals handled above. Tool / gesture / workspace / selection unwind
+        // continues below after the INPUT check — one layer per press.
       }
       const target = e.target as HTMLElement | null;
       if (
@@ -3978,9 +4154,47 @@ export function App() {
           cancelPlacement();
           return;
         }
-        dispatchTool({ type: 'escape' });
-        setArmedInventoryId(null);
-        if (escapeAlsoClearsSelection(toolRef.current)) setSelectedIds([]);
+        // (1) Cancel in-progress gesture or put the tool down to Select.
+        const currentTool = toolRef.current.tool;
+        const partialGesture =
+          (currentTool.kind === 'span' && currentTool.from != null) ||
+          (currentTool.kind === 'path' && currentTool.points.length > 0 && !currentTool.closing);
+        if (currentTool.kind !== 'select' || partialGesture) {
+          e.preventDefault();
+          dispatchTool({ type: 'escape' });
+          setArmedInventoryId(null);
+          return;
+        }
+        // (2) Workspace escape: overlay → leave room → leave mode.
+        if (escapeConsumed(workspace)) {
+          e.preventDefault();
+          if (workspace.overlays.includes('wall-edit') && workspace.overlays.length === 1) {
+            setWallPickIndex(null);
+          }
+          if (workspace.mode === 'room-layout') setWallPickIndex(null);
+          dispatchWorkspace({ type: 'escape' });
+          return;
+        }
+        if (isolationFocusIds != null) {
+          e.preventDefault();
+          setIsolationFocusIds(null);
+          showStatus('Exited solo');
+          return;
+        }
+        // (3) Clear selection — only when already on Select with nothing else open.
+        if (selectedIds.length) {
+          e.preventDefault();
+          setSelectedIds([]);
+          return;
+        }
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'v' && !mod && doc) {
+        e.preventDefault();
+        setLastCommandId('tool.select');
+        dispatchTool({ type: 'pick', choice: SELECT });
+        if (workspace.mode === 'draw') enterMode('canvas');
         return;
       }
 
@@ -4153,6 +4367,8 @@ export function App() {
     selectedIds.length,
     bgCalibratePoints,
     placeOnParentId,
+    isolationFocusIds,
+    enterMode,
   ]);
 
   useEffect(() => {
@@ -4736,6 +4952,52 @@ export function App() {
     [doc, furnitureCounts.chairs, notify, showStatus],
   );
 
+  const seatingLayoutVariants = useMemo(
+    () =>
+      layoutKits
+        .filter((kit) => kit.source === 'user' && kit.chairs > 0)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [layoutKits],
+  );
+
+  const saveSeatingLayoutVariant = useCallback(async () => {
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const reply = await api.saveOpenPlanAsKit(`Seating · ${stamp}`);
+    if (!reply.ok) {
+      notify(reply.reason ?? 'Could not save seating variant');
+      return false;
+    }
+    refreshLayoutKits();
+    showStatus('Saved layout variant · apply below or from Setup', 4000);
+    return true;
+  }, [notify, refreshLayoutKits, showStatus]);
+
+  const applySeatingLayoutVariant = useCallback(
+    async (kitId: string) => {
+      const kit = layoutKits.find((k) => k.id === kitId);
+      if (!kit) {
+        notify('That layout variant is no longer available');
+        return false;
+      }
+      const version = await api.versionSave(`Before · ${kit.name}`);
+      if (!version.ok) {
+        notify(version.reason ?? 'Could not snapshot before variant apply');
+        return false;
+      }
+      const ok = await applyShowKit(kitId, {
+        includeStage: false,
+        includeSeating: true,
+        includeGear: false,
+      });
+      if (ok) {
+        setSetupCompleted((current) => ({ ...current, seating: true }));
+        setIsolationFocusIds(null);
+      }
+      return ok;
+    },
+    [applyShowKit, layoutKits, notify],
+  );
+
   useEffect(() => {
     if (!doc) {
       setAllocationSummary(null);
@@ -5032,6 +5294,27 @@ export function App() {
           void api.settingsPatch({ drawing: { showSightlineMarkers: next } }).catch(() => undefined);
           return;
         }
+        case 'view.top':
+          setPlanView('top');
+          showStatus('Top view', 2200);
+          return;
+        case 'view.front':
+          setPlanView('front');
+          showStatus('Front elevation', 2200);
+          return;
+        case 'view.side':
+          setPlanView('side');
+          showStatus('Side elevation', 2200);
+          return;
+        case 'isolation.exit':
+          if (isolationFocusIds != null) {
+            setIsolationFocusIds(null);
+            showStatus('Exited solo');
+          }
+          return;
+        case 'seating.variant-save':
+          void saveSeatingLayoutVariant();
+          return;
         case 'tool.select':
           dispatchTool({ type: 'pick', choice: SELECT });
           return;
@@ -5068,6 +5351,7 @@ export function App() {
           setInsertOpen(true);
           return;
         case 'shape.wizard':
+          setShapeWizardSeed(null);
           setShapeWizardOpen(true);
           return;
         case 'calc.open':
@@ -5191,6 +5475,9 @@ export function App() {
       dimensionRoomAutomatically,
       setAllLayersVisible,
       toggleSnap,
+      saveSeatingLayoutVariant,
+      isolationFocusIds,
+      showStatus,
     ],
   );
 
@@ -5391,7 +5678,11 @@ export function App() {
       <ShapeEditorWizard
         open={shapeWizardOpen}
         units={unitSystem}
-        onClose={() => setShapeWizardOpen(false)}
+        seed={shapeWizardSeed}
+        onClose={() => {
+          setShapeWizardOpen(false);
+          setShapeWizardSeed(null);
+        }}
         onCreated={(id, name) => {
           void inventoryChanged();
           armInventory(id, name);
@@ -5420,17 +5711,24 @@ export function App() {
         open={buildStageOpen}
         units={unitSystem}
         origin={stageOrigin}
+        rebuild={stageRebuild}
         wanted={
-          showBrief?.stageRequired
-            ? {
-                widthFt: showBrief.stageWidthFt,
-                depthFt: showBrief.stageDepthFt,
-                heightIn: showBrief.stageHeightIn,
-              }
-            : null
+          stageRebuild
+            ? null
+            : showBrief?.stageRequired
+              ? {
+                  widthFt: showBrief.stageWidthFt,
+                  depthFt: showBrief.stageDepthFt,
+                  heightIn: showBrief.stageHeightIn,
+                }
+              : null
         }
         disabled={!doc?.editable}
-        onClose={() => setBuildStageOpen(false)}
+        onClose={() => {
+          setBuildStageOpen(false);
+          setStageRebuild(null);
+          setStageRebuildOrigin(null);
+        }}
         onBuilt={(next, created) => {
           if (next) setDoc(next as Doc);
           enterMode('inspect');
@@ -5440,9 +5738,14 @@ export function App() {
             setSelection(null);
           }
           setSetupCompleted((current) => ({ ...current, stage: true }));
+          const wasRebuild = stageRebuild != null;
+          setStageRebuild(null);
+          setStageRebuildOrigin(null);
           showStatus(
             created?.length
-              ? 'Stage built: select a deck to rotate or Repeat, or Insert the next piece'
+              ? wasRebuild
+                ? 'Stage updated'
+                : 'Stage built: select a deck to rotate or Repeat, or Insert the next piece'
               : 'Stage built',
           );
           setFitToken((t) => t + 1);
@@ -5525,6 +5828,68 @@ export function App() {
                   void api
                     .settingsPatch({ drawing: { showSightlineMarkers: next } })
                     .catch(() => undefined);
+                }}
+                planPath={doc.path}
+                seatingStampArmed={
+                  tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
+                }
+                onDoneSeatingStamp={cancelPlacement}
+                onSoloSeatingBank={(ids) => {
+                  setSelectedIds(ids);
+                  setIsolationFocusIds(ids);
+                  showStatus('Solo seating section · Exit solo in Properties', 3500);
+                }}
+                onSaveSeatingVariant={() => void saveSeatingLayoutVariant()}
+                layoutVariants={seatingLayoutVariants}
+                layoutVariantsBusy={kitsBusy}
+                onApplyLayoutVariant={(kitId) => void applySeatingLayoutVariant(kitId)}
+                onArmSeatingStamp={(request) => {
+                  const useGrid =
+                    request.kind === 'round' &&
+                    (request.gridColumns ?? 0) >= 1 &&
+                    (request.gridRows ?? 0) >= 1 &&
+                    (request.gridColumns ?? 0) * (request.gridRows ?? 0) >= 2;
+                  const anglePart = request.angle ? ` @ ${request.angle > 0 ? '+' : ''}${request.angle}°` : '';
+                  const description = useGrid
+                    ? `${request.gridColumns}×${request.gridRows} ${request.table} (${request.seats} seats)`
+                    : request.kind === 'round'
+                      ? `${request.table} with ${request.seats} seats`
+                      : `${request.rows} × ${request.perRow} ${request.kind}${anglePart}`;
+                  const { refusal } = dispatchTool({
+                    type: 'pick',
+                    choice: {
+                      kind: 'stamp',
+                      stamp: {
+                        what: 'seating',
+                        description,
+                        request: {
+                          kind: request.kind,
+                          chair: request.chair,
+                          table: request.table,
+                          seats: request.seats,
+                          rows: request.rows,
+                          perRow: request.perRow,
+                          angle: request.angle,
+                          seatSpacing: request.seatSpacing,
+                          rowSpacing: request.rowSpacing,
+                          rowLengths: request.rowLengths,
+                          gridColumns: request.gridColumns,
+                          gridRows: request.gridRows,
+                          tableSpacingX: request.tableSpacingX,
+                          tableSpacingY: request.tableSpacingY,
+                        },
+                      },
+                    },
+                  });
+                  if (refusal) notify(refusal);
+                  else {
+                    showStatus(
+                      useGrid
+                        ? 'Click the plan to stamp the table grid · Esc ends'
+                        : 'Click the plan to stamp · change settings and click again · Esc ends',
+                      4200,
+                    );
+                  }
                 }}
               />
             </div>
@@ -5850,6 +6215,25 @@ export function App() {
             </div>
 
             <div className="seg ribbon-group plan-view-controls" aria-label="Plan view controls">
+              <div className="seg tabs plan-view-mode" role="radiogroup" aria-label="Top, front, or side view">
+                {(['top', 'front', 'side'] as const).map((view) => (
+                  <button
+                    key={view}
+                    type="button"
+                    role="radio"
+                    aria-checked={planView === view}
+                    className={planView === view ? 'active' : ''}
+                    disabled={!doc}
+                    title={planViewLabel(view)}
+                    onClick={() => {
+                      setPlanView(view);
+                      showStatus(`${planViewLabel(view)} view`, 2200);
+                    }}
+                  >
+                    {planViewLabel(view)}
+                  </button>
+                ))}
+              </div>
               {/* Zoom to fit is not here any more. The floating zoom control
                   over the plan already carries it, right next to the zoom
                   percentage it changes, and this copy was 64px of a row that
@@ -5991,7 +6375,7 @@ export function App() {
                 act on — text being edited, a wall being moved, or a selection —
                 and the plan gets those pixels back the rest of the time. */}
             {quickbarVisible && (
-            <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}${wallEditLive && textEditingId == null ? ' is-room-layout' : ''}`}>
+            <div className={`ribbon-quickbar${textEditingId != null ? ' is-text-editing' : ''}${wallEditLive && textEditingId == null ? ' is-room-layout' : ''}${wallEditLive && selectedIds.length > 0 && textEditingId == null ? ' is-shared-context' : ''}`}>
             {textEditingId != null ? (
               <div className="text-context-toolbar" aria-label="Quick text formatting">
                 <span className="text-context-mode"><IconText size={14} /><b>Editing text</b></span>
@@ -6058,171 +6442,9 @@ export function App() {
                 <button onClick={cancelTextEditing}>Cancel</button>
                 <button className="primary" onClick={() => void commitTextEditing(true)}>Done</button>
               </div>
-            ) : wallEditLive ? (
-              <WallEditToolbar
-                focus={refineRoomOpen ? roomWorkspaceFocus : 'walls'}
-                onFocus={(focus) => {
-                  if (focus === 'room') {
-                    openRoomEditWorkspace('room');
-                    return;
-                  }
-                  if (refineRoomOpen) {
-                    setRoomWorkspaceFocus('walls');
-                    return;
-                  }
-                  openOverlay('wall-edit');
-                  setRoomWorkspaceFocus('walls');
-                }}
-                gesture={wallEditGesture}
-                onGesture={setWallEditGesture}
-                wallLabel={
-                  wallPickIndex != null
-                    ? `Wall ${wallPickIndex + 1}`
-                    : wallEdit?.selected != null
-                      ? `Wall ${wallEdit.selected + 1}`
-                      : null
-                }
-                wallLengthText={(() => {
-                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
-                  const wall =
-                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
-                  return wall ? formatLength(wall.length, unitSystem) : null;
-                })()}
-                curved={(() => {
-                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
-                  const wall =
-                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
-                  return Boolean(wall?.curved);
-                })()}
-                editable={Boolean(doc?.editable)}
-                onNudgeIn={() => {
-                  const index = wallPickIndex ?? wallEdit?.selected;
-                  const wall =
-                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
-                  if (index == null || !wall) return;
-                  void (async () => {
-                    let reply;
-                    if (wallEditGesture === 'length') {
-                      reply = await api.roomWallLength(
-                        index,
-                        Math.max(UNITS_PER_INCH, wall.length - UNITS_PER_INCH),
-                      );
-                    } else if (wallEditGesture === 'push') {
-                      reply = await api.roomWallOffset(index, -UNITS_PER_INCH);
-                    } else {
-                      const dx = wall.endX - wall.startX;
-                      const dy = wall.endY - wall.startY;
-                      const chord = Math.hypot(dx, dy) || 1;
-                      const nx = dy / chord;
-                      const ny = -dx / chord;
-                      const bulge = wall.bulge ?? 0;
-                      const existing = bulge ? (bulge * chord) / 2 : 0;
-                      const next = existing - UNITS_PER_INCH;
-                      if (Math.abs(next) < 1) reply = await api.roomCurve(index, 0);
-                      else {
-                        reply = await api.roomCurveThrough(index, {
-                          x: (wall.startX + wall.endX) / 2 + nx * next,
-                          y: (wall.startY + wall.endY) / 2 + ny * next,
-                        });
-                      }
-                    }
-                    if (!reply.ok) {
-                      notify(reply.reason ?? 'That wall could not be changed');
-                      return;
-                    }
-                    if (reply.doc) setDoc(reply.doc as Doc);
-                    showStatus(`Wall ${index + 1} · −1″`);
-                  })();
-                }}
-                onNudgeOut={() => {
-                  const index = wallPickIndex ?? wallEdit?.selected;
-                  const wall =
-                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
-                  if (index == null || !wall) return;
-                  void (async () => {
-                    let reply;
-                    if (wallEditGesture === 'length') {
-                      reply = await api.roomWallLength(index, wall.length + UNITS_PER_INCH);
-                    } else if (wallEditGesture === 'push') {
-                      reply = await api.roomWallOffset(index, UNITS_PER_INCH);
-                    } else {
-                      const dx = wall.endX - wall.startX;
-                      const dy = wall.endY - wall.startY;
-                      const chord = Math.hypot(dx, dy) || 1;
-                      const nx = dy / chord;
-                      const ny = -dx / chord;
-                      const bulge = wall.bulge ?? 0;
-                      const existing = bulge ? (bulge * chord) / 2 : 0;
-                      const next = existing + UNITS_PER_INCH;
-                      if (Math.abs(next) < 1) reply = await api.roomCurve(index, 0);
-                      else {
-                        reply = await api.roomCurveThrough(index, {
-                          x: (wall.startX + wall.endX) / 2 + nx * next,
-                          y: (wall.startY + wall.endY) / 2 + ny * next,
-                        });
-                      }
-                    }
-                    if (!reply.ok) {
-                      notify(reply.reason ?? 'That wall could not be changed');
-                      return;
-                    }
-                    if (reply.doc) setDoc(reply.doc as Doc);
-                    showStatus(`Wall ${index + 1} · +1″`);
-                  })();
-                }}
-                onStraighten={() => {
-                  const index = wallPickIndex ?? wallEdit?.selected;
-                  if (index == null) return;
-                  void (async () => {
-                    const reply = await api.roomCurve(index, 0);
-                    if (!reply.ok) {
-                      notify(reply.reason ?? 'That wall could not be straightened');
-                      return;
-                    }
-                    if (reply.doc) setDoc(reply.doc as Doc);
-                    showStatus(`Wall ${index + 1} straightened`);
-                  })();
-                }}
-                onAddCorner={() => {
-                  const index = wallPickIndex ?? wallEdit?.selected;
-                  if (index == null) return;
-                  void (async () => {
-                    const reply = await api.roomCornerAdd(index);
-                    if (!reply.ok) {
-                      notify(reply.reason ?? 'Corner could not be added');
-                      return;
-                    }
-                    if (reply.doc) setDoc(reply.doc as Doc);
-                    showStatus(`Corner added on wall ${index + 1}`);
-                  })();
-                }}
-                onRoundCorner={() => {
-                  const index = wallPickIndex ?? wallEdit?.selected;
-                  if (index == null) return;
-                  void (async () => {
-                    const reply = await api.roomCornerRound(index, 2 * 120);
-                    if (!reply.ok) {
-                      notify(reply.reason ?? 'Corner could not be rounded');
-                      return;
-                    }
-                    if (reply.doc) setDoc(reply.doc as Doc);
-                    showStatus(`Corner on wall ${index + 1} rounded`);
-                  })();
-                }}
-                onDone={() => {
-                  if (refineRoomOpen) {
-                    closeRoomWorkspace();
-                    closeOverlay('wall-edit');
-                    showStatus('Room layout workspace closed');
-                    return;
-                  }
-                  closeOverlay('wall-edit');
-                  setWallPickIndex(null);
-                  showStatus('Wall edit off');
-                }}
-              />
             ) : (
               <>
+            {selectedIds.length > 0 && (
             <div className="seg object-tools" aria-label="Arrange and transform">
               {/* Rotate, flip, align, distribute, order, group, duplicate and
                   delete all act ON a selection. Select all, Open properties and
@@ -6417,6 +6639,172 @@ export function App() {
                 <IconTrash />
               </button>
             </div>
+            )}
+            {wallEditLive && (
+              <WallEditToolbar
+                compact={!refineRoomOpen}
+                focus={refineRoomOpen ? roomWorkspaceFocus : 'walls'}
+                onFocus={(focus) => {
+                  if (focus === 'room') {
+                    openRoomEditWorkspace('room');
+                    return;
+                  }
+                  if (refineRoomOpen) {
+                    setRoomWorkspaceFocus('walls');
+                    return;
+                  }
+                  openOverlay('wall-edit');
+                  setRoomWorkspaceFocus('walls');
+                }}
+                gesture={wallEditGesture}
+                onGesture={setWallEditGesture}
+                wallLabel={
+                  wallPickIndex != null
+                    ? `Wall ${wallPickIndex + 1}`
+                    : wallEdit?.selected != null
+                      ? `Wall ${wallEdit.selected + 1}`
+                      : null
+                }
+                wallLengthText={(() => {
+                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  return wall ? formatLength(wall.length, unitSystem) : null;
+                })()}
+                curved={(() => {
+                  const index = wallPickIndex ?? wallEdit?.selected ?? null;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  return Boolean(wall?.curved);
+                })()}
+                editable={Boolean(doc?.editable)}
+                onNudgeIn={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  if (index == null || !wall) return;
+                  void (async () => {
+                    let reply;
+                    if (wallEditGesture === 'length') {
+                      reply = await api.roomWallLength(
+                        index,
+                        Math.max(UNITS_PER_INCH, wall.length - UNITS_PER_INCH),
+                      );
+                    } else if (wallEditGesture === 'push') {
+                      reply = await api.roomWallOffset(index, -UNITS_PER_INCH);
+                    } else {
+                      const dx = wall.endX - wall.startX;
+                      const dy = wall.endY - wall.startY;
+                      const chord = Math.hypot(dx, dy) || 1;
+                      const nx = dy / chord;
+                      const ny = -dx / chord;
+                      const bulge = wall.bulge ?? 0;
+                      const existing = bulge ? (bulge * chord) / 2 : 0;
+                      const next = existing - UNITS_PER_INCH;
+                      if (Math.abs(next) < 1) reply = await api.roomCurve(index, 0);
+                      else {
+                        reply = await api.roomCurveThrough(index, {
+                          x: (wall.startX + wall.endX) / 2 + nx * next,
+                          y: (wall.startY + wall.endY) / 2 + ny * next,
+                        });
+                      }
+                    }
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'That wall could not be changed');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Wall ${index + 1} · −1″`);
+                  })();
+                }}
+                onNudgeOut={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  const wall =
+                    index != null ? wallEdit?.walls.find((entry) => entry.index === index) : null;
+                  if (index == null || !wall) return;
+                  void (async () => {
+                    let reply;
+                    if (wallEditGesture === 'length') {
+                      reply = await api.roomWallLength(index, wall.length + UNITS_PER_INCH);
+                    } else if (wallEditGesture === 'push') {
+                      reply = await api.roomWallOffset(index, UNITS_PER_INCH);
+                    } else {
+                      const dx = wall.endX - wall.startX;
+                      const dy = wall.endY - wall.startY;
+                      const chord = Math.hypot(dx, dy) || 1;
+                      const nx = dy / chord;
+                      const ny = -dx / chord;
+                      const bulge = wall.bulge ?? 0;
+                      const existing = bulge ? (bulge * chord) / 2 : 0;
+                      const next = existing + UNITS_PER_INCH;
+                      if (Math.abs(next) < 1) reply = await api.roomCurve(index, 0);
+                      else {
+                        reply = await api.roomCurveThrough(index, {
+                          x: (wall.startX + wall.endX) / 2 + nx * next,
+                          y: (wall.startY + wall.endY) / 2 + ny * next,
+                        });
+                      }
+                    }
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'That wall could not be changed');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Wall ${index + 1} · +1″`);
+                  })();
+                }}
+                onStraighten={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  if (index == null) return;
+                  void (async () => {
+                    const reply = await api.roomCurve(index, 0);
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'That wall could not be straightened');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Wall ${index + 1} straightened`);
+                  })();
+                }}
+                onAddCorner={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  if (index == null) return;
+                  void (async () => {
+                    const reply = await api.roomCornerAdd(index);
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'Corner could not be added');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Corner added on wall ${index + 1}`);
+                  })();
+                }}
+                onRoundCorner={() => {
+                  const index = wallPickIndex ?? wallEdit?.selected;
+                  if (index == null) return;
+                  void (async () => {
+                    const reply = await api.roomCornerRound(index, 2 * 120);
+                    if (!reply.ok) {
+                      notify(reply.reason ?? 'Corner could not be rounded');
+                      return;
+                    }
+                    if (reply.doc) setDoc(reply.doc as Doc);
+                    showStatus(`Corner on wall ${index + 1} rounded`);
+                  })();
+                }}
+                onDone={() => {
+                  if (refineRoomOpen) {
+                    closeRoomWorkspace();
+                    closeOverlay('wall-edit');
+                    showStatus('Room layout workspace closed');
+                    return;
+                  }
+                  closeOverlay('wall-edit');
+                  setWallPickIndex(null);
+                  showStatus('Wall edit off');
+                }}
+              />
+            )}
               </>
             )}
             </div>
@@ -6696,15 +7084,22 @@ export function App() {
                 active: workspace.mode === 'room-layout' || wallsEditArmed,
                 disabled: !doc.editable,
                 onClick: () => {
-                  if (doc.hasRoom) openRoomEditWorkspace('room');
-                  else {
+                  if (!doc.hasRoom) {
                     enterMode('canvas');
                     setAwaitingRoomOutline(true);
                     const { refusal } = dispatchTool({ type: 'pick', choice: roomOutlineChoice });
                     if (refusal) notify(refusal);
                     else showStatus('Click each room corner, then press Enter', 4500);
+                    return;
                   }
+                  toggleEditWalls();
                 },
+                secondary: doc.hasRoom
+                  ? {
+                      label: 'Room layout',
+                      onClick: () => openRoomEditWorkspace('room'),
+                    }
+                  : undefined,
               },
               {
                 id: 'stage-workspace',
@@ -6734,6 +7129,14 @@ export function App() {
                 onClick: () => runCommand(workspace.mode === 'setup' ? 'mode.none' : 'mode.setup'),
               },
               {
+                id: 'draw',
+                label: 'Draw',
+                icon: <IconDrawLine size={17} />,
+                active: workspace.mode === 'draw',
+                disabled: !doc.editable,
+                onClick: () => runCommand(workspace.mode === 'draw' ? 'mode.none' : 'mode.draw'),
+              },
+              {
                 id: 'properties',
                 label: 'Properties',
                 icon: <IconSidebarRight size={17} />,
@@ -6752,7 +7155,7 @@ export function App() {
               {
                 id: 'select',
                 label: 'Select / move',
-                shortcut: 'Esc',
+                shortcut: 'V',
                 icon: <IconPointer size={16} />,
                 active: isPressed(tool, SELECT),
                 onClick: () => {
@@ -6768,7 +7171,7 @@ export function App() {
                 icon: <IconDirectSelect size={16} />,
                 active: isPressed(tool, DIRECT_SELECT),
                 onClick: () => {
-                  enterMode('canvas');
+                  if (workspace.mode !== 'draw' && workspace.mode !== 'inspect') enterMode('canvas');
                   const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
                   if (refusal) notify(refusal);
                 },
@@ -6785,62 +7188,6 @@ export function App() {
                   if (refusal) notify(refusal);
                 },
               },
-              ...(
-                [
-                  ['line', 'Line', IconDrawLine],
-                  ['rect', 'Rectangle', IconDrawRect],
-                  ['ellipse', 'Ellipse', IconDrawEllipse],
-                ] as const
-              ).map(([shape, label, Icon]) => ({
-                id: shape,
-                label,
-                icon: <Icon size={16} />,
-                active: isPressed(tool, drawChoice(shape)),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
-                  if (refusal) notify(refusal);
-                },
-              })),
-              {
-                id: 'add-text',
-                label: 'Text',
-                shortcut: 'T',
-                icon: <IconText size={16} />,
-                active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  activateTextTool();
-                },
-              },
-              {
-                id: 'power-cable',
-                label: 'Power run',
-                icon: <IconCablePower size={16} />,
-                active: isPressed(tool, powerCableChoice),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
-                  if (refusal) notify(refusal);
-                  else showStatus('Click bends along the power run. Enter finishes', 4500);
-                },
-              },
-              {
-                id: 'signal-cable',
-                label: 'Signal run',
-                icon: <IconCableSignal size={16} />,
-                active: isPressed(tool, signalCableChoice),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
-                  if (refusal) notify(refusal);
-                  else showStatus('Click bends along the signal run. Enter finishes', 4500);
-                },
-              },
               {
                 id: 'measure',
                 label: 'Measure',
@@ -6848,20 +7195,8 @@ export function App() {
                 icon: <IconRuler size={16} />,
                 active: isPressed(tool, MEASURE),
                 onClick: () => {
-                  enterMode('canvas');
+                  if (workspace.mode !== 'draw' && workspace.mode !== 'inspect') enterMode('canvas');
                   toggleMeasure();
-                },
-              },
-              {
-                id: 'dimension',
-                label: 'Dimension',
-                shortcut: 'D',
-                icon: <IconDimension size={16} />,
-                active: isPressed(tool, DIMENSION),
-                disabled: !canCreateDimension,
-                onClick: () => {
-                  enterMode('canvas');
-                  toggleDimension();
                 },
               },
             ]}
@@ -7419,19 +7754,22 @@ export function App() {
                     </div>
                   ) : null}
                   {equipmentSource === 'inventory' ? (
-                    <InventoryPalette
-                      inventory={inventory}
+                    <AddPanel
+                      items={(inventory?.items ?? []).map((item) => ({
+                        id: item.id,
+                        name: item.name,
+                        category: item.category,
+                        view: item.view,
+                      }))}
+                      recentNames={recentInventory.map((row) => row.name)}
+                      planView={planView}
                       query={paletteQuery}
                       onQuery={setPaletteQuery}
-                      category={paletteCategory}
-                      onCategory={setPaletteCategory}
-                      units={unitSystem}
-                      canPlace={!!doc?.editable}
-                      onPlace={(id, name) => armInventory(id, name)}
-                      onChanged={inventoryChanged}
-                      onRemoved={(name) => setInventoryUndoNotice(`Removed “${name}” from inventory`)}
-                      onError={notify}
-                      onStatus={showStatus}
+                      category={addCategory}
+                      onCategory={setAddCategory}
+                      editable={!!doc?.editable}
+                      onPlaceInventory={(id, name) => armInventory(id, name)}
+                      onPlaceGear={(name) => armGear(name)}
                     />
                   ) : equipmentSource === 'gear' ? (
                     <GearPalette
@@ -7630,6 +7968,16 @@ export function App() {
               }}
               onError={notify}
               onStatus={showStatus}
+              onDrawElevation={(request) => {
+                setShapeWizardSeed({
+                  baseName: request.baseName,
+                  elevationView: request.view,
+                  category: request.category as import('../../inventory/classify.js').Category | undefined,
+                  planWidth: request.planWidth,
+                  planDepth: request.planDepth,
+                });
+                setShapeWizardOpen(true);
+              }}
             />
           ) : view === 'gear' ? (
             gear ? (
@@ -7770,6 +8118,62 @@ export function App() {
                   </button>
                 </div>
               )}
+              {planView !== 'top' && doc ? (
+                <ElevationCanvas
+                  planView={planView}
+                  selectedIds={selectedIds}
+                  units={unitSystem}
+                  onSelect={setSelectedIds}
+                  inventory={(inventory?.items ?? []).map((item) => ({
+                    name: item.name,
+                    view: item.view,
+                  }))}
+                  items={(() => {
+                    const byOwner = new Map<number, ElevationItem>();
+                    for (const prim of doc.scene.primitives) {
+                      if (prim.layer === 'walls' || prim.layer === 'region' || prim.layer === 'annotation') {
+                        continue;
+                      }
+                      const id = prim.selectId || prim.nodeId;
+                      if (!id) continue;
+                      const pts = prim.pts;
+                      if (!pts || pts.length < 4) continue;
+                      let minX = Infinity;
+                      let minY = Infinity;
+                      let maxX = -Infinity;
+                      let maxY = -Infinity;
+                      for (let i = 0; i + 1 < pts.length; i += 2) {
+                        const x = pts[i]!;
+                        const y = pts[i + 1]!;
+                        if (x < minX) minX = x;
+                        if (y < minY) minY = y;
+                        if (x > maxX) maxX = x;
+                        if (y > maxY) maxY = y;
+                      }
+                      if (!Number.isFinite(minX)) continue;
+                      const existing = byOwner.get(id);
+                      const width = Math.max(120, maxX - minX);
+                      const height = Math.max(120, maxY - minY);
+                      const next: ElevationItem = {
+                        id,
+                        name: prim.owner || prim.cls || `Object ${id}`,
+                        x: (minX + maxX) / 2,
+                        y: (minY + maxY) / 2,
+                        width,
+                        height,
+                        elevation: existing?.elevation ?? 0,
+                      };
+                      if (
+                        !existing ||
+                        next.width * next.height > existing.width * existing.height
+                      ) {
+                        byOwner.set(id, next);
+                      }
+                    }
+                    return [...byOwner.values()];
+                  })()}
+                />
+              ) : (
               <PlanCanvas
               lockedLayers={lockedLayers}
               onContextMenu={(info) => {
@@ -7788,6 +8192,7 @@ export function App() {
               }}
               scene={doc.scene}
               visibleLayers={visible}
+              focusIds={isolationFocusIds}
               paper={paper}
               showGrid={showGrid}
               objectSnap={objectSnap}
@@ -7991,6 +8396,40 @@ export function App() {
                 if (refusal) notify(refusal);
               }}
             />
+              )}
+              {collisionPending && (
+                <div className="room-outline-banner collision-banner" role="alertdialog" aria-label="Collision">
+                  <IconWarning size={16} />
+                  <span>
+                    <strong>{formatCollisionPrompt(collisionPending.overlaps)}</strong>
+                    <small>Red outline items are already occupying that space.</small>
+                  </span>
+                  <div className="room-outline-banner-actions">
+                    <button
+                      type="button"
+                      className="btn-solid"
+                      disabled={!collisionPending.suggested}
+                      onClick={() => void collisionPending.retry({ nudge: true })}
+                    >
+                      Nudge beside
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      onClick={() => void collisionPending.retry({ allowOverlap: true })}
+                    >
+                      Allow overlap
+                    </button>
+                    <button
+                      type="button"
+                      className="link-btn is-danger"
+                      onClick={() => setCollisionPending(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
               {(awaitingRoomOutline && !doc.hasRoom) || isPressed(tool, roomOutlineChoice) ? (
                 <div className="room-outline-banner" role="status">
                   <IconDrawPolygon size={16} />
@@ -8502,20 +8941,6 @@ export function App() {
           styleHint={annotationStyleHint}
           annotationInputRef={annotationInputRef}
           dimensionActive={isPressed(tool, DIMENSION)}
-          inventory={catalogInventory?.items ?? inventory?.items ?? doc.scene.inventory}
-          seatKind={seatKind}
-          seatTable={seatTable}
-          seatChair={seatChair}
-          seatCount={seatCount}
-          seatRows={seatRows}
-          seatPerRow={seatPerRow}
-          seatAngle={seatAngle}
-          seatSpacingFt={seatSpacingFt}
-          seatRowSpacingFt={seatRowSpacingFt}
-          seatRowLengths={seatRowLengths}
-          seatingArmed={
-            tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
-          }
           onClose={() => enterMode('canvas')}
           onOpenRoom={openRoomPanel}
           onDrawRoomOutline={() => {
@@ -8541,6 +8966,7 @@ export function App() {
             awaitingRoomOutline && !doc.hasRoom ? () => void discardEmptyPlan() : undefined
           }
           onBuildStage={() => {
+            setStageRebuild(null);
             setBuildStageOpen(true);
           }}
           onInsert={() => {
@@ -8568,65 +8994,6 @@ export function App() {
           onDoneText={finishTextTool}
           onToggleDimension={() => {
             toggleDimension();
-          }}
-          onSeatKind={setSeatKind}
-          onSeatTable={setSeatTable}
-          onSeatChair={setSeatChair}
-          onSeatCount={setSeatCount}
-          onSeatRows={setSeatRows}
-          onSeatPerRow={setSeatPerRow}
-          onSeatAngle={setSeatAngle}
-          onSeatSpacingFt={setSeatSpacingFt}
-          onSeatRowSpacingFt={setSeatRowSpacingFt}
-          onSeatRowLengths={setSeatRowLengths}
-          onDonePlacing={cancelPlacement}
-          onPlaceSeating={() => {
-            const lengths = seatRowLengths
-              .split(/[,;\s]+/)
-              .map((part) => Number(part.trim()))
-              .filter((n) => Number.isFinite(n) && n >= 1);
-            const anglePart = seatAngle ? ` @ ${seatAngle > 0 ? '+' : ''}${seatAngle}°` : '';
-            const description =
-              seatKind === 'round'
-                ? `${seatTable} with ${seatCount} seats`
-                : lengths.length
-                  ? `${lengths.length} irregular rows (${lengths.reduce((a, b) => a + b, 0)} seats)${anglePart}`
-                  : `${seatRows} × ${seatPerRow} ${seatKind}${anglePart}`;
-            const { refusal } = dispatchTool({
-              type: 'pick',
-              choice: {
-                kind: 'stamp',
-                stamp: {
-                  what: 'seating',
-                  description,
-                  request: {
-                    kind: seatKind,
-                    chair: seatChair,
-                    table: seatTable || undefined,
-                    seats: seatCount,
-                    rows: seatRows,
-                    perRow: seatPerRow,
-                    rowLengths: lengths.length ? lengths : undefined,
-                    angle: seatAngle || undefined,
-                    seatSpacing:
-                      seatKind !== 'round' && seatSpacingFt > 0
-                        ? seatSpacingFt * FOOT
-                        : undefined,
-                    rowSpacing:
-                      seatKind !== 'round' && seatRowSpacingFt > 0
-                        ? seatRowSpacingFt * FOOT
-                        : undefined,
-                  },
-                },
-              },
-            });
-            if (refusal) notify(refusal);
-            else {
-              showStatus(
-                'Click the plan to stamp · change settings here and click again · drag a placed piece to adjust it',
-                4200,
-              );
-            }
           }}
           onNewShape={openNewShapeDialog}
           onNewItem={() => void openNewItemDialog()}
@@ -8792,6 +9159,14 @@ export function App() {
               else notify(reply.reason ?? 'Could not export pull sheet');
             })();
           }}
+          onExportHangPlot={() => {
+            void (async () => {
+              const reply = await api.hangPlotExport();
+              if (reply.cancelled) return;
+              if (reply.ok) showStatus(`Exported hang plot${reply.path ? ` · ${reply.path.split(/[\\/]/).pop()}` : ''}`, 4000);
+              else notify(reply.reason ?? 'Could not export hang plot');
+            })();
+          }}
           allocationSummary={allocationSummary}
           brief={showBrief}
           briefBusy={briefBusy}
@@ -8804,56 +9179,6 @@ export function App() {
           drawnBy={printDrawnBy}
           onRevision={setPrintRevision}
           onDrawnBy={setPrintDrawnBy}
-          bankPresets={bankPresets as never}
-          onSaveBankPreset={() => {
-            void (async () => {
-              const lengths = seatRowLengths
-                .split(/[,;\s]+/)
-                .map((part) => Number(part.trim()))
-                .filter((n) => Number.isFinite(n) && n >= 1);
-              const name = lengths.length
-                ? `${lengths.length} rows @ ${seatAngle || 0}°`
-                : `${seatRows}×${seatPerRow} @ ${seatAngle || 0}°`;
-              const reply = await api.saveBankPreset({
-                name,
-                block: {
-                  chair: seatChair,
-                  angleDeg: seatAngle || undefined,
-                  seatSpacingFt: seatSpacingFt || undefined,
-                  rowSpacingFt: seatRowSpacingFt || undefined,
-                  rowLengths: lengths.length ? lengths : undefined,
-                  rows: lengths.length ? undefined : seatRows,
-                  perRow: lengths.length ? undefined : seatPerRow,
-                },
-              });
-              if (!reply.ok) {
-                notify(reply.reason ?? 'Could not save bank preset');
-                return;
-              }
-              const next = await api.listBankPresets();
-              setBankPresets(next);
-              showStatus(`Saved bank preset “${name}”`, 3000);
-            })();
-          }}
-          onLoadBankPreset={(preset) => {
-            const block = preset.block;
-            if (typeof block.chair === 'string') setSeatChair(block.chair);
-            if (typeof block.angleDeg === 'number') setSeatAngle(block.angleDeg);
-            if (typeof block.seatSpacingFt === 'number') setSeatSpacingFt(block.seatSpacingFt);
-            if (typeof block.rowSpacingFt === 'number') setSeatRowSpacingFt(block.rowSpacingFt);
-            if (Array.isArray(block.rowLengths) && block.rowLengths.length) {
-              setSeatRowLengths(block.rowLengths.join(','));
-            } else {
-              setSeatRowLengths('');
-              if (typeof block.rows === 'number') setSeatRows(block.rows);
-              if (typeof block.perRow === 'number') setSeatPerRow(block.perRow);
-            }
-            setSeatKind('theatre');
-            showStatus(`Loaded bank preset “${preset.name}”: Place on plan to stamp`, 3500);
-          }}
-          onDeleteBankPreset={(id) => {
-            void api.deleteBankPreset(id).then(() => api.listBankPresets().then(setBankPresets));
-          }}
         />
       )}
 
@@ -8861,7 +9186,7 @@ export function App() {
               <PlanToolDock
                 docked
                 compact={toolDockCompact}
-                groupLabels={['Navigate', 'Build the show', 'Draw', 'Systems', 'Room', 'Measure & annotate']}
+                groupLabels={['Navigate', 'Draw', 'Systems', 'Measure']}
                 foreground={colorDraft}
                 paper={paper}
                 side={toolDockSide}
@@ -8884,7 +9209,7 @@ export function App() {
                     {
                       id: 'select',
                       label: 'Select / move',
-                      shortcut: 'Esc',
+                      shortcut: 'V',
                       icon: <IconPointer />,
                       active: isPressed(tool, SELECT),
                       disabled: !doc,
@@ -8925,37 +9250,6 @@ export function App() {
                     },
                   ],
                   [
-                    {
-                      id: 'build-stage',
-                      label: 'Build stage',
-                      icon: <IconDrawRect />,
-                      disabled: !doc.editable || !doc.hasRoom,
-                      onClick: () => runCommand('stage.build'),
-                    },
-                    {
-                      id: 'place-equipment',
-                      label: 'Place equipment',
-                      shortcut: 'P',
-                      icon: <IconPlus />,
-                      disabled: !doc.editable,
-                      onClick: () => runCommand('insert.open'),
-                    },
-                    {
-                      id: 'seating-planner',
-                      label: 'Seating planner',
-                      icon: <IconChair />,
-                      disabled: !doc.editable || !doc.hasRoom,
-                      onClick: () => runCommand('seating.planner'),
-                    },
-                    {
-                      id: 'shape-library',
-                      label: 'Create reusable shape',
-                      icon: <IconStar />,
-                      disabled: !doc.editable,
-                      onClick: () => runCommand('shape.wizard'),
-                    },
-                  ],
-                  [
                     ...(
                       [
                         ['line', 'Line', IconDrawLine],
@@ -8990,7 +9284,7 @@ export function App() {
                     {
                       id: 'power-cable',
                       label: 'Power run',
-                      icon: <IconDrawLine />,
+                      icon: <IconCablePower />,
                       active: isPressed(tool, powerCableChoice),
                       disabled: !doc.editable,
                       onClick: () => {
@@ -9002,7 +9296,7 @@ export function App() {
                     {
                       id: 'signal-cable',
                       label: 'Signal run',
-                      icon: <IconDrawPolygon />,
+                      icon: <IconCableSignal />,
                       active: isPressed(tool, signalCableChoice),
                       disabled: !doc.editable,
                       onClick: () => {
@@ -9026,38 +9320,6 @@ export function App() {
                   ],
                   [
                     {
-                      id: 'edit-room',
-                      label: 'Edit room geometry',
-                      icon: <IconEdit />,
-                      disabled: !doc.editable || !doc.hasRoom,
-                      onClick: () => runCommand('room.edit'),
-                    },
-                    {
-                      id: 'room',
-                      label: 'Draw room outline',
-                      icon: <IconDrawPolygon />,
-                      active: isPressed(tool, roomOutlineChoice),
-                      disabled: !doc.editable,
-                      onClick: () => {
-                        setLastCommandId('room.outline');
-                        const { refusal } = dispatchTool({ type: 'toggle', choice: roomOutlineChoice });
-                        if (refusal) notify(refusal);
-                        else {
-                          setSelectedIds([]);
-                          showStatus('Click each room corner, then press Enter', 4500);
-                        }
-                      },
-                    },
-                    {
-                      id: 'site-plan',
-                      label: planBackground?.dataUrl ? 'Edit site plan' : 'Import site plan',
-                      icon: <IconLayers />,
-                      disabled: !doc.editable,
-                      onClick: () => setBackgroundOpen(true),
-                    },
-                  ],
-                  [
-                    {
                       id: 'measure',
                       label: 'Measure',
                       shortcut: 'M',
@@ -9073,7 +9335,7 @@ export function App() {
                       id: 'dimension',
                       label: 'Dimension',
                       shortcut: 'D',
-                      icon: <IconRuler />,
+                      icon: <IconDimension />,
                       active: isPressed(tool, DIMENSION),
                       disabled: !canCreateDimension,
                       onClick: () => {
@@ -9348,12 +9610,290 @@ export function App() {
                   propertiesEditingRef.current = false;
                 }}
               >
-                <div className="section-title">
-                  <span>{selectedIds.length > 1 ? 'Selection' : 'Selected item'}</span>
-                  {selectedIds.length > 0 && (
-                    <span className="section-count">{selectedIds.length}</span>
-                  )}
+                <InspectorSection
+                  title={
+                    selectedIds.length > 1
+                      ? `Selection (${selectedIds.length})`
+                      : selection?.name
+                        ? selection.name
+                        : 'Selected item'
+                  }
+                >
+                <div className="section-title inspector-kind-chip">
+                  <span>
+                    {classifySelectionKind(
+                      selectedIds.length
+                        ? selectedIds.map((id) => {
+                            const prim = doc.scene.primitives.find(
+                              (p) => (p.selectId || p.nodeId) === id,
+                            );
+                            return prim?.owner || prim?.cls || selection?.name || 'Object';
+                          })
+                        : selection?.name
+                          ? [selection.name]
+                          : [],
+                    )}
+                  </span>
                 </div>
+
+                {selectedIds.length > 0 && (
+                  <div className="tool-group isolation-group">
+                    <span className="tool-label">Isolation</span>
+                    <div className="text-action-row">
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={!selectedIds.length}
+                        onClick={() => {
+                          setIsolationFocusIds([...selectedIds]);
+                          showStatus('Solo selection · Esc or Exit solo to leave', 3500);
+                        }}
+                      >
+                        Solo selection
+                      </button>
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={isolationFocusIds == null}
+                        onClick={() => {
+                          setIsolationFocusIds(null);
+                          showStatus('Exited solo');
+                        }}
+                      >
+                        Exit solo
+                      </button>
+                    </div>
+                    {isolationFocusIds != null && (
+                      <p className="hint">
+                        Working in {isolationFocusIds.length} object
+                        {isolationFocusIds.length === 1 ? '' : 's'} · others dimmed
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {selectedIds.length >= 1 &&
+                  selectedIds.some((id) => {
+                    const prim = doc.scene.primitives.find((p) => (p.selectId || p.nodeId) === id);
+                    return /stage|stairs|stair/i.test(prim?.owner || prim?.cls || '');
+                  }) && (
+                  <div className="tool-group stage-ops-group">
+                    <span className="tool-label">Stage</span>
+                    <div className="text-action-row">
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={!doc.editable}
+                        onClick={() => {
+                          void (async () => {
+                            const model = await api.planModel();
+                            const build = model?.stage?.build ?? null;
+                            if (!build) {
+                              notify('No saved stage build to edit — use Build stage');
+                              return;
+                            }
+                            if (model?.stage?.widthFt != null && model.stage.depthFt != null) {
+                              // Keep origin near current stage centre when rebuilding.
+                              const prim = doc.scene.primitives.find((p) =>
+                                /stage/i.test(p.owner || ''),
+                              );
+                              if (prim?.pts?.length) {
+                                let sx = 0;
+                                let sy = 0;
+                                let n = 0;
+                                for (let i = 0; i + 1 < prim.pts.length; i += 2) {
+                                  sx += prim.pts[i]!;
+                                  sy += prim.pts[i + 1]!;
+                                  n++;
+                                }
+                                if (n > 0) setStageRebuildOrigin({ x: sx / n, y: sy / n });
+                              }
+                            }
+                            setStageRebuild(build);
+                            setBuildStageOpen(true);
+                          })();
+                        }}
+                      >
+                        Edit stage
+                      </button>
+                      {selectedIds.length === 2 && (
+                        <button
+                          type="button"
+                          className="text-action"
+                          disabled={!doc.editable}
+                          onClick={() => {
+                            void (async () => {
+                              const [a, b] = selectedIds;
+                              if (a == null || b == null) return;
+                              const nameOf = (id: number) => {
+                                const prim = doc.scene.primitives.find(
+                                  (p) => (p.selectId || p.nodeId) === id,
+                                );
+                                return prim?.owner || prim?.cls || '';
+                              };
+                              const aName = nameOf(a);
+                              const bName = nameOf(b);
+                              const aIsStage = /stage/i.test(aName) && !/stair/i.test(aName);
+                              const bIsStage = /stage/i.test(bName) && !/stair/i.test(bName);
+                              const aIsStairs = /stair/i.test(aName);
+                              const bIsStairs = /stair/i.test(bName);
+                              let stageId: number | null = null;
+                              let stairsId: number | null = null;
+                              if (aIsStage && bIsStairs) {
+                                stageId = a;
+                                stairsId = b;
+                              } else if (bIsStage && aIsStairs) {
+                                stageId = b;
+                                stairsId = a;
+                              }
+                              if (stageId == null || stairsId == null) {
+                                notify('Select one stage and one stairs piece');
+                                return;
+                              }
+                              const reply = await api.attachStairs(stageId, stairsId);
+                              if (!reply.ok) notify(reply.reason ?? 'Could not attach stairs');
+                              else showStatus(reply.text ?? 'Stairs attached', 3000);
+                            })();
+                          }}
+                        >
+                          Attach stairs
+                        </button>
+                      )}
+                    </div>
+                    <p className="hint">
+                      Edit rebuilds from the last build. Attach links unpaired stairs so they move with
+                      the deck.
+                    </p>
+                  </div>
+                )}
+
+                {selectedTableIds.length > 0 && (
+                  <div className="tool-group table-ops-group">
+                    <span className="tool-label">
+                      Tables{selectedTableIds.length > 1 ? ` (${selectedTableIds.length})` : ''}
+                    </span>
+                    <div className="field-row">
+                      <div className="field">
+                        <label htmlFor="table-seats">Chairs per table</label>
+                        <input
+                          id="table-seats"
+                          className="num"
+                          type="number"
+                          min={0}
+                          max={24}
+                          value={tableSeatsDraft}
+                          disabled={!doc.editable}
+                          onChange={(e) => setTableSeatsDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void applyTableSeats();
+                          }}
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="table-chair-gap">Chair gap</label>
+                        <input
+                          id="table-chair-gap"
+                          className="num"
+                          value={tableChairGapDraft}
+                          disabled={!doc.editable}
+                          onChange={(e) => setTableChairGapDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void applyTableSeats();
+                          }}
+                          title="Distance from table edge to chair centre"
+                        />
+                      </div>
+                      <div className="field" style={{ justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          className="btn-outline"
+                          disabled={!doc.editable}
+                          onClick={() => void applyTableSeats()}
+                        >
+                          Redistribute
+                        </button>
+                      </div>
+                    </div>
+                    {selectedTableIds.length >= 2 && (
+                      <div className="field-row" style={{ marginTop: 8 }}>
+                        <div className="field">
+                          <label htmlFor="table-spacing">Table spacing</label>
+                          <input
+                            id="table-spacing"
+                            className="num"
+                            value={tableSpacingDraft}
+                            disabled={!doc.editable}
+                            onChange={(e) => setTableSpacingDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void applyTableSpacing();
+                            }}
+                            title="Centre-to-centre spacing when re-gridding selected tables"
+                          />
+                        </div>
+                        <div className="field" style={{ justifyContent: 'flex-end' }}>
+                          <button
+                            type="button"
+                            className="btn-outline"
+                            disabled={!doc.editable}
+                            onClick={() => void applyTableSpacing()}
+                          >
+                            Space tables
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div className="field-row" style={{ marginTop: 8 }}>
+                      <div className="field">
+                        <label htmlFor="table-num-start">Number from</label>
+                        <input
+                          id="table-num-start"
+                          className="num"
+                          type="number"
+                          min={1}
+                          value={tableNumberStartDraft}
+                          disabled={!doc.editable}
+                          onChange={(e) => setTableNumberStartDraft(e.target.value)}
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="table-num-order">Order</label>
+                        <select
+                          id="table-num-order"
+                          value={tableNumberOrder}
+                          disabled={!doc.editable}
+                          onChange={(e) =>
+                            setTableNumberOrder(
+                              e.target.value as
+                                | 'left-right'
+                                | 'top-bottom'
+                                | 'right-left'
+                                | 'bottom-top',
+                            )
+                          }
+                        >
+                          <option value="left-right">Left → right</option>
+                          <option value="top-bottom">Top → bottom</option>
+                          <option value="right-left">Right → left</option>
+                          <option value="bottom-top">Bottom → top</option>
+                        </select>
+                      </div>
+                      <div className="field" style={{ justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          className="btn-outline"
+                          disabled={!doc.editable}
+                          onClick={() => void applyTableAutoNumber()}
+                        >
+                          Auto-number
+                        </button>
+                      </div>
+                    </div>
+                    <p className="hint">
+                      Numbers are editable labels on the plan. Redistribute replaces chairs around
+                      each table.
+                    </p>
+                  </div>
+                )}
 
                 {stackCandidates.length >= 2 && (
                   <div className="tool-group stack-pick-group stack-coach">
@@ -10625,6 +11165,26 @@ export function App() {
                             <p className="hint" style={{ marginTop: 4 }}>
                               Above floor — truss, screens, flown gear
                             </p>
+                            {/truss/i.test(selection.name ?? '') && (
+                              <div className="text-action-row" style={{ marginTop: 6 }}>
+                                {[12, 16, 20].map((ft) => (
+                                  <button
+                                    key={ft}
+                                    type="button"
+                                    className="text-action"
+                                    disabled={!doc.editable}
+                                    onClick={() => {
+                                      const next = formatLength(ft * UNITS_PER_FOOT, unitSystem);
+                                      setElevationDraft(next);
+                                      elevationDraftRef.current = next;
+                                      void commitElevation();
+                                    }}
+                                  >
+                                    {ft}′
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -10892,6 +11452,7 @@ export function App() {
                     <p className="hint">Drag to move. Arrows nudge · Shift fine · Alt 1′.</p>
                   </>
                 ) : null}
+                </InspectorSection>
               </div>
 
               {selectedIds.length === 0 && (
@@ -10948,8 +11509,8 @@ export function App() {
                       : 'Room size appears after the outline is finished.'}
                   </p>
                   <p className="room-inspect-gate-copy">
-                    Edit walls stays on the plan so Place can stay open. Room layout is the full
-                    resize workspace.
+                    Open room layout for full resize and reshape. Edit walls stays on the plan so Place
+                    can stay armed — same as <kbd>room.edit</kbd> / <kbd>room.walls</kbd>.
                   </p>
                   <div className="show-setup-actions room-inspect-gate-actions">
                     <button
@@ -11327,6 +11888,52 @@ export function App() {
                   },
                   { id: 'sep-2', separator: true },
                   {
+                    id: 'rotate-left',
+                    label: 'Rotate left 90°',
+                    shortcut: '[',
+                    icon: <IconRotateLeft size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void rotateSelection(-90),
+                  },
+                  {
+                    id: 'rotate-right',
+                    label: 'Rotate right 90°',
+                    shortcut: ']',
+                    icon: <IconRotateRight size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void rotateSelection(90),
+                  },
+                  {
+                    id: 'flip-h',
+                    label: 'Flip horizontal',
+                    icon: <IconFlipHorizontal size={14} />,
+                    disabled: !editable,
+                    onSelect: () => void flipSelection('horizontal'),
+                  },
+                  { id: 'sep-align', separator: true },
+                  {
+                    id: 'align-left',
+                    label: 'Align left',
+                    icon: <IconAlignLeft size={14} />,
+                    disabled: !editable || !many,
+                    onSelect: () => void arrangeSelection('align-left'),
+                  },
+                  {
+                    id: 'align-center',
+                    label: 'Align centre',
+                    icon: <IconAlignCenter size={14} />,
+                    disabled: !editable || !many,
+                    onSelect: () => void arrangeSelection('align-center'),
+                  },
+                  {
+                    id: 'align-right',
+                    label: 'Align right',
+                    icon: <IconAlignRight size={14} />,
+                    disabled: !editable || !many,
+                    onSelect: () => void arrangeSelection('align-right'),
+                  },
+                  { id: 'sep-3', separator: true },
+                  {
                     id: 'group',
                     label: 'Group',
                     shortcut: shortcut('G'),
@@ -11342,7 +11949,7 @@ export function App() {
                     disabled: !editable,
                     onSelect: () => void ungroupPlanSelection(),
                   },
-                  { id: 'sep-3', separator: true },
+                  { id: 'sep-4', separator: true },
                   {
                     id: 'front',
                     label: 'Bring to front',
@@ -11357,7 +11964,7 @@ export function App() {
                     disabled: !editable,
                     onSelect: () => void reorderSelection('send-to-back'),
                   },
-                  { id: 'sep-4', separator: true },
+                  { id: 'sep-5', separator: true },
                   {
                     id: 'delete',
                     label: many ? `Delete ${selectedIds.length} items` : 'Delete',

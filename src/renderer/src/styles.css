@@ -2397,7 +2397,7 @@ button.text-action.is-danger:hover:not(:disabled) {
   justify-content: center;
   min-width: 0;
   padding: 4px 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   border: 1px solid var(--line);
   background: var(--surface-2);
 }
@@ -2407,7 +2407,7 @@ button.text-action.is-danger:hover:not(:disabled) {
   width: 100%;
   padding: 5px 10px 6px 39px;
   color: var(--ink-3);
-  font-size: 9.5px;
+  font-size: 11px;
   background: transparent;
   border: 0;
   border-top: 1px solid var(--line);
@@ -2416,15 +2416,15 @@ button.text-action.is-danger:hover:not(:disabled) {
 
 .layer-select:hover:not(:disabled),
 .layer-select:focus-visible {
-  color: #0b6ecb;
-  background: #f3f8fd;
+  color: var(--accent, #0b6ecb);
+  background: var(--accent-soft, #f3f8fd);
 }
 
 .layer-only {
   flex: none;
   align-self: stretch;
   padding: 0 8px;
-  color: #0b6ecb;
+  color: var(--accent, #0b6ecb);
   font-size: 11px;
   background: transparent;
   border: 0;
@@ -2433,7 +2433,7 @@ button.text-action.is-danger:hover:not(:disabled) {
 }
 
 .layer-only:hover:not(:disabled) {
-  background: #edf6ff;
+  background: var(--accent-soft, #edf6ff);
 }
 
 .swatch {
@@ -2610,8 +2610,8 @@ button.text-action.is-danger:hover:not(:disabled) {
 }
 
 .layer-group-visibility:hover:not(:disabled) {
-  color: #0b6ecb;
-  background: #edf6ff;
+  color: var(--accent, #0b6ecb);
+  background: var(--accent-soft, #edf6ff);
 }
 
 .layer-group-visibility .num {
@@ -5772,6 +5772,31 @@ button.text-action.is-danger:hover:not(:disabled) {
   border-top: 1px solid color-mix(in srgb, var(--ink-3, #888) 18%, transparent);
 }
 
+.item-editor-multiview {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--ink-3, #888) 18%, transparent);
+}
+
+.view-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+
+.view-chip.is-on {
+  color: var(--accent, #0b6ecb);
+  background: var(--accent-soft, rgba(11, 110, 203, 0.12));
+  border-color: color-mix(in srgb, var(--accent, #0b6ecb) 35%, var(--line));
+}
+
 .item-editor-trace {
   display: grid;
   gap: 8px;
@@ -8920,8 +8945,8 @@ a,
   min-height: 52px;
   margin: 0 10px 9px;
   padding: 8px 9px;
-  background: #fff;
-  border: 1px solid #e0e6ec;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #e0e6ec);
   border-radius: var(--radius);
   box-shadow: 0 1px 2px rgba(25, 38, 54, 0.035);
 }
@@ -10252,7 +10277,7 @@ a,
   display: block;
   min-width: 0;
   overflow: hidden;
-  font-size: 11px;
+  font-size: 12px;
   /* Uppercase plus 0.045em tracking costs this label about a quarter of its
      width, and in a 227px row that was the difference between "Plan structure"
      and "PLAN STRUCTU…". Sentence case fits, and reads better at 11px. The
@@ -15182,6 +15207,32 @@ a,
   min-width: 0;
 }
 
+.ribbon-quickbar.is-shared-context {
+  height: auto;
+  min-height: 38px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 0;
+  padding-block: 2px;
+}
+
+.ribbon-quickbar.is-shared-context .object-tools {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.ribbon-quickbar.is-shared-context .room-layout-toolbar {
+  width: auto;
+  flex: 1 1 260px;
+}
+
+.room-layout-toolbar.is-compact {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: 4px;
+}
+
 .room-layout-toolbar {
   display: flex;
   width: 100%;
@@ -17311,6 +17362,53 @@ a,
   gap: 2px;
 }
 
+.editor-workspace-split {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: stretch;
+  border-radius: var(--radius-sm);
+}
+
+.editor-workspace-split .editor-workspace-action {
+  min-width: 0;
+}
+
+.editor-workspace-split.is-active {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.editor-workspace-split.is-active .editor-workspace-action {
+  background: transparent;
+}
+
+.editor-workspace-split.is-active .editor-workspace-action::before {
+  background: var(--accent-fill);
+}
+
+.editor-workspace-secondary {
+  display: grid;
+  place-items: center;
+  margin: 4px 2px 4px 0;
+  padding: 0;
+  color: var(--ink-2);
+  font-size: 9px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  cursor: default;
+}
+
+.editor-workspace-secondary:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.editor-workspace-secondary:disabled {
+  opacity: 0.4;
+}
+
 .editor-workspace-action,
 .editor-tool-action {
   position: relative;
@@ -19393,4 +19491,94 @@ a,
   color: var(--ink-3);
   font-size: 9.5px;
   line-height: 1.35;
+}
+
+/* ---- Phase 1 UI: Add / view / collision / inspector ---- */
+
+.plan-view-mode {
+  margin-right: 6px;
+}
+.plan-view-mode button {
+  min-width: 3.2em;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.elevation-canvas {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: var(--canvas-bg, #f4f4f2);
+  cursor: default;
+  touch-action: none;
+}
+
+.collision-banner {
+  z-index: 6;
+}
+
+.inspector-section > .section-title {
+  margin-bottom: 8px;
+}
+.inspector-kind-chip {
+  margin: 0 0 10px;
+  text-transform: capitalize;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.inspector-section-advanced {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.inspector-section-advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink-2);
+  list-style: none;
+}
+.inspector-section-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.inspector-section-advanced > summary::before {
+  content: '▸ ';
+  color: var(--ink-3);
+}
+.inspector-section-advanced[open] > summary::before {
+  content: '▾ ';
+}
+
+.add-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+}
+.add-panel-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.add-panel-categories button {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.add-panel-categories button.active,
+.add-panel-categories button[aria-pressed='true'] {
+  background: var(--accent-fill, #e8e8e8);
+  color: var(--ink);
+  border-color: var(--line-strong);
+  font-weight: 650;
+}
+
+.create-seating-launcher {
+  padding: 0 12px 16px;
 }

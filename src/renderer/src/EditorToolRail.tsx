@@ -8,6 +8,12 @@ export interface EditorRailAction {
   active?: boolean;
   disabled?: boolean;
   shortcut?: string;
+  /** Optional split-button secondary (e.g. Room → Room layout). */
+  secondary?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+  };
 }
 
 interface Props {
@@ -25,9 +31,9 @@ interface Props {
 export default function EditorToolRail({ workspaces, tools }: Props) {
   const action = (item: EditorRailAction, compact = false) => {
     const tip = `${item.label}${item.shortcut ? ` (${item.shortcut})` : ''}`;
-    return (
+    const button = (
       <button
-        key={item.id}
+        key={item.secondary ? undefined : item.id}
         type="button"
         className={`${compact ? 'editor-tool-action' : 'editor-workspace-action'}${item.active ? ' is-active' : ''}`}
         onClick={item.onClick}
@@ -38,9 +44,33 @@ export default function EditorToolRail({ workspaces, tools }: Props) {
         title={tip}
         data-tooltip={tip}
       >
-        <span className="editor-rail-icon" aria-hidden>{item.icon}</span>
+        <span className="editor-rail-icon" aria-hidden>
+          {item.icon}
+        </span>
         {!compact && <span className="editor-rail-label">{item.label}</span>}
       </button>
+    );
+
+    if (compact || !item.secondary) return button;
+
+    return (
+      <div
+        key={item.id}
+        className={`editor-workspace-split${item.active ? ' is-active' : ''}`}
+      >
+        {button}
+        <button
+          type="button"
+          className="editor-workspace-secondary"
+          onClick={item.secondary.onClick}
+          disabled={item.secondary.disabled ?? item.disabled}
+          aria-label={item.secondary.label}
+          title={item.secondary.label}
+          data-tooltip={item.secondary.label}
+        >
+          ▾
+        </button>
+      </div>
     );
   };
 
