@@ -51,6 +51,7 @@ import { Session } from '../src/main/session.js';
 import { atomicWriteFile, atomicWriteJson } from '../src/main/storage.js';
 import { copyShowForSaveAs, linkShow, showLinkState } from '../src/main/show-project.js';
 import {
+  hideActiveRecoveries,
   listRecoveries,
   readRecovery,
   recoveryId,
@@ -631,7 +632,29 @@ async function main(): Promise<void> {
       'recovery journal retains the source revision needed for conflict checks',
       typeof recovery.sourceDigest === 'string' && recovery.sourceDigest.length === 64,
     );
+
+    const other = await writeRecovery(
+      recoveryRoot,
+      'plan',
+      join(temporary, 'other.rv4'),
+      'Other plan',
+      bytes,
+      join(temporary, 'other.rv4'),
+    );
+    const listed = await listRecoveries(recoveryRoot);
+    check('two dirty documents both appear in the journal', listed.length === 2);
+    const hidden = hideActiveRecoveries(listed, [recovery.id]);
+    check(
+      'the open document is hidden from Recover unsaved work',
+      hidden.length === 1 && hidden[0]?.id === other.id,
+    );
+    check(
+      'hiding nothing leaves the journal intact',
+      hideActiveRecoveries(listed, []).length === listed.length,
+    );
+
     await removeRecovery(recoveryRoot, recovery.id);
+    await removeRecovery(recoveryRoot, other.id);
     check('saved/dismissed recovery work is removed', (await listRecoveries(recoveryRoot)).length === 0);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
