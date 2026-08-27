@@ -198,6 +198,7 @@ import {
   type ShowLinkState,
 } from './show-project.js';
 import {
+  hideActiveRecoveries,
   listRecoveries,
   readPlanRecoverySidecar,
   readRecovery,
@@ -3132,7 +3133,23 @@ if (!gotTheLock) {
 app.whenReady().then(async () => {
   recoveryRoot = join(app.getPath('userData'), 'recovery');
 
-  handle('recovery:list', async (): Promise<RecoveryEntry[]> => listRecoveries(recoveryRoot), []);
+  handle(
+    'recovery:list',
+    async (): Promise<RecoveryEntry[]> => {
+      const entries = await listRecoveries(recoveryRoot);
+      // The plan or gear list currently open already holds its own unsaved work,
+      // so listing a "recover" entry for it reads as lost work when it is simply
+      // the live document. The journal file stays on disk — a crash still leaves
+      // it recoverable on the next launch — it is only hidden from the list while
+      // its document is the one open in front of the user.
+      const activeIds: string[] = [];
+      if (session) activeIds.push(recoveryId('plan', canonicalPath(session.path)));
+      const gearKey = currentGearRecoveryKey();
+      if (gear && gearKey) activeIds.push(recoveryId('gear', gearKey));
+      return hideActiveRecoveries(entries, activeIds);
+    },
+    [],
+  );
 
   handle('recovery:open', async (_event, id: string) => {
     const recovered = await readRecovery(recoveryRoot, id);

@@ -151,6 +151,22 @@ export async function listRecoveries(root: string): Promise<RecoveryEntry[]> {
   return entries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+/**
+ * Hides recovery entries for documents that are already open.
+ *
+ * The journal is still written while the user edits, so a crash can recover
+ * the work on the next launch. Listing that same entry under "Recover unsaved
+ * work" while its document is the one on screen reads as lost work.
+ */
+export function hideActiveRecoveries(
+  entries: RecoveryEntry[],
+  activeIds: Iterable<string>,
+): RecoveryEntry[] {
+  const hide = new Set(activeIds);
+  if (hide.size === 0) return entries;
+  return entries.filter((entry) => !hide.has(entry.id));
+}
+
 export async function readRecovery(
   root: string,
   id: string,

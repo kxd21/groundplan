@@ -104,6 +104,7 @@ import {
   Mark,
 } from './icons.js';
 import type { Scene } from '../../format/scene.js';
+import { selectableIds } from './selection.js';
 import type { PlanBackground } from '../../format/companion.js';
 import RoomPanel from './RoomPanel.js';
 import { countFurniture } from './furniture-counts.js';
@@ -2195,10 +2196,11 @@ export function App() {
         setDoc(result.doc as Doc);
         setError(null);
         if (result.created?.length) {
-          setSelectedIds(result.created);
+          const selected = selectableIds(result.created, (result.doc as Doc).scene);
+          setSelectedIds(selected);
           setSelection(null);
           if (effect.do === 'placeInventory' || effect.do === 'placeGear') {
-            void attachPlacedToParent(result.created);
+            void attachPlacedToParent(selected);
           }
         }
         if (result.status) {
@@ -2690,7 +2692,7 @@ export function App() {
         setDoc(reply.doc);
         setError(null);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          setSelectedIds(selectableIds(reply.created, reply.doc.scene));
           setSelection(null);
         }
       } else if (reply.reason) {
@@ -3005,9 +3007,10 @@ export function App() {
         rememberRecentInventory(id, name);
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          const selected = selectableIds(reply.created, (reply.doc as Doc).scene);
+          setSelectedIds(selected);
           setSelection(null);
-          void attachPlacedToParent(reply.created);
+          void attachPlacedToParent(selected);
         }
         enterMode('inspect');
         setInspectorTab('properties');
@@ -3043,9 +3046,10 @@ export function App() {
       if (reply.ok && reply.doc) {
         setDoc(reply.doc as Doc);
         if (reply.created?.length) {
-          setSelectedIds(reply.created);
+          const selected = selectableIds(reply.created, (reply.doc as Doc).scene);
+          setSelectedIds(selected);
           setSelection(null);
-          void attachPlacedToParent(reply.created);
+          void attachPlacedToParent(selected);
         }
         enterMode('inspect');
         setInspectorTab('properties');
@@ -3197,8 +3201,11 @@ export function App() {
         enterMode('inspect');
         setInspectorTab('properties');
         setSetupCompleted((current) => ({ ...current, repeat: true }));
-        const n = reply.created?.length ?? count;
-        setSelectedIds(reply.created ?? selectedIds);
+        const selected = reply.created?.length
+          ? selectableIds(reply.created, reply.doc?.scene)
+          : selectedIds;
+        const n = selected.length;
+        setSelectedIds(selected);
         showStatus(`Arrayed ${arrayDirection} ×${count} · ${n} selected`);
       }
       return;
@@ -3215,15 +3222,18 @@ export function App() {
       doc?: Doc;
       created?: number[];
     };
-    applied(reply);
-    if (reply.ok) {
-      enterMode('inspect');
-      setInspectorTab('properties');
-      setSetupCompleted((current) => ({ ...current, repeat: true }));
-      const n = reply.created?.length ?? columns * rows;
-      setSelectedIds(reply.created ?? selectedIds);
-      showStatus(`Arrayed ${columns} × ${rows} · ${n} selected`);
-    }
+      applied(reply);
+      if (reply.ok) {
+        enterMode('inspect');
+        setInspectorTab('properties');
+        setSetupCompleted((current) => ({ ...current, repeat: true }));
+        const selected = reply.created?.length
+          ? selectableIds(reply.created, reply.doc?.scene)
+          : selectedIds;
+        const n = selected.length;
+        setSelectedIds(selected);
+        showStatus(`Arrayed ${columns} × ${rows} · ${n} selected`);
+      }
   }, [
     selectedIds,
     selection,
@@ -3930,6 +3940,12 @@ export function App() {
           showStatus(`${groupChord} groups · G toggles the grid`, 3500);
         }
         void toggleGrid();
+        return;
+      }
+      // V is advertised as the Select tool (Help sheet / ⌘K). A is Direct Select.
+      if (e.key.toLowerCase() === 'v' && !mod && doc) {
+        e.preventDefault();
+        dispatchTool({ type: 'pick', choice: SELECT });
         return;
       }
       if (e.key.toLowerCase() === 'a' && !mod && doc) {
@@ -5436,7 +5452,7 @@ export function App() {
           enterMode('inspect');
           setInspectorTab('properties');
           if (created?.length) {
-            setSelectedIds(created);
+            setSelectedIds(next ? selectableIds(created, (next as Doc).scene) : created);
             setSelection(null);
           }
           setSetupCompleted((current) => ({ ...current, stage: true }));
