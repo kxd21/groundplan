@@ -134,6 +134,7 @@ import {
   addStage,
   applySeating as applySeatingModel,
   removeSeatingRegion,
+  seatingRegionOf,
   clearStage,
   createRectangularRoom,
   curveRoomWall,
@@ -3066,6 +3067,8 @@ app.whenReady().then(async () => {
   handle('plan:seating-remove', (_event, regionId: string) =>
     applyEdit((s) => removeSeatingRegion(s, regionId)),
   );
+
+  handle('plan:seating-region-of', (_event, ids: number[]) => seatingRegionOf(Array.isArray(ids) ? ids : []), null);
 
   handle(
     'plan:stage-add',

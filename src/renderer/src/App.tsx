@@ -223,6 +223,8 @@ export function App() {
     }
     return found ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
   }, [doc, selectedIds]);
+  /** Which seating layout the selection belongs to, so the panel can adopt it. */
+  const [activeSeatingRegion, setActiveSeatingRegion] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [labelDraft, setLabelDraft] = useState('');
@@ -236,6 +238,22 @@ export function App() {
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(0.05);
   const [view, setView] = useState<Workspace>('plan');
+  useEffect(() => {
+    if (view !== 'plan' || !doc || !selectedIds.length) {
+      setActiveSeatingRegion(null);
+      return;
+    }
+    let live = true;
+    api
+      .seatingRegionOf(selectedIds)
+      .then((r) => {
+        if (live) setActiveSeatingRegion(r);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [selectedIds, view, doc?.revision]);
   const [planRailSource, setPlanRailSource] = useState<PlanRailSource>('recent');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('properties');
   const [inventory, setInventory] = useState<InventoryState | null>(null);
@@ -3286,6 +3304,7 @@ export function App() {
                     setSelection(null);
                   }}
                   selectionBounds={selectionBounds}
+                  activeRegion={activeSeatingRegion}
                 />
               )}
 

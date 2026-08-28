@@ -14,7 +14,7 @@ import { createSeatingPlan, solveSeating } from '../src/format/seating-plan.js';
 import { createBlankPlan } from '../src/format/blank.js';
 import { loadBuffer, walk } from '../src/format/index.js';
 import { serializeArchive, roundTrip, packContainer } from '../src/format/write.js';
-import { applySeating, removeSeatingRegion, resetPlanModel, seatingRegionNames } from '../src/main/plan-model.js';
+import { applySeating, removeSeatingRegion, resetPlanModel, seatingRegionNames, seatingRegionOf } from '../src/main/plan-model.js';
 import type { Session } from '../src/main/session.js';
 import type { SeatingRequestView } from '../src/main/plan-model.js';
 
@@ -79,6 +79,11 @@ const afterVip = countChairs();
 
 check('placing VIP kept the house', afterVip > afterHouse, `${afterHouse} -> ${afterVip}`);
 check('both regions are tracked', seatingRegionNames().sort().join(',') === 'House,VIP', seatingRegionNames().join(','));
+
+// State awareness: an object resolves to the layout it belongs to.
+check('a House object resolves to the House layout', seatingRegionOf([house.created![0]]) === 'House');
+check('a VIP object resolves to the VIP layout', seatingRegionOf([vip.created![0]]) === 'VIP');
+check('an unrelated id resolves to no layout', seatingRegionOf([999999]) === null);
 
 // Re-placing the house replaces only the house; VIP is untouched.
 const houseAgain = applySeating(session, { ...base, regionId: 'House', areaX: 0, areaY: -40 * F, areaWidth: 55 * F, areaHeight: 80 * F }, 'Chair 20" X 20"');

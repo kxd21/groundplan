@@ -822,6 +822,22 @@ export function seatingRegionNames(): string[] {
   return [...state.regions.keys()];
 }
 
+/**
+ * Which seating layout the given objects belong to, if any.
+ *
+ * Lets the tools be aware of what is selected: click a chair in the VIP block
+ * and the panel can adopt the VIP layout's settings, ready to re-tune, rather
+ * than making the user remember which region it was.
+ */
+export function seatingRegionOf(ids: number[]): string | null {
+  if (!ids.length) return null;
+  const wanted = new Set(ids);
+  for (const [key, region] of state.regions) {
+    if (region.ids.some((id) => wanted.has(id))) return key;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Stage
 // ---------------------------------------------------------------------------

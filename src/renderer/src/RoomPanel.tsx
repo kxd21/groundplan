@@ -13,7 +13,7 @@
  * mid-edit and does not parse yet.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
@@ -31,6 +31,8 @@ interface Props {
   onSelect: (ids: number[]) => void;
   /** Bounds of the current canvas selection, for "Zone from selection". */
   selectionBounds: { x: number; y: number; width: number; height: number } | null;
+  /** The seating layout the current selection belongs to, if any. */
+  activeRegion: string | null;
 }
 
 /**
@@ -91,7 +93,7 @@ function LengthField({
   );
 }
 
-export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect, selectionBounds }: Props) {
+export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect, selectionBounds, activeRegion }: Props) {
   const [model, setModel] = useState<PlanModelView | null>(null);
   const [busy, setBusy] = useState(false);
   const units: UnitSystem = model?.units ?? 'imperial';
@@ -281,6 +283,24 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect, sel
     seatingDepth.setText(formatLength(r.depth ?? 0, units));
     setZone(r.area?.x ?? 0, r.area?.y ?? 0, r.area?.width ?? 0, r.area?.height ?? 0);
   };
+
+  // State-aware: selecting a placed layout on the canvas makes the panel adopt
+  // that region and load its settings, ready to re-tune — no need to remember
+  // which layout it was. Adopt once per activation so it never fights live edits.
+  const adoptedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeRegion) {
+      adoptedRef.current = null;
+      return;
+    }
+    if (adoptedRef.current === activeRegion) return;
+    const r = model?.seatingRegions.find((x) => x.id === activeRegion);
+    if (!r) return;
+    adoptedRef.current = activeRegion;
+    setRegion(activeRegion);
+    loadRegion(r);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRegion, model?.seatingRegions]);
 
   // Live count. Solving is pure and cheap, so this runs on every change —
   // seeing the cost of a wider aisle is the point of the panel.
