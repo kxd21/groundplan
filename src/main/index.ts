@@ -133,6 +133,7 @@ import { companionPathFor } from './companion-store.js';
 import {
   addStage,
   applySeating as applySeatingModel,
+  removeSeatingRegion,
   clearStage,
   createRectangularRoom,
   curveRoomWall,
@@ -3060,6 +3061,10 @@ app.whenReady().then(async () => {
 
   handle('plan:seating-apply', (_event, request: SeatingRequestView, chair: string, table?: string) =>
     applyEdit((s) => applySeatingModel(s, request, chair, table)),
+  );
+
+  handle('plan:seating-remove', (_event, regionId: string) =>
+    applyEdit((s) => removeSeatingRegion(s, regionId)),
   );
 
   handle(

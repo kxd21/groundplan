@@ -204,6 +204,25 @@ export function App() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   /** The details panel describes one object; with a group, that is the first. */
   const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
+  /** Bounding box of the current selection, for defining a seating zone from it. */
+  const selectionBounds = useMemo(() => {
+    if (!doc || !selectedIds.length) return null;
+    const wanted = new Set(selectedIds);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, found = false;
+    for (const p of doc.scene.primitives) {
+      if (!wanted.has(p.selectId)) continue;
+      for (let i = 0; i + 1 < p.pts.length; i += 2) {
+        const x = p.pts[i];
+        const y = p.pts[i + 1];
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+        found = true;
+      }
+    }
+    return found ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
+  }, [doc, selectedIds]);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [labelDraft, setLabelDraft] = useState('');
@@ -3266,6 +3285,7 @@ export function App() {
                     setSelectedIds(ids);
                     setSelection(null);
                   }}
+                  selectionBounds={selectionBounds}
                 />
               )}
 

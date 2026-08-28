@@ -62,7 +62,7 @@ import {
 } from '../format/stage.js';
 import { formatArea, formatLength, type UnitSystem } from '../format/units.js';
 import { walk, UNITS_PER_FOOT, type RVDocument } from '../format/rv.js';
-import { addRoot, appendChild, indexDocument } from '../format/edit.js';
+import { addRoot, appendChild, deleteNode, indexDocument } from '../format/edit.js';
 import { placeGear, parseDimensions } from '../format/place.js';
 import { createSegment, createShape } from '../format/synthesize.js';
 import { walkItems, type GearList } from '../gear/model.js';
@@ -101,8 +101,14 @@ interface PlanModelState {
 }
 
 interface SeatingRegion {
-  ids: number[];
+  /** The full request that produced this layout, so it can be re-tuned. */
+  request: SeatingRequestView;
+  chair: string;
+  table?: string;
+  /** The zone it occupies, so other layouts reserve around it. */
   area?: ReservedArea;
+  /** The objects this layout drew, so regenerating replaces exactly them. */
+  ids: number[];
 }
 
 function emptyState(): PlanModelState {
@@ -211,6 +217,23 @@ export interface RoomSummary {
   capacities: Array<{ layout: string; low: number; high: number; squareFeetEach: number }>;
 }
 
+/** A seating layout on the plan, flattened to what the panel needs to re-tune it. */
+export interface SeatingRegionView {
+  id: string;
+  chair: string;
+  table?: string;
+  style: SeatingStyle;
+  seatSpacing?: number;
+  rowSpacing?: number;
+  front?: number;
+  depth?: number;
+  centreAisle?: number;
+  rowsPerBlock?: number;
+  splay?: number;
+  blocksAcross?: number;
+  area?: { x: number; y: number; width: number; height: number };
+}
+
 export interface PlanModelView {
   units: UnitSystem;
   room: RoomSummary | null;
@@ -222,8 +245,8 @@ export interface PlanModelView {
   };
   /** Layout styles the seating panel offers. */
   seatingStyles: Array<{ id: SeatingStyle; label: string; needsTable: boolean }>;
-  /** Named seating layouts already on the plan, so the panel can re-tune them. */
-  seatingRegions: string[];
+  /** Named seating layouts already on the plan, with the parameters to re-tune them. */
+  seatingRegions: SeatingRegionView[];
   /** Placed items, summarised — what the allocation and legend are built from. */
   itemCount: number;
   stage: { present: boolean; buildList: Array<{ item: string; quantity: number; detail?: string }>; warnings: string[] } | null;
@@ -318,7 +341,21 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
       derived: state.derived,
       path: companionPathFor(session.path),
     },
-    seatingRegions: [...state.regions.keys()],
+    seatingRegions: [...state.regions.entries()].map(([id, r]) => ({
+      id,
+      chair: r.chair,
+      table: r.table,
+      style: r.request.style,
+      seatSpacing: r.request.seatSpacing,
+      rowSpacing: r.request.rowSpacing,
+      front: r.request.front,
+      depth: r.request.depth,
+      centreAisle: r.request.centreAisle,
+      rowsPerBlock: r.request.rowsPerBlock,
+      splay: r.request.splay,
+      blocksAcross: r.request.blocksAcross,
+      area: r.area,
+    })),
     seatingStyles: (Object.keys(STYLE_DEFAULTS) as SeatingStyle[]).map((id) => ({
       id,
       label: STYLE_LABELS[id],
@@ -721,6 +758,10 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
 /**
  * Draws a seating layout into a named region, replacing only that region's
  * previous run and leaving every other layout on the plan untouched.
+ *
+ * Each region tracks the exact objects it drew, so re-tuning ("widen the
+ * aisles", "8 → 10 blocks") clears precisely its own chairs and redraws — never
+ * a template, a hand-placed item, or another region.
  */
 export function applySeating(
   session: Session,
@@ -747,7 +788,7 @@ export function applySeating(
   const drawn = renderSeating(doc, indexDocument(doc), solution, { chair, table }, previous);
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
 
-  state.regions.set(key, { ids: drawn.created, area: requestArea(request) });
+  state.regions.set(key, { request, chair, table, area: requestArea(request), ids: drawn.created });
   const notes = [...solution.notes];
   notes.unshift(
     drawn.removed
@@ -755,6 +796,25 @@ export function applySeating(
       : `Placed the “${key}” layout.`,
   );
   return { ok: true, created: drawn.created, note: notes.join(' ') || undefined };
+}
+
+/** Removes a whole seating layout — the objects it drew and its record. */
+export function removeSeatingRegion(session: Session, regionId: string): ModelEdit {
+  const doc = session.loaded.document;
+  const key = (regionId ?? '').trim();
+  const region = state.regions.get(key);
+  if (!region) return { ok: false, reason: `there is no seating layout named “${key}”` };
+
+  const wanted = new Set(region.ids);
+  const index = indexDocument(doc);
+  const nodes = [...walk(doc)].filter((n) => wanted.has(n.id));
+  let removed = 0;
+  // Sibling chairs share a parent, so one index covers the whole delete loop.
+  for (const node of nodes) {
+    if (deleteNode(doc, index, node).ok) removed++;
+  }
+  state.regions.delete(key);
+  return { ok: true, note: `Removed the “${key}” layout (${removed} item${removed === 1 ? '' : 's'}).` };
 }
 
 /** Names of the seating layouts currently on the plan. */

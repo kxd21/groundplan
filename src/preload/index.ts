@@ -256,6 +256,8 @@ const api = {
     table?: string,
   ): Promise<EditReply & { note?: string }> =>
     ipcRenderer.invoke('plan:seating-apply', request, chair, table),
+  seatingRemove: (regionId: string): Promise<EditReply & { note?: string }> =>
+    ipcRenderer.invoke('plan:seating-remove', regionId),
 
   stageAdd: (
     x: number,

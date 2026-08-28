@@ -19,7 +19,7 @@ import type { PlanModelView, SeatingPreview } from '../../main/plan-model.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import type { Doc } from './App.js';
 import { selectableIds } from './selection.js';
-import { IconPlus, IconRuler, IconWarning } from './icons.js';
+import { IconPlus, IconRuler, IconTrash, IconWarning } from './icons.js';
 
 const api = window.groundplan;
 
@@ -29,6 +29,8 @@ interface Props {
   onStatus: (message: string) => void;
   onError: (message: string) => void;
   onSelect: (ids: number[]) => void;
+  /** Bounds of the current canvas selection, for "Zone from selection". */
+  selectionBounds: { x: number; y: number; width: number; height: number } | null;
 }
 
 /**
@@ -89,7 +91,7 @@ function LengthField({
   );
 }
 
-export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: Props) {
+export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect, selectionBounds }: Props) {
   const [model, setModel] = useState<PlanModelView | null>(null);
   const [busy, setBusy] = useState(false);
   const units: UnitSystem = model?.units ?? 'imperial';
@@ -253,6 +255,32 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
     }),
     [style, focus.x, focus.y, seatSpacing.value, rowSpacing.value, frontClearance.value, seatingDepth.value, centreAisle.value, rowsPerBlock, stagger, splay, blocksAcross, region, zoneX.value, zoneY.value, zoneWidth.value, zoneWidth.positive, zoneDepth.value, zoneDepth.positive],
   );
+
+  const trimmedRegion = region.trim() || 'Main';
+  const existingRegion = model?.seatingRegions.find((r) => r.id === trimmedRegion) ?? null;
+
+  const setZone = (x: number, y: number, w: number, h: number) => {
+    zoneX.setText(formatLength(x, units));
+    zoneY.setText(formatLength(y, units));
+    zoneWidth.setText(formatLength(w, units));
+    zoneDepth.setText(formatLength(h, units));
+  };
+
+  /** Loads a saved layout's settings back into the panel so it can be re-tuned. */
+  const loadRegion = (r: NonNullable<typeof existingRegion>) => {
+    setStyle(r.style);
+    setChair(r.chair);
+    setTable(r.table ?? '');
+    setBlocksAcross(r.blocksAcross ?? 1);
+    setRowsPerBlock(r.rowsPerBlock ?? 0);
+    setSplay(r.splay ?? 0);
+    if (r.seatSpacing != null) seatSpacing.setText(formatLength(r.seatSpacing, units));
+    if (r.rowSpacing != null) rowSpacing.setText(formatLength(r.rowSpacing, units));
+    if (r.front != null) frontClearance.setText(formatLength(r.front, units));
+    if (r.centreAisle != null) centreAisle.setText(formatLength(r.centreAisle, units));
+    seatingDepth.setText(formatLength(r.depth ?? 0, units));
+    setZone(r.area?.x ?? 0, r.area?.y ?? 0, r.area?.width ?? 0, r.area?.height ?? 0);
+  };
 
   // Live count. Solving is pure and cheap, so this runs on every change —
   // seeing the cost of a wider aisle is the point of the panel.
@@ -568,11 +596,33 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
             onChange={(e) => setRegion(e.target.value)}
           />
           <datalist id="seat-region-list">
-            {model.seatingRegions.map((name) => (
-              <option key={name} value={name} />
+            {model.seatingRegions.map((r) => (
+              <option key={r.id} value={r.id} />
             ))}
           </datalist>
         </div>
+
+        {existingRegion && (
+          <div className="actions-row">
+            <button
+              type="button"
+              onClick={() => loadRegion(existingRegion)}
+              disabled={!editable}
+              title="Load this layout's settings so you can re-tune it"
+            >
+              Load settings
+            </button>
+            <button
+              type="button"
+              onClick={() => void run(`Removed “${trimmedRegion}”`, () => api.seatingRemove(trimmedRegion))}
+              disabled={!editable}
+              title="Delete this whole layout from the plan"
+            >
+              <IconTrash size={14} />
+              Remove
+            </button>
+          </div>
+        )}
 
         <div className="field">
           <label htmlFor="seat-style">Layout</label>
@@ -592,6 +642,26 @@ export default function RoomPanel({ doc, onDoc, onStatus, onError, onSelect }: P
         <div className="field-row">
           <LengthField id="zone-w" label="Zone width (0 = room)" field={zoneWidth} disabled={!editable} />
           <LengthField id="zone-d" label="Zone depth (0 = room)" field={zoneDepth} disabled={!editable} />
+        </div>
+        <div className="actions-row">
+          <button
+            type="button"
+            onClick={() =>
+              selectionBounds && setZone(selectionBounds.x, selectionBounds.y, selectionBounds.width, selectionBounds.height)
+            }
+            disabled={!editable || !selectionBounds}
+            title={selectionBounds ? 'Set the zone to the current selection' : 'Select objects on the plan first'}
+          >
+            Zone from selection
+          </button>
+          <button
+            type="button"
+            onClick={() => setZone(0, 0, 0, 0)}
+            disabled={!editable}
+            title="Clear the zone and fill the whole room"
+          >
+            Zone = room
+          </button>
         </div>
 
         <div className="field-row">

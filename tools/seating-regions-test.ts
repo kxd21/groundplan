@@ -14,7 +14,7 @@ import { createSeatingPlan, solveSeating } from '../src/format/seating-plan.js';
 import { createBlankPlan } from '../src/format/blank.js';
 import { loadBuffer, walk } from '../src/format/index.js';
 import { serializeArchive, roundTrip, packContainer } from '../src/format/write.js';
-import { applySeating, resetPlanModel, seatingRegionNames } from '../src/main/plan-model.js';
+import { applySeating, removeSeatingRegion, resetPlanModel, seatingRegionNames } from '../src/main/plan-model.js';
 import type { Session } from '../src/main/session.js';
 import type { SeatingRequestView } from '../src/main/plan-model.js';
 
@@ -85,6 +85,13 @@ const houseAgain = applySeating(session, { ...base, regionId: 'House', areaX: 0,
 check('the house re-places', houseAgain.ok, houseAgain.reason);
 const afterReplace = countChairs();
 check('re-placing one region leaves the total stable (no duplication)', Math.abs(afterReplace - afterVip) <= 2, `${afterVip} -> ${afterReplace}`);
+
+// Removing a region deletes only its own objects.
+const rem = removeSeatingRegion(session, 'VIP');
+check('the VIP layout is removed', rem.ok, rem.reason);
+const afterRemove = countChairs();
+check('removing VIP kept the house', afterRemove > 0 && afterRemove < afterReplace, `${afterReplace} -> ${afterRemove}`);
+check('VIP is no longer tracked', !seatingRegionNames().includes('VIP'), seatingRegionNames().join(','));
 
 // The plan is still a valid Room Viewer file.
 const saved = packContainer(original, serializeArchive(doc));
