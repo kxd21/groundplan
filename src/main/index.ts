@@ -5668,16 +5668,155 @@ app.whenReady().then(async () => {
 
   handle('plan:av-summary', () => (session ? avSummary(session, unitSystem()) : null), null);
 
-  /** Solves without drawing, so the panel can show the count as it is tuned. */
+  function inventoryItemByName(name: string | undefined): InventoryItem | undefined {
+  if (!name?.trim()) return undefined;
+  return inventory.items.find((item) => normaliseName(item.name) === normaliseName(name));
+}
+
+/** Attach real inventory footprints so preview/place math matches what will be drawn. */
+function enrichSeatingRequestView(request: SeatingRequestView): SeatingRequestView {
+  const chairItem = inventoryItemByName(request.chairName);
+  const tableItem = inventoryItemByName(request.tableName);
+  const next: SeatingRequestView = { ...request };
+  if (chairItem?.width && chairItem.width > 0) next.chairWidth = chairItem.width;
+  if (chairItem?.height && chairItem.height > 0) next.chairDepth = chairItem.height;
+  if (tableItem?.width && tableItem.width > 0) next.tableWidth = tableItem.width;
+  if (tableItem?.height && tableItem.height > 0) next.tableDepth = tableItem.height;
+  if (
+    !next.tableDiameter &&
+    tableItem &&
+    (tableItem.category === 'table-round' || /\bround\b/i.test(tableItem.name)) &&
+    tableItem.width &&
+    tableItem.height
+  ) {
+    next.tableDiameter = Math.max(tableItem.width, tableItem.height);
+  }
+  return next;
+}
+
+async function loadInventorySymbolDoc(symbolPath: string | undefined) {
+  if (!symbolPath || !existsSync(symbolPath)) return undefined;
+  try {
+    let source = symbolCache.get(symbolPath);
+    if (!source) {
+      source = loadBuffer(await readFile(symbolPath), symbolPath).document;
+      symbolCache.set(symbolPath, source);
+    }
+    return source;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parks a real inventory silhouette off-plan so seating clones copy the symbol
+ * rather than synthesizing a labelled box.
+ */
+function seedSeatingTemplate(
+  doc: import('../format/rv.js').RVDocument,
+  live: ReturnType<typeof indexDocument>,
+  name: string,
+  item: InventoryItem | undefined,
+  source: Awaited<ReturnType<typeof loadInventorySymbolDoc>>,
+  symbolName?: string,
+): { live: ReturnType<typeof indexDocument>; seedId?: number } {
+  if (findMatchingShape(doc, name)) return { live };
+  const PARK = 500_000;
+  const known = item?.width && item?.height ? { width: item.width, height: item.height } : undefined;
+  const lookFor = item?.symbolName ?? symbolName ?? name;
+  let placed: { ok: boolean; reason?: string; created?: number[]; method?: string } | undefined;
+
+  if (source) {
+    if (isLibrary(source)) {
+      placed = placeFromLibrary(doc, source, lookFor, PARK, PARK);
+    }
+    if (!placed?.ok) {
+      placed = importSymbol(doc, live, source, lookFor, PARK, PARK);
+    }
+  }
+  if (!placed?.ok && item?.tracedIcon?.paths?.length) {
+    placed = placeTracedIcon(doc, live, item.name, PARK, PARK, item.tracedIcon);
+  }
+  if (!placed?.ok) {
+    placed = placeGear(doc, live, name, PARK, PARK, known);
+  }
+  if (!placed.ok || !placed.created?.length) return { live };
+
+  let next = indexDocument(doc);
+  const seedId = placed.created[0]!;
+  const seedNode = next.byId.get(seedId);
+  if (seedNode) renameNode(doc, seedNode, name);
+  next = indexDocument(doc);
+  return { live: next, seedId };
+}
+
+/** Solves without drawing, so the panel can show the count as it is tuned. */
   handle(
     'plan:seating-preview',
-    (_event, request: SeatingRequestView) => (session ? previewSeating(session, request) : null),
+    (_event, request: SeatingRequestView) =>
+      session ? previewSeating(session, enrichSeatingRequestView(request)) : null,
     null,
   );
 
-  handle('plan:seating-apply', (_event, request: SeatingRequestView, chair: string, table?: string) =>
-    applyEdit((s) => applySeatingModel(s, request, chair, table)),
-  );
+  handle('plan:seating-apply', async (_event, request: SeatingRequestView, chair: string, table?: string) => {
+    const enriched = enrichSeatingRequestView({
+      ...request,
+      chairName: chair || request.chairName,
+      tableName: table || request.tableName,
+    });
+    const chairItem = inventoryItemByName(chair);
+    const tableItem = table ? inventoryItemByName(table) : undefined;
+    const chairChoice = chairItem?.symbolPath ? null : chooseSymbol(inventory, chair);
+    const tableChoice =
+      table && !tableItem?.symbolPath ? chooseSymbol(inventory, table) : null;
+    const chairSource = await loadInventorySymbolDoc(
+      chairItem?.symbolPath ?? chairChoice?.symbolPath,
+    );
+    const tableSource = table
+      ? await loadInventorySymbolDoc(tableItem?.symbolPath ?? tableChoice?.symbolPath)
+      : undefined;
+
+    return applyEdit((s) => {
+      const seeds: number[] = [];
+      let live = s.index;
+      const chairSeed = seedSeatingTemplate(
+        s.loaded.document,
+        live,
+        chair,
+        chairItem,
+        chairSource,
+        chairChoice?.symbolName,
+      );
+      live = chairSeed.live;
+      if (chairSeed.seedId != null) seeds.push(chairSeed.seedId);
+      if (table) {
+        const tableSeed = seedSeatingTemplate(
+          s.loaded.document,
+          live,
+          table,
+          tableItem,
+          tableSource,
+          tableChoice?.symbolName,
+        );
+        live = tableSeed.live;
+        if (tableSeed.seedId != null) seeds.push(tableSeed.seedId);
+      }
+
+      // applySeatingModel reads session.index; refresh after seeds land.
+      s.index = live;
+      const result = applySeatingModel(s, enriched, chair, table);
+
+      live = indexDocument(s.loaded.document);
+      for (const id of seeds) {
+        const node = live.byId.get(id);
+        if (!node) continue;
+        deleteNode(s.loaded.document, live, node);
+        live = indexDocument(s.loaded.document);
+      }
+      s.index = live;
+      return result;
+    });
+  });
 
   handle('plan:list-layout-kits', () => listLayoutKits(app.getPath('userData')));
 

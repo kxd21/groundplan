@@ -1416,6 +1416,11 @@ export interface SeatingRequestView {
   /** Selected catalogue assets, so preview math uses their real footprints. */
   chairName?: string;
   tableName?: string;
+  /** Inventory footprints in logical units — beat name parsing and defaults. */
+  chairWidth?: number;
+  chairDepth?: number;
+  tableWidth?: number;
+  tableDepth?: number;
   seatSpacing?: number;
   rowSpacing?: number;
   front?: number;
@@ -1515,10 +1520,15 @@ function planFrom(session: Session, request: SeatingRequestView): SeatingPlan {
   const plan = createSeatingPlan(request.style, { x: request.focusX, y: request.focusY });
   const chairFootprint = furnitureFootprint(session, request.chairName, 'chair');
   const tableFootprint = furnitureFootprint(session, request.tableName, 'table');
-  plan.chairWidth = chairFootprint.width;
-  plan.chairDepth = chairFootprint.depth;
-  plan.tableWidth = tableFootprint.width;
-  plan.tableDepth = tableFootprint.depth;
+  // Inventory sizes from the renderer/main enricher win over plan/name guesses.
+  plan.chairWidth =
+    request.chairWidth && request.chairWidth > 0 ? request.chairWidth : chairFootprint.width;
+  plan.chairDepth =
+    request.chairDepth && request.chairDepth > 0 ? request.chairDepth : chairFootprint.depth;
+  plan.tableWidth =
+    request.tableWidth && request.tableWidth > 0 ? request.tableWidth : tableFootprint.width;
+  plan.tableDepth =
+    request.tableDepth && request.tableDepth > 0 ? request.tableDepth : tableFootprint.depth;
   if (request.seatSpacing && request.seatSpacing > 0) plan.seatSpacing = request.seatSpacing;
   if (request.rowSpacing && request.rowSpacing > 0) plan.rowSpacing = request.rowSpacing;
   if (request.front != null) plan.clearances.front = Math.max(0, request.front);
@@ -1533,7 +1543,7 @@ function planFrom(session: Session, request: SeatingRequestView): SeatingPlan {
   if (request.stagger != null) plan.stagger = request.stagger;
   if (request.tableDiameter && request.tableDiameter > 0) plan.tableDiameter = request.tableDiameter;
   else if (request.tableName && /\bround\b/i.test(request.tableName)) {
-    plan.tableDiameter = Math.max(tableFootprint.width, tableFootprint.depth);
+    plan.tableDiameter = Math.max(plan.tableWidth ?? 0, plan.tableDepth ?? 0);
   }
   if (request.seatsPerTable && request.seatsPerTable > 0) plan.seatsPerTable = request.seatsPerTable;
   if (request.maxSeats && request.maxSeats > 0) plan.maxSeats = request.maxSeats;

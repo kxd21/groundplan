@@ -2064,6 +2064,262 @@
       "addedAt": "2026-07-29T16:31:28.030Z"
     },
     {
+      "id": "li_harvest_77277df5f7",
+      "name": "Door - Double (Out)",
+      "category": "door",
+      "width": 721.0000000016762,
+      "height": 398.9,
+      "sizeSource": "symbol",
+      "symbolPath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+      "symbolName": "Door - Double (Out)",
+      "symbolAsset": {
+        "relativePath": "inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+        "hash": "5e44eafd4da0a4c21cc9f8edb7a3c7196ddaff55871c6d6cfee74bf5283c6a0a",
+        "sourcePath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4"
+      },
+      "tracedIcon": {
+        "paths": [
+          {
+            "points": [
+              0.5,
+              -164.6,
+              1.5,
+              43.4,
+              157.5,
+              197.4,
+              360.5,
+              195.4
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              360.5,
+              -164.6,
+              360.5,
+              197.4
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              -360.2,
+              199.2,
+              -152.2,
+              198.2,
+              1.8,
+              42.2,
+              -0.2,
+              -160.8
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              -360.5,
+              -162.6,
+              -360.5,
+              199.4
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              348.8,
+              -199.4,
+              -351.2,
+              -199.4,
+              -351.2,
+              -139.4,
+              348.8,
+              -139.4
+            ],
+            "closed": true
+          }
+        ],
+        "width": 721,
+        "height": 398.9
+      },
+      "mappedBy": "user",
+      "mapReason": "harvested from card-party-symbols-5e44eafd4da0a4c2.rv4 (plan outline)",
+      "timesSeen": 1,
+      "legacyTimesSeen": 1,
+      "provenanceIds": [],
+      "peakQuantity": 1,
+      "notes": "Symbol harvested from card-party-symbols-5e44eafd4da0a4c2.rv4.",
+      "addedAt": "2026-08-31T15:50:08.150Z"
+    },
+    {
+      "id": "li_harvest_f8aa951fef",
+      "name": "Door - Single (In) Left Swing",
+      "category": "door",
+      "width": 360,
+      "height": 380,
+      "sizeSource": "symbol",
+      "symbolPath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+      "symbolName": "Door - Single (In) Left Swing",
+      "symbolAsset": {
+        "relativePath": "inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+        "hash": "5e44eafd4da0a4c21cc9f8edb7a3c7196ddaff55871c6d6cfee74bf5283c6a0a",
+        "sourcePath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4"
+      },
+      "tracedIcon": {
+        "paths": [
+          {
+            "points": [
+              -180,
+              -190,
+              180,
+              -190,
+              180,
+              190,
+              -180,
+              190
+            ],
+            "closed": true
+          }
+        ],
+        "width": 360,
+        "height": 380
+      },
+      "mappedBy": "user",
+      "mapReason": "harvested from card-party-symbols-5e44eafd4da0a4c2.rv4 (synthetic box (empty geometry in plan))",
+      "timesSeen": 1,
+      "legacyTimesSeen": 1,
+      "provenanceIds": [],
+      "peakQuantity": 1,
+      "notes": "Symbol harvested from card-party-symbols-5e44eafd4da0a4c2.rv4.",
+      "addedAt": "2026-08-31T15:50:08.150Z"
+    },
+    {
+      "id": "li_harvest_2d70d49510",
+      "name": "Door - Single (In) Right Swing",
+      "category": "door",
+      "width": 360.0000000002929,
+      "height": 391.0000000003182,
+      "sizeSource": "symbol",
+      "symbolPath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+      "symbolName": "Door - Single (In) Right Swing",
+      "symbolAsset": {
+        "relativePath": "inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+        "hash": "5e44eafd4da0a4c21cc9f8edb7a3c7196ddaff55871c6d6cfee74bf5283c6a0a",
+        "sourcePath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4"
+      },
+      "tracedIcon": {
+        "paths": [
+          {
+            "points": [
+              180,
+              -166.5,
+              180,
+              195.5
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              -180,
+              -166.5,
+              -179,
+              41.5,
+              -23,
+              195.5,
+              180,
+              193.5
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              -171,
+              -135.5,
+              171,
+              -135.5,
+              171,
+              -195.5,
+              -171,
+              -195.5
+            ],
+            "closed": true
+          }
+        ],
+        "width": 360,
+        "height": 391
+      },
+      "mappedBy": "user",
+      "mapReason": "harvested from card-party-symbols-5e44eafd4da0a4c2.rv4 (plan outline)",
+      "timesSeen": 1,
+      "legacyTimesSeen": 1,
+      "provenanceIds": [],
+      "peakQuantity": 1,
+      "notes": "Symbol harvested from card-party-symbols-5e44eafd4da0a4c2.rv4.",
+      "addedAt": "2026-08-31T15:50:08.150Z"
+    },
+    {
+      "id": "li_harvest_446c0cb0cd",
+      "name": "Door - Single (Out) Right Swing",
+      "category": "door",
+      "width": 386.9,
+      "height": 360.0000000035081,
+      "sizeSource": "symbol",
+      "symbolPath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+      "symbolName": "Door - Single (Out) Right Swing",
+      "symbolAsset": {
+        "relativePath": "inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4",
+        "hash": "5e44eafd4da0a4c21cc9f8edb7a3c7196ddaff55871c6d6cfee74bf5283c6a0a",
+        "sourcePath": "/Users/princedavidthompson/Groundplan/resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4"
+      },
+      "tracedIcon": {
+        "paths": [
+          {
+            "points": [
+              168.6,
+              180,
+              -193.4,
+              180
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              168.6,
+              -180,
+              -39.4,
+              -179,
+              -193.4,
+              -23,
+              -191.4,
+              180
+            ],
+            "closed": false
+          },
+          {
+            "points": [
+              193.4,
+              171.5,
+              193.4,
+              -170.5,
+              133.4,
+              -170.5,
+              133.4,
+              171.5
+            ],
+            "closed": true
+          }
+        ],
+        "width": 386.9,
+        "height": 360
+      },
+      "mappedBy": "user",
+      "mapReason": "harvested from card-party-symbols-5e44eafd4da0a4c2.rv4 (plan outline)",
+      "timesSeen": 1,
+      "legacyTimesSeen": 1,
+      "provenanceIds": [],
+      "peakQuantity": 1,
+      "notes": "Symbol harvested from card-party-symbols-5e44eafd4da0a4c2.rv4.",
+      "addedAt": "2026-08-31T15:50:08.150Z"
+    },
+    {
       "id": "li_seed_18ia55t",
       "name": "Family 6'x30\"",
       "department": "Furniture",

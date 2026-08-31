@@ -21,4 +21,7 @@ const estimate = estimateLayoutCapacity(plan, room, {
 
 assert.ok(estimate.maxTables > 0, 'banquet room should fit some tables');
 assert.ok(estimate.maxSeats > 0, 'banquet room should fit some seats');
+assert.ok(estimate.summary, 'capacity summary should always explain how many tables fit');
+assert.match(estimate.summary!, /table/i);
 console.log('seating-capacity-test ok', estimate.maxTables, 'tables', estimate.maxSeats, 'seats');
+console.log(' ', estimate.summary);

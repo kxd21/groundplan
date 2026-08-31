@@ -33,13 +33,15 @@ export function estimateLayoutCapacity(
   const maxSeats = maxSolution.seats.length;
 
   let summary: string | null = null;
-  if (current.dropped > 0 || (plan.maxSeats && plan.maxSeats > 0 && current.seats >= (plan.maxSeats ?? 0))) {
-    summary = `Maximum estimated capacity: ${maxTables} table${maxTables === 1 ? '' : 's'} / ${maxSeats.toLocaleString()} seat${maxSeats === 1 ? '' : 's'}.`;
+  if (maxTables > 0 || maxSeats > 0) {
+    summary = `This room fits about ${maxTables} table${maxTables === 1 ? '' : 's'} / ${maxSeats.toLocaleString()} seat${maxSeats === 1 ? '' : 's'} at these clearances.`;
     if (current.dropped > 0) {
       summary += ` ${current.dropped} position${current.dropped === 1 ? '' : 's'} could not fit with current spacing.`;
+    } else if (current.tables > 0 && current.tables < maxTables) {
+      summary += ` Current settings use ${current.tables} table${current.tables === 1 ? '' : 's'} (${current.seats.toLocaleString()} seats).`;
+    } else if (plan.maxSeats && plan.maxSeats > 0 && current.seats >= plan.maxSeats) {
+      summary += ` Stopped at the ${plan.maxSeats.toLocaleString()}-seat cap.`;
     }
-  } else if (maxTables > 0 && current.tables > 0 && current.tables < maxTables * 0.85 && current.dropped === 0) {
-    summary = `Room could hold up to ~${maxTables} table${maxTables === 1 ? '' : 's'} (${maxSeats.toLocaleString()} seats) at these clearances.`;
   }
 
   return {

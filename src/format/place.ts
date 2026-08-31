@@ -24,7 +24,7 @@
 import type { Point, RVDocument, RVNode } from './rv.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from './rv.js';
 import { addRoot, appendChild, duplicateNode, moveNode, type DocumentIndex, type EditResult } from './edit.js';
-import { boxOutline, circleOutline, createShape, quarterCircleOutline } from './synthesize.js';
+import { boxOutline, circleOutline, createShape, doorOutline, doorSwingFromName, quarterCircleOutline } from './synthesize.js';
 import { libraryOutline, readLibrary } from './library.js';
 import { planBody } from './plan-skeleton.js';
 
@@ -396,6 +396,9 @@ function outlineForDescription(description: string, width: number, height: numbe
   if (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description)) {
     return quarterCircleOutline(width, height);
   }
+  if (/\bdoors?\b|\bopening\b/i.test(description) && !/\bbarn\s*doors?\b/i.test(description)) {
+    return doorOutline(width, height, doorSwingFromName(description));
+  }
   return boxOutline(width, height);
 }
 
@@ -403,7 +406,8 @@ function outlineForDescription(description: string, width: number, height: numbe
 function needsSpecialOutline(description: string): boolean {
   return (
     isRoundFootprint(description) ||
-    (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description))
+    (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description)) ||
+    (/\bdoors?\b|\bopening\b/i.test(description) && !/\bbarn\s*doors?\b/i.test(description))
   );
 }
 

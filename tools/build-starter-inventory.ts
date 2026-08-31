@@ -10,7 +10,8 @@
  *   npx tsx tools/build-starter-inventory.ts --out resources/starter-inventory
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { Catalog, CatalogProduct } from '../src/catalog/model.js';
@@ -57,6 +58,7 @@ const DEPARTMENT_FOR: Record<string, string> = {
   chair: 'Furniture',
   desk: 'Furniture',
   person: 'Crew',
+  door: 'Venue',
   'not-drawn': 'Unfiled',
 };
 
@@ -158,3 +160,27 @@ writeFileSync(
 );
 
 console.log(`wrote ${inventory.items.length} items to ${outDir} (skipped ${skipped}, icons ${withIcon})`);
+
+// Venue doors live in the harvested symbol pack, not the equipment catalog.
+// Re-attach them after every rebuild so Create → Door / Place gear keep real
+// swing marks instead of falling back to boxes.
+const assetDir = join(outDir, 'inventory-assets');
+if (existsSync(assetDir)) {
+  const pack = readdirSync(assetDir).find((name) => /card-party-symbols-.*\.rv4$/i.test(name));
+  if (pack) {
+    execFileSync(
+      'npx',
+      [
+        'tsx',
+        'tools/harvest-plan-symbols.ts',
+        '--plan',
+        join(assetDir, pack),
+        '--inventory',
+        join(outDir, INVENTORY_FILENAME),
+        '--only',
+        'Door',
+      ],
+      { stdio: 'inherit' },
+    );
+  }
+}

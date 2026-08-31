@@ -2264,6 +2264,14 @@ export default function RoomPanel({
                 <dt>Rows</dt>
                 <dd>{preview?.rows ?? '—'}</dd>
               </div>
+              <div title="How many tables this room can hold at the current clearances and furniture size">
+                <dt>Tables that fit</dt>
+                <dd>{preview?.capacity?.maxTables ?? '—'}</dd>
+              </div>
+              <div title="How many seats this room can hold at the current clearances and furniture size">
+                <dt>Seats that fit</dt>
+                <dd>{preview?.capacity?.maxSeats?.toLocaleString() ?? '—'}</dd>
+              </div>
             </dl>
           </>
         )}

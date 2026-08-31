@@ -949,6 +949,88 @@ export function quarterCircleOutline(width: number, height: number, segments = 2
   return [points];
 }
 
+/** Cubic Bézier kappa for a quarter circle. */
+const QUARTER_CIRCLE_K = (4 / 3) * (Math.SQRT2 - 1);
+
+export type DoorSwing = {
+  /** One leaf or a pair meeting in the middle. */
+  leaves: 1 | 2;
+  /** Into the room (+) or away from it (−), relative to the jamb edge. */
+  out: boolean;
+  /** Hinge on the left (−X) or right (+X) for a single leaf. */
+  hand: 'L' | 'R';
+};
+
+/**
+ * Architectural door plan mark: wall jamb, leaf line(s), and swing arc(s).
+ *
+ * Matches the Room Viewer stock doors (jamb on the wall edge, 90° swing into
+ * or out of the room). Used when a plan has no harvested door symbol to clone.
+ */
+export function doorOutline(
+  width: number,
+  depth: number,
+  swing: DoorSwing = { leaves: 1, out: true, hand: 'R' },
+): OutlineRun[] {
+  const w = Math.max(width, 1);
+  const d = Math.max(depth, 1);
+  const hw = w / 2;
+  const hh = d / 2;
+  // ~6″ jamb thickness, clamped so a tiny door still draws.
+  const jamb = Math.min(Math.max(w * 0.08, 40), Math.min(w, d) * 0.25);
+  const wallY = hh;
+  const roomDir = swing.out ? -1 : 1;
+  // jamb thickness used below; openY was only for the old tip placement.
+  const runs: OutlineRun[] = [
+    {
+      rect: [
+        { x: -hw + jamb * 0.15, y: wallY },
+        { x: hw - jamb * 0.15, y: wallY },
+        { x: hw - jamb * 0.15, y: wallY - roomDir * jamb },
+        { x: -hw + jamb * 0.15, y: wallY - roomDir * jamb },
+      ],
+    },
+  ];
+
+  const leaf = (hingeX: number, tipX: number) => {
+    const closedY = wallY - roomDir * jamb;
+    const openTipY = wallY - roomDir * jamb - roomDir * Math.abs(tipX - hingeX);
+    runs.push([
+      { x: hingeX, y: closedY },
+      { x: hingeX, y: openTipY },
+    ]);
+    const r = Math.abs(tipX - hingeX);
+    const alongWall = tipX >= hingeX ? 1 : -1;
+    const p0 = { x: hingeX + alongWall * r, y: closedY };
+    const p3 = { x: hingeX, y: openTipY };
+    const p1 = { x: p0.x, y: p0.y - roomDir * QUARTER_CIRCLE_K * r };
+    const p2 = { x: p3.x + alongWall * QUARTER_CIRCLE_K * r, y: p3.y };
+    runs.push({ curve: [p0, p1, p2, p3] });
+  };
+
+  if (swing.leaves === 2) {
+    leaf(-hw + jamb * 0.2, 0);
+    leaf(hw - jamb * 0.2, 0);
+  } else if (swing.hand === 'L') {
+    leaf(-hw + jamb * 0.2, hw - jamb * 0.2);
+  } else {
+    leaf(hw - jamb * 0.2, -hw + jamb * 0.2);
+  }
+
+  return runs;
+}
+
+/** Reads swing style from stock names like `Door - Single (In) Left Swing`. */
+export function doorSwingFromName(description: string): DoorSwing {
+  const text = description.toLowerCase();
+  const leaves: 1 | 2 = /\bdouble\b/.test(text) ? 2 : 1;
+  const explicitIn = /\(\s*in\s*\)/.test(text);
+  const explicitOut = /\(\s*out\s*\)/.test(text);
+  const out = explicitOut ? true : explicitIn ? false : true;
+  const hand: 'L' | 'R' = /\bleft\b/.test(text) ? 'L' : 'R';
+  return { leaves, out, hand };
+}
+
 /** True when a node was built here rather than read from a file. */
 export function isSynthesized(node: RVNode): boolean {
   return node.headerOverride != null && node.trailerOverride != null && node.span.tagAt === 0;

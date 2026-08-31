@@ -53,6 +53,7 @@ const PREFERENCES: Record<Category, string[]> = {
   chair: ['Standard 18"x18"', 'Chair'],
   desk: ['Bar', '6\' x 30"', 'Table'],
   person: ['Technician'],
+  door: ['Door - Double', 'Door - Single', 'Door', 'Opening'],
   'not-drawn': [],
 };
 

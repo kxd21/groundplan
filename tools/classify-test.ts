@@ -139,6 +139,9 @@ expect('Whiteboard 3x5', 'desk');
 expect('Flipchart', 'desk');
 expect('Booth 10\' x 10\'', 'table-rect');
 expect('Plasma - 42"', 'flat-panel');
+expect('Door - Double (Out)', 'door');
+expect('Door - Single (In) Left Swing', 'door');
+expect('Source Four barn door', 'not-drawn');
 
 // …without swallowing things that are not furniture.
 expect('Box Truss', 'truss');

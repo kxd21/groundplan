@@ -43,6 +43,7 @@ export type Category =
   | 'chair'
   | 'desk'
   | 'person'
+  | 'door'
   | 'not-drawn';
 
 /**
@@ -161,6 +162,8 @@ const MODELS: Array<[RegExp, Category, string]> = [
   [/\b(stairs?|steps?|tread)\b/i, 'stairs', 'stairs'],
   [/\b(genie|eventer|stage lift|personnel lift|scissor lift|lift\b)\b/i, 'lift', 'lift'],
   [/\bladder\b/i, 'ladder', 'ladder'],
+  // Venue openings — not barn doors (those are optics, caught above as not-drawn).
+  [/\bdoors?\b|\bopening\b/i, 'door', 'door / opening'],
 
   // Drape.
   [/\b(velour|drape|drapery|masking|backdrop)\b/i, 'drape', 'drape'],
@@ -272,6 +275,7 @@ export const CATEGORY_LAYER: Record<Category, CategoryLayer> = {
   stairs: 'walls',
   lift: 'walls',
   ladder: 'walls',
+  door: 'walls',
 
   projector: 'furniture',
   screen: 'furniture',
@@ -325,6 +329,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   chair: 'Chairs',
   desk: 'Desks & counters',
   person: 'Crew positions',
+  door: 'Doors & openings',
   'not-drawn': 'Not drawn',
 };
 
