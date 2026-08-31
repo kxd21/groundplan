@@ -100,15 +100,34 @@ export const SCHEDULE_FIELDS = ['purpose', 'channel', 'circuit', 'weight', 'powe
  * Renders the schedule as CSV.
  *
  * One row per placed item, positions in feet, so it opens straight into the
- * spreadsheet the shop already works from.
+ * spreadsheet the shop already works from. Optional AFF elevations (same keys
+ * as DXF INSERT Z) become an AFF (ft) column for hang / flown work.
  */
-export function scheduleToCsv(schedule: Schedule): string {
+export function scheduleToCsv(
+  schedule: Schedule,
+  elevations?: Map<string, number> | Record<string, number>,
+): string {
   const escape = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-  const header = ['Item', 'X (ft)', 'Y (ft)', 'Width (ft)', 'Height (ft)', 'Rotation', ...SCHEDULE_FIELDS];
+  const elevOf = (key: string): number | undefined => {
+    if (!elevations) return undefined;
+    if (elevations instanceof Map) return elevations.get(key);
+    return elevations[key];
+  };
+  const header = [
+    'Item',
+    'X (ft)',
+    'Y (ft)',
+    'Width (ft)',
+    'Height (ft)',
+    'Rotation',
+    'AFF (ft)',
+    ...SCHEDULE_FIELDS,
+  ];
   const rows = [header.join(',')];
 
   for (const group of schedule.groups) {
     for (const entry of group.entries) {
+      const aff = elevOf(entry.key);
       rows.push(
         [
           escape(entry.name),
@@ -117,6 +136,7 @@ export function scheduleToCsv(schedule: Schedule): string {
           (entry.width / UNITS_PER_FOOT).toFixed(2),
           (entry.height / UNITS_PER_FOOT).toFixed(2),
           `${entry.rotation}`,
+          aff != null && Number.isFinite(aff) ? (aff / UNITS_PER_FOOT).toFixed(2) : '',
           ...SCHEDULE_FIELDS.map((f) => escape(entry.data?.[f] ?? '')),
         ].join(','),
       );

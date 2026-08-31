@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { traceImage, type TraceResult } from '../../catalog/trace.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
+import { splitView } from '../../inventory/classify.js';
 import { SnappySlider } from './SnappySlider.js';
 
 const api = window.groundplan;
@@ -15,6 +16,7 @@ export interface EditableInventoryItem {
   name: string;
   department?: string;
   category?: string;
+  view?: string;
   width?: number;
   height?: number;
   sizeSource: 'parsed' | 'user' | 'unknown' | 'symbol';
@@ -34,11 +36,21 @@ export interface EditableInventoryItem {
 
 interface Props {
   item: EditableInventoryItem;
+  /** All catalog rows — used to show Plan / FV / SV sibling chips. */
+  catalogNames?: string[];
   units: UnitSystem;
   onClose: () => void;
   onSaved: () => void;
   onError: (message: string) => void;
   onStatus: (message: string) => void;
+  /** Open Shape Editor to author a missing Front/Side silhouette. */
+  onDrawElevation?: (request: {
+    baseName: string;
+    view: 'front' | 'side';
+    category?: string;
+    planWidth?: number;
+    planDepth?: number;
+  }) => void;
 }
 
 function sizeHint(system: UnitSystem): string {
@@ -101,11 +113,13 @@ function pathsToSvg(
 
 export default function InventoryItemEditor({
   item,
+  catalogNames = [],
   units,
   onClose,
   onSaved,
   onError,
   onStatus,
+  onDrawElevation,
 }: Props) {
   const [name, setName] = useState(item.name);
   const [wDraft, setWDraft] = useState(
@@ -155,6 +169,16 @@ export default function InventoryItemEditor({
   }, [clearTrace, tracedIcon, trace, item.tracedIcon]);
 
   const svgPreview = previewIcon ? pathsToSvg(previewIcon) : null;
+
+  const multiView = useMemo(() => {
+    const { baseName } = splitView(item.name);
+    const names = catalogNames.length ? catalogNames : [item.name];
+    const byBase = names.filter((n) => splitView(n).baseName.toLowerCase() === baseName.toLowerCase());
+    const hasPlan = byBase.some((n) => splitView(n).view === 'plan');
+    const hasFront = byBase.some((n) => splitView(n).view === 'front' || splitView(n).view === 'front-side');
+    const hasSide = byBase.some((n) => splitView(n).view === 'side' || splitView(n).view === 'front-side');
+    return { baseName, hasPlan, hasFront, hasSide };
+  }, [catalogNames, item.name]);
 
   const loadPhoto = useCallback(
     async (file: File) => {
@@ -409,6 +433,61 @@ export default function InventoryItemEditor({
               onChange={(e) => setNotes(e.target.value)}
               placeholder="Optional"
             />
+          </div>
+
+          <div className="item-editor-multiview">
+            <div className="section-title">
+              <span>Views</span>
+            </div>
+            <p className="hint">
+              Linked by name: Plan, <code>{multiView.baseName} (FV)</code>,{' '}
+              <code>{multiView.baseName} (SV)</code>. Place shows Plan on Top and elevations in Front/Side.
+            </p>
+            <div className="text-action-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <span className={`view-chip${multiView.hasPlan ? ' is-on' : ''}`}>Plan</span>
+              <span className={`view-chip${multiView.hasFront ? ' is-on' : ''}`}>Front (FV)</span>
+              <span className={`view-chip${multiView.hasSide ? ' is-on' : ''}`}>Side (SV)</span>
+            </div>
+            {onDrawElevation && (
+              <div className="actions-row" style={{ marginTop: 8 }}>
+                {!multiView.hasFront && (
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    onClick={() => {
+                      onDrawElevation({
+                        baseName: multiView.baseName,
+                        view: 'front',
+                        category: item.category,
+                        planWidth: item.width,
+                        planDepth: item.height,
+                      });
+                      onClose();
+                    }}
+                  >
+                    Draw Front (FV)…
+                  </button>
+                )}
+                {!multiView.hasSide && (
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    onClick={() => {
+                      onDrawElevation({
+                        baseName: multiView.baseName,
+                        view: 'side',
+                        category: item.category,
+                        planWidth: item.width,
+                        planDepth: item.height,
+                      });
+                      onClose();
+                    }}
+                  >
+                    Draw Side (SV)…
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="item-editor-icon-block">

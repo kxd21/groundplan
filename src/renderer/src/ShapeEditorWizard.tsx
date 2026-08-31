@@ -23,12 +23,31 @@ import {
   type RoomModel,
 } from '../../format/room.js';
 import type { Point } from '../../format/rv.js';
+import { UNITS_PER_INCH } from '../../format/rv.js';
 import { formatArea, formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { constrainRoomCorner, type CustomRoomAngleLock } from './custom-room.js';
 import { IconDrawEllipse, IconDrawPolygon, IconDrawRect, IconPlus } from './icons.js';
 import { TraceDialog } from './TraceDialog.js';
 
 const api = window.groundplan;
+
+/** Prefill when opening the wizard from Inventory to author an elevation. */
+export type ShapeWizardSeed = {
+  baseName: string;
+  category?: Category;
+  elevationView: 'front' | 'side';
+  /** Plan footprint — suggests silhouette width (front) or depth (side). */
+  planWidth?: number;
+  planDepth?: number;
+};
+
+function elevationSuffix(view: 'front' | 'side'): '(FV)' | '(SV)' {
+  return view === 'front' ? '(FV)' : '(SV)';
+}
+
+function rectStubPaths(width: number, height: number): Array<{ points: number[]; closed: boolean }> {
+  return [{ points: [0, 0, width, 0, width, height, 0, height], closed: true }];
+}
 
 const TABLE_CATEGORIES: Category[] = ['table-round', 'table-rect', 'desk'];
 const SEATING_STYLES = [
@@ -60,6 +79,8 @@ interface RefImage {
 interface Props {
   open: boolean;
   units: UnitSystem;
+  /** When set, author a Front/Side elevation silhouette for an existing plan item. */
+  seed?: ShapeWizardSeed | null;
   onClose: () => void;
   onCreated: (id: string, name: string) => void;
   onError: (message: string) => void;
@@ -493,7 +514,15 @@ function allWallsAxisAligned(room: RoomModel): boolean {
   return isAxisAligned([...room.walls, ...room.holes.flat()]);
 }
 
-export default function ShapeEditorWizard({ open, units, onClose, onCreated, onError, onStatus }: Props) {
+export default function ShapeEditorWizard({
+  open,
+  units,
+  seed = null,
+  onClose,
+  onCreated,
+  onError,
+  onStatus,
+}: Props) {
   const [step, setStep] = useState(0);
   const [category, setCategory] = useState<Category>('table-round');
   const [name, setName] = useState('');
@@ -521,6 +550,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
   const [patchDText, setPatchDText] = useState(() => defaultPatch(units));
   const [traceOpen, setTraceOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [createElevationViews, setCreateElevationViews] = useState(false);
   const [deptDraft, setDeptDraft] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const outlineTouchedRef = useRef(false);
@@ -645,15 +675,37 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
   useEffect(() => {
     if (!open) return;
     setStep(0);
-    setCategory('table-round');
-    setName('');
+    const elev = seed?.elevationView;
+    const elevName = elev
+      ? `${seed!.baseName.trim()} ${elevationSuffix(elev)}`
+      : '';
+    setCategory(seed?.category ?? 'table-round');
+    setName(elev ? elevName : '');
     setSpanishName('');
     setTableKind('round');
-    setAllowChairs(true);
+    setAllowChairs(!elev);
     setDefaultChairs(8);
     setStyles(['banquet']);
-    setWidthText(defaultWidth(units));
-    setDepthText(defaultWidth(units));
+    if (elev) {
+      const across =
+        elev === 'front'
+          ? seed?.planWidth && seed.planWidth > 0
+            ? seed.planWidth
+            : 48 * UNITS_PER_INCH
+          : seed?.planDepth && seed.planDepth > 0
+            ? seed.planDepth
+            : seed?.planWidth && seed.planWidth > 0
+              ? seed.planWidth
+              : 24 * UNITS_PER_INCH;
+      const tall = 48 * UNITS_PER_INCH;
+      setWidthText(formatLength(across, units));
+      setDepthText(formatLength(tall, units));
+      setCreateElevationViews(false);
+    } else {
+      setWidthText(defaultWidth(units));
+      setDepthText(defaultWidth(units));
+      setCreateElevationViews(false);
+    }
     setNotchWText(defaultNotch(units));
     setNotchDText(defaultNotch(units));
     setOutlineBase('rectangle');
@@ -673,7 +725,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
     setBusy(false);
     setDeptDraft('');
     outlineTouchedRef.current = false;
-  }, [open, units]);
+  }, [open, units, seed]);
 
   useEffect(() => {
     if (!open || step !== 2) return;
@@ -836,12 +888,38 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
         return;
       }
       if (reply.id && refImage) await finishPatch(reply.id, true);
+
+      const elevationNames: string[] = [];
+      if (createElevationViews && !seed?.elevationView) {
+        const elevH = 48 * UNITS_PER_INCH;
+        for (const [suffix, across] of [
+          ['(FV)', traced.width] as const,
+          ['(SV)', traced.height] as const,
+        ]) {
+          const elevName = `${name.trim()} ${suffix}`;
+          const elev = await api.inventoryAddTraced({
+            name: elevName,
+            width: across,
+            height: elevH,
+            paths: rectStubPaths(across, elevH),
+            category,
+            notes: `Elevation stub · ${suffix === '(FV)' ? 'front' : 'side'} of ${name.trim()} — redraw in Shape Editor for a real silhouette`,
+            department: deptDraft.trim() || undefined,
+          });
+          if (elev.ok) elevationNames.push(elevName);
+        }
+      }
+
       onStatus(
         traced.droppedHoles > 0
           ? `Created “${labeled}” · interior cuts are not drawn on inventory icons yet`
-          : allowChairs && defaultChairs > 0
-            ? `Created “${labeled}” · default ${defaultChairs} chairs`
-            : `Created “${labeled}”`,
+          : elevationNames.length
+            ? `Created “${labeled}” + ${elevationNames.join(' · ')}`
+            : seed?.elevationView
+              ? `Created elevation “${labeled}”`
+              : allowChairs && defaultChairs > 0
+                ? `Created “${labeled}” · default ${defaultChairs} chairs`
+                : `Created “${labeled}”`,
       );
       if (reply.id) onCreated(reply.id, labeled);
       onClose();
@@ -876,7 +954,11 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
           onClick={(e) => e.stopPropagation()}
         >
           <div className="sheet-title">
-            <h2>Shape Editor · Step {step + 1} of 3</h2>
+            <h2>
+              {seed?.elevationView
+                ? `Elevation · ${seed.elevationView === 'front' ? 'Front (FV)' : 'Side (SV)'}`
+                : `Shape Editor · Step ${step + 1} of 3`}
+            </h2>
             <button type="button" className="btn-outline" onClick={onClose}>
               Close
             </button>
@@ -884,9 +966,21 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
           <div className="sheet-body">
             {step === 0 && (
               <>
+                {seed?.elevationView ? (
+                  <p className="hint">
+                    Drawing the {seed.elevationView === 'front' ? 'front' : 'side'} silhouette for{' '}
+                    <strong>{seed.baseName}</strong>. Width is across the face; height is above
+                    floor. Place filters this into Front/Side view.
+                  </p>
+                ) : null}
                 <div className="field">
                   <label htmlFor="shape-cat">Category</label>
-                  <select id="shape-cat" value={category} onChange={(e) => setCategory(e.target.value as Category)}>
+                  <select
+                    id="shape-cat"
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value as Category)}
+                    disabled={!!seed?.elevationView}
+                  >
                     {categories.map((c) => (
                       <option key={c} value={c}>
                         {CATEGORY_LABELS[c]}
@@ -902,12 +996,28 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Required"
                     required
+                    readOnly={!!seed?.elevationView}
                   />
                 </div>
-                <div className="field">
-                  <label htmlFor="shape-es">Spanish name (optional)</label>
-                  <input id="shape-es" value={spanishName} onChange={(e) => setSpanishName(e.target.value)} />
-                </div>
+                {!seed?.elevationView && (
+                  <>
+                    <div className="field">
+                      <label htmlFor="shape-es">Spanish name (optional)</label>
+                      <input id="shape-es" value={spanishName} onChange={(e) => setSpanishName(e.target.value)} />
+                    </div>
+                    <label className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={createElevationViews}
+                        onChange={(e) => setCreateElevationViews(e.target.checked)}
+                      />
+                      <span>
+                        Also create Front (FV) and Side (SV) stub rectangles — redraw each later for a
+                        real elevation silhouette
+                      </span>
+                    </label>
+                  </>
+                )}
                 <div className="field">
                   <label htmlFor="shape-dept">Inventory department</label>
                   <input
@@ -1046,16 +1156,18 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
                   <div className="field-row">
                     <div className="field">
                       <label htmlFor="shape-w">
-                        {buildMode === 'manual'
-                          ? 'Real width'
-                          : outlineBase === 'circle'
-                            ? 'Diameter / width'
-                            : 'Width'}
+                        {seed?.elevationView
+                          ? 'Across face'
+                          : buildMode === 'manual'
+                            ? 'Real width'
+                            : outlineBase === 'circle'
+                              ? 'Diameter / width'
+                              : 'Width'}
                       </label>
                       <input id="shape-w" value={widthText} onChange={(e) => setWidthText(e.target.value)} />
                     </div>
                     <div className="field">
-                      <label htmlFor="shape-d">Real depth</label>
+                      <label htmlFor="shape-d">{seed?.elevationView ? 'Height (AFF to top)' : 'Real depth'}</label>
                       <input id="shape-d" value={depthText} onChange={(e) => setDepthText(e.target.value)} />
                     </div>
                   </div>
@@ -1319,7 +1431,12 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
             )}
 
             <div className="actions-row" style={{ marginTop: 12 }}>
-              <button type="button" className="btn-outline" disabled={step === 0} onClick={() => setStep((s) => s - 1)}>
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={step === 0}
+                onClick={() => setStep((s) => (s === 2 && seed?.elevationView ? 0 : s - 1))}
+              >
                 Back
               </button>
               {step < 2 && (
@@ -1327,7 +1444,7 @@ export default function ShapeEditorWizard({ open, units, onClose, onCreated, onE
                   type="button"
                   className="btn-solid"
                   disabled={step === 0 && !name.trim()}
-                  onClick={() => setStep((s) => s + 1)}
+                  onClick={() => setStep((s) => (s === 0 && seed?.elevationView ? 2 : s + 1))}
                 >
                   Next
                 </button>

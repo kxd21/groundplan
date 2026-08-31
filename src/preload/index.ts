@@ -24,6 +24,18 @@ import type { AllocationSummary as AllocationSummaryView } from '../format/alloc
 import type { PlanBackground } from '../format/companion.js';
 import type { NewRoomSpec } from '../format/new-room.js';
 
+export interface OverlapHit {
+  id: number;
+  name: string;
+  area: number;
+  fraction: number;
+}
+
+export interface PlaceMoveOverlapOptions {
+  allowOverlap?: boolean;
+  nudge?: boolean;
+}
+
 export interface EditReply {
   ok: boolean;
   reason?: string;
@@ -31,6 +43,10 @@ export interface EditReply {
   /** IDs created by duplicate/place/annotation operations. */
   created?: number[];
   doc?: OpenResult;
+  /** Set when place/move is blocked by footprint overlap (or echoed after allow). */
+  overlaps?: OverlapHit[];
+  /** Beside nudge target (insertion / centre), when one clears the blockers. */
+  suggested?: { x: number; y: number };
 }
 
 export interface LabelStylePatch {
@@ -259,11 +275,19 @@ const api = {
   },
   platform: process.platform,
 
-  move: (nodeId: number, dx: number, dy: number): Promise<EditReply> =>
-    ipcRenderer.invoke('edit:move', nodeId, dx, dy),
+  move: (
+    nodeId: number,
+    dx: number,
+    dy: number,
+    options?: PlaceMoveOverlapOptions,
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:move', nodeId, dx, dy, options),
   /** Absolute placement. A null axis leaves that coordinate where it is. */
-  moveTo: (nodeId: number, x: number | null, y: number | null): Promise<EditReply> =>
-    ipcRenderer.invoke('edit:move-to', nodeId, x, y),
+  moveTo: (
+    nodeId: number,
+    x: number | null,
+    y: number | null,
+    options?: PlaceMoveOverlapOptions,
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:move-to', nodeId, x, y, options),
   remove: (nodeId: number): Promise<EditReply> => ipcRenderer.invoke('edit:delete', nodeId),
   duplicate: (nodeId: number, dx: number, dy: number): Promise<EditReply> =>
     ipcRenderer.invoke('edit:duplicate', nodeId, dx, dy),
@@ -289,7 +313,8 @@ const api = {
     ids: number[],
     a?: number,
     b?: number,
-  ): Promise<EditReply> => ipcRenderer.invoke('edit:batch', kind, ids, a, b),
+    options?: PlaceMoveOverlapOptions,
+  ): Promise<EditReply> => ipcRenderer.invoke('edit:batch', kind, ids, a, b, options),
   repeatAcross: (
     nodeId: number,
     count: number,
@@ -325,6 +350,8 @@ const api = {
   pastePlanObjects: (): Promise<EditReply> => ipcRenderer.invoke('edit:clipboard-paste'),
   groupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:group', ids),
   ungroupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:ungroup', ids),
+  attachStairs: (stageId: number, stairsId: number): Promise<EditReply> =>
+    ipcRenderer.invoke('edit:attach-stairs', stageId, stairsId),
   attachStack: (parentId: number, childId: number): Promise<EditReply> =>
     ipcRenderer.invoke('edit:attach-stack', parentId, childId),
   detachStack: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:detach-stack', ids),
@@ -346,8 +373,13 @@ const api = {
   ): Promise<EditReply> => ipcRenderer.invoke('edit:point-kind', ownerId, pathNodeId, kind),
   save: (saveAs: boolean): Promise<SaveReply> => ipcRenderer.invoke('file:save', saveAs),
 
-  placeGear: (description: string, x: number, y: number): Promise<EditReply & { method?: string }> =>
-    ipcRenderer.invoke('plan:place-gear', description, x, y),
+  placeGear: (
+    description: string,
+    x: number,
+    y: number,
+    options?: PlaceMoveOverlapOptions,
+  ): Promise<EditReply & { method?: string }> =>
+    ipcRenderer.invoke('plan:place-gear', description, x, y, options),
   rotate: (nodeId: number, degrees: number): Promise<EditReply> =>
     ipcRenderer.invoke('plan:rotate', nodeId, degrees),
   resize: (nodeId: number, width: number, height: number): Promise<EditReply> =>
@@ -378,8 +410,30 @@ const api = {
   ): Promise<EditReply> => ipcRenderer.invoke('edit:dimension-props', nodeId, length, angleDegrees),
   scaleToDimension: (nodeId: number, knownLength: number): Promise<EditReply> =>
     ipcRenderer.invoke('edit:scale-to-dimension', nodeId, knownLength),
-  addSeating: (request: unknown): Promise<EditReply & { placed?: number }> =>
+  addSeating: (request: unknown): Promise<EditReply & { placed?: number; tableIds?: number[] }> =>
     ipcRenderer.invoke('plan:add-seating', request),
+  setTableSeats: (request: {
+    tableIds: number[];
+    seats: number;
+    chair?: string;
+    standoff?: number;
+  }): Promise<EditReply & { seats?: number; chairIds?: number[] }> =>
+    ipcRenderer.invoke('plan:set-table-seats', request),
+  autoNumberTables: (request: {
+    tableIds: number[];
+    start?: number;
+    order?: 'left-right' | 'top-bottom' | 'right-left' | 'bottom-top';
+    prefix?: string;
+    suffix?: string;
+    padWidth?: number;
+  }): Promise<EditReply & { numbered?: number; labelIds?: number[] }> =>
+    ipcRenderer.invoke('plan:auto-number-tables', request),
+  spaceTables: (request: {
+    tableIds: number[];
+    spacingX: number;
+    spacingY: number;
+    order?: 'left-right' | 'top-bottom' | 'right-left' | 'bottom-top';
+  }): Promise<EditReply> => ipcRenderer.invoke('plan:space-tables', request),
   previewGear: (description: string): Promise<{ width: number; height: number; source: string }> =>
     ipcRenderer.invoke('plan:preview-gear', description),
 
@@ -576,6 +630,7 @@ const api = {
       /** A stock deck label, e.g. "4' x 8'". */
       deckSize?: string;
       skirted?: boolean;
+      replace?: boolean;
     },
   ): Promise<
     EditReply & {
@@ -584,7 +639,8 @@ const api = {
       warnings?: string[];
     }
   > => ipcRenderer.invoke('plan:stage-add', x, y, width, depth, height, back, stairs, more),
-  stageClear: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('plan:stage-clear'),
+  stageClear: (): Promise<{ ok: boolean; text?: string; doc?: unknown }> =>
+    ipcRenderer.invoke('plan:stage-clear'),
 
   /** Draws a line, rectangle or ellipse between two plan points. */
   draw: (
@@ -727,6 +783,13 @@ const api = {
   ): Promise<{ ok: boolean; cancelled?: boolean; reason?: string; path?: string }> =>
     ipcRenderer.invoke('plan:report-export', options),
 
+  hangPlotExport: (): Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    reason?: string;
+    path?: string;
+  }> => ipcRenderer.invoke('plan:hang-plot-export'),
+
   inventoryList: (
     query: string,
     department: string | null,
@@ -867,8 +930,12 @@ const api = {
     return () => ipcRenderer.removeListener('inventory:harvest-progress', handler);
   },
 
-  inventoryPlace: (id: string, x: number, y: number): Promise<EditReply> =>
-    ipcRenderer.invoke('inventory:place', id, x, y),
+  inventoryPlace: (
+    id: string,
+    x: number,
+    y: number,
+    options?: PlaceMoveOverlapOptions,
+  ): Promise<EditReply> => ipcRenderer.invoke('inventory:place', id, x, y, options),
 
   gearImport: (): Promise<GearState | null> => ipcRenderer.invoke('gear:import'),
   gearOpen: (): Promise<GearState | null> => ipcRenderer.invoke('gear:open'),

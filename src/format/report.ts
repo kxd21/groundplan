@@ -17,6 +17,7 @@ import { allocationCsv, summariseAllocation } from './allocation.js';
 import type { SightlineSummary } from './av.js';
 import type { PlacedItem } from './definition.js';
 import { seatCount } from './definition.js';
+import { hangPlotItems, hangPlotTableRows } from './hang-plot.js';
 import type { LegendEntry, LoadSummary, TitleBlock } from './layers.js';
 import type { cableSchedule } from './cable.js';
 import { allCapacities, describeRoom, roomArea, roomPerimeter, type RoomModel } from './room.js';
@@ -160,6 +161,22 @@ export function buildReport(input: ReportInput): string {
       lines.push('**Watch:**', '');
       for (const note of notes) lines.push(`- ${note}`);
       lines.push('');
+    }
+  }
+
+  if (input.items?.length) {
+    const hang = hangPlotItems(input.items);
+    if (hang.length) {
+      lines.push('## Hang / flown', '');
+      lines.push(
+        'Underside above finished floor (AFF). Edit AFF on a selection in Inspect → Properties. DXF INSERT Z uses the same values.',
+        '',
+      );
+      lines.push(
+        ...table(['Item', 'X', 'Y', 'AFF', 'Top'], hangPlotTableRows(input.items, units)),
+        '',
+      );
+      lines.push(`${hang.length} flown item${hang.length === 1 ? '' : 's'}.`, '');
     }
   }
 

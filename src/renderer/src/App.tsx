@@ -938,6 +938,9 @@ export function App() {
   const [tableChairGapDraft, setTableChairGapDraft] = useState("1' 1\"");
   const [tableSpacingDraft, setTableSpacingDraft] = useState("10'");
   const [tableNumberStartDraft, setTableNumberStartDraft] = useState('1');
+  const [tableNumberPrefixDraft, setTableNumberPrefixDraft] = useState('');
+  const [tableNumberSuffixDraft, setTableNumberSuffixDraft] = useState('');
+  const [tableNumberPadDraft, setTableNumberPadDraft] = useState('2');
   const [tableNumberOrder, setTableNumberOrder] = useState<
     'left-right' | 'top-bottom' | 'right-left' | 'bottom-top'
   >('left-right');
@@ -3292,10 +3295,14 @@ export function App() {
   const applyTableAutoNumber = useCallback(async () => {
     if (!doc?.editable || !selectedTableIds.length) return;
     const start = Math.max(1, Math.round(Number(tableNumberStartDraft) || 1));
+    const padWidth = Math.max(0, Math.min(6, Math.round(Number(tableNumberPadDraft) || 0)));
     const reply = (await api.autoNumberTables({
       tableIds: selectedTableIds,
       start,
       order: tableNumberOrder,
+      prefix: tableNumberPrefixDraft.trim() || undefined,
+      suffix: tableNumberSuffixDraft.trim() || undefined,
+      padWidth: padWidth > 0 ? padWidth : undefined,
     })) as { ok: boolean; reason?: string; doc?: Doc; text?: string; created?: number[] };
     applied(reply);
     if (reply.ok) {
@@ -3310,6 +3317,9 @@ export function App() {
     showStatus,
     tableNumberOrder,
     tableNumberStartDraft,
+    tableNumberPrefixDraft,
+    tableNumberSuffixDraft,
+    tableNumberPadDraft,
   ]);
 
   const applyTableSpacing = useCallback(async () => {
@@ -9856,6 +9866,42 @@ export function App() {
                         />
                       </div>
                       <div className="field">
+                        <label htmlFor="table-num-prefix">Prefix</label>
+                        <input
+                          id="table-num-prefix"
+                          className="num"
+                          value={tableNumberPrefixDraft}
+                          disabled={!doc.editable}
+                          placeholder="VIP-"
+                          onChange={(e) => setTableNumberPrefixDraft(e.target.value)}
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="table-num-suffix">Suffix</label>
+                        <input
+                          id="table-num-suffix"
+                          className="num"
+                          value={tableNumberSuffixDraft}
+                          disabled={!doc.editable}
+                          onChange={(e) => setTableNumberSuffixDraft(e.target.value)}
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="table-num-pad" title="Zero-pad width (2 → 01, 02)">
+                          Digits
+                        </label>
+                        <input
+                          id="table-num-pad"
+                          className="num"
+                          type="number"
+                          min={0}
+                          max={6}
+                          value={tableNumberPadDraft}
+                          disabled={!doc.editable}
+                          onChange={(e) => setTableNumberPadDraft(e.target.value)}
+                        />
+                      </div>
+                      <div className="field">
                         <label htmlFor="table-num-order">Order</label>
                         <select
                           id="table-num-order"
@@ -9889,8 +9935,8 @@ export function App() {
                       </div>
                     </div>
                     <p className="hint">
-                      Numbers are editable labels on the plan. Redistribute replaces chairs around
-                      each table.
+                      Numbers are editable labels on the plan (e.g. VIP-01). Redistribute replaces
+                      chairs around each table.
                     </p>
                   </div>
                 )}

@@ -108,6 +108,18 @@ import { convertSegmentKind, type EditableSegmentKind } from '../format/path-edi
 import { arrangeMoves, type ArrangeBounds, type ArrangeMode } from '../format/arrange.js';
 import { addSeating, type SeatingRequest } from '../format/seating.js';
 import {
+  applyTableMoves,
+  autoNumberTables,
+  filterTableIds,
+  isChairNode,
+  isTableNode,
+  nearbyChairIds,
+  redistributeChairsAroundTable,
+  stampTableGrid,
+  tableGridDeltas,
+  type TableNumberOrder,
+} from '../format/table-ops.js';
+import {
   annotationCapabilities,
   createLabel,
   createDimension,
@@ -117,7 +129,7 @@ import {
 } from '../format/annotate.js';
 import { type UnitSystem } from '../format/units.js';
 import { INSERT_TREE, isInsertLeaf, type InsertBranch, type InsertLeaf } from '../inventory/insert-catalog.js';
-import { walk, type RVDocument, type RVNode } from '../format/rv.js';
+import { UNITS_PER_FOOT, walk, type RVDocument, type RVNode } from '../format/rv.js';
 import { importDetachedObject, listSymbols, importSymbol } from '../format/symbol.js';
 import { snapshotPlanSelection } from '../format/plan-clipboard.js';
 import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions, findMatchingShape } from '../format/place.js';
@@ -126,6 +138,14 @@ import { arrayGrid } from '../format/array-grid.js';
 import { deriveRoom } from '../format/room.js';
 import { isLibrary } from '../format/library.js';
 import { verifyWritable } from '../format/write.js';
+import {
+  decideOverlap,
+  excludeStackOnPairs,
+  overlapCandidatesFromDocument,
+  translateBox,
+  worldAabb,
+  type PlaceMoveOverlapOptions,
+} from './overlap-check.js';
 import { Session } from './session.js';
 import { canonicalPath, pathIdentity, samePath } from './paths.js';
 import { printPlanToPdf, SCALES, type PrintRequest } from './print.js';
@@ -221,6 +241,7 @@ import {
   applySeating as applySeatingModel,
   avSummary,
   clearStage,
+  clearManagedSeating,
   companionSnapshot,
   createCircularRoom,
   createPolygonalRoom,
@@ -238,6 +259,7 @@ import {
   openPlanModel,
   placeScreenProjectorPair,
   placementElevations,
+  placedItems,
   planAllocation,
   addLedWall,
   comparePlanWith,
@@ -247,6 +269,7 @@ import {
   planCableSchedule,
   planLegend,
   planLoad,
+  stageNodeIds,
   planModelView,
   resolvePlanRoom,
   planReport,
@@ -811,6 +834,8 @@ let planSidecarPending = false;
 /** Stage↔stairs and grouped items so move/delete/duplicate keep them together. */
 const objectLinks = new Map<number, number[]>();
 const objectLinkKinds = new Map<string, ObjectLinkKind>();
+/** Last auto-number labels so re-running replace numbers instead of stacking. */
+let lastTableNumberLabelIds: number[] = [];
 
 function snapshotObjectLinks(): ObjectLinkFile {
   return objectLinksFromMap(objectLinks, objectLinkKinds);
@@ -861,9 +886,129 @@ function expandLinkedIds(ids: number[]): number[] {
   return [...out];
 }
 
+type EditRunResult = {
+  ok: boolean;
+  reason?: string;
+  text?: string;
+  created?: number[];
+  placed?: number;
+  method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
+  overlaps?: Array<{ id: number; name: string; area: number; fraction: number }>;
+  suggested?: { x: number; y: number };
+  numbered?: number;
+  seats?: number;
+  tableIds?: number[];
+  labelIds?: number[];
+  chairIds?: number[];
+};
+
+function findDocNode(doc: RVDocument, id: number): RVNode | null {
+  for (const node of walk(doc)) {
+    if (node.id === id) return node;
+  }
+  return null;
+}
+
+/**
+ * After a successful place inside applyEdit: block, nudge, or allow overlap.
+ * Returning ok:false rolls the place back via applyEdit.
+ */
+function settlePlacedOverlap(
+  doc: RVDocument,
+  result: EditRunResult,
+  placeAt: { x: number; y: number },
+  options?: PlaceMoveOverlapOptions,
+): EditRunResult {
+  if (!result.ok || !result.created?.length) return result;
+  const created = result.created;
+  const exclude = new Set<number>(created);
+  for (const id of created) {
+    for (const partner of expandLinkedIds([id])) exclude.add(partner);
+  }
+  let others = overlapCandidatesFromDocument(doc, { excludeIds: exclude });
+  others = excludeStackOnPairs(created, others, objectLinkKinds);
+
+  for (const id of created) {
+    const node = findDocNode(doc, id);
+    if (!node) continue;
+    const subject = worldAabb(node);
+    if (!subject) continue;
+    const subjectName = shapeCatalogueName(node);
+    const decision = decideOverlap(subject, others, placeAt, { ...options, subjectName });
+    if (!decision.ok) {
+      return {
+        ok: false,
+        reason: decision.reason,
+        overlaps: decision.overlaps,
+        suggested: decision.suggested,
+      };
+    }
+    if (decision.nudge) {
+      for (const cid of created) {
+        const placed = findDocNode(doc, cid);
+        if (placed) moveNode(doc, placed, decision.nudge.dx, decision.nudge.dy);
+      }
+      return {
+        ...result,
+        text: result.text ?? `Nudged ${decision.nudge.direction} to clear overlap`,
+      };
+    }
+  }
+  return result;
+}
+
+/** Shared move/move-to overlap gate; mutates dx/dy when nudging. */
+function resolveMoveDelta(
+  doc: RVDocument,
+  nodeId: number,
+  dx: number,
+  dy: number,
+  options?: PlaceMoveOverlapOptions,
+): EditRunResult & { dx: number; dy: number } {
+  const node = findDocNode(doc, nodeId) ?? null;
+  if (!node) return { ok: false, reason: 'object no longer exists', dx, dy };
+  if (dx === 0 && dy === 0) return { ok: true, dx, dy };
+
+  const movers = new Set(expandLinkedIds([nodeId]));
+  const primary = worldAabb(node);
+  if (!primary) return { ok: true, dx, dy };
+
+  const subject = translateBox(primary, dx, dy);
+  let others = overlapCandidatesFromDocument(doc, { excludeIds: movers });
+  others = excludeStackOnPairs([nodeId], others, objectLinkKinds);
+  const centre = {
+    x: (primary.minX + primary.maxX) / 2 + dx,
+    y: (primary.minY + primary.maxY) / 2 + dy,
+  };
+  const decision = decideOverlap(subject, others, centre, {
+    ...options,
+    subjectName: shapeCatalogueName(node),
+  });
+  if (!decision.ok) {
+    return {
+      ok: false,
+      reason: decision.reason,
+      overlaps: decision.overlaps,
+      suggested: decision.suggested,
+      dx,
+      dy,
+    };
+  }
+  if (decision.nudge) {
+    return {
+      ok: true,
+      dx: dx + decision.nudge.dx,
+      dy: dy + decision.nudge.dy,
+      text: `Nudged ${decision.nudge.direction} to clear overlap`,
+    };
+  }
+  return { ok: true, dx, dy };
+}
+
 function clearObjectLinks(): void {
   objectLinks.clear();
   objectLinkKinds.clear();
+  lastTableNumberLabelIds = [];
 }
 
 function pruneObjectLinks(removed: Iterable<number>): void {
@@ -878,6 +1023,14 @@ function pruneObjectLinks(removed: Iterable<number>): void {
     }
   }
   scheduleObjectLinkPersist();
+}
+
+function shapeCatalogueName(node: RVNode): string {
+  return (
+    node.labels.find(
+      (l) => !/^(Arial|Times|Courier|Helvetica|Tahoma|Verdana|Symbol)/i.test(l),
+    ) ?? node.cls
+  );
 }
 
 let objectLinkWrite: Promise<void> = Promise.resolve();
@@ -1400,6 +1553,7 @@ const RESULT_CHANNELS = new Set([
   'edit:clipboard-status',
   'edit:group',
   'edit:ungroup',
+  'edit:attach-stairs',
   'edit:attach-stack',
   'edit:detach-stack',
   'edit:point-kind',
@@ -1428,6 +1582,9 @@ const RESULT_CHANNELS = new Set([
   'plan:rotate',
   'plan:resize',
   'plan:add-seating',
+  'plan:set-table-seats',
+  'plan:auto-number-tables',
+  'plan:space-tables',
   'plan:apply-layout-recipe',
   'plan:save-layout-kit',
   'plan:save-open-as-kit',
@@ -1474,6 +1631,7 @@ const RESULT_CHANNELS = new Set([
   'plan:seating-apply',
   'plan:stage-add',
   'plan:report-export',
+  'plan:hang-plot-export',
   'plan:pull-sheet-export',
   'plan:draw',
   'plan:add-cable-path',
@@ -1516,14 +1674,7 @@ function handle(
 }
 
 function applyEdit(
-  run: (s: Session) => {
-    ok: boolean;
-    reason?: string;
-    text?: string;
-    created?: number[];
-    placed?: number;
-    method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
-  },
+  run: (s: Session) => EditRunResult,
   options?: {
     /**
      * Skip the full serialize/parse round-trip check for known-safe transforms
@@ -1532,15 +1683,7 @@ function applyEdit(
      */
     skipRoundTripVerify?: boolean;
   },
-): {
-  ok: boolean;
-  reason?: string;
-  text?: string;
-  created?: number[];
-  placed?: number;
-  method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
-  doc?: OpenResult;
-} {
+): EditRunResult & { doc?: OpenResult } {
   const s = session;
   if (!s) return { ok: false, reason: 'no plan is open' };
   if (!s.editable) {
@@ -1549,14 +1692,7 @@ function applyEdit(
 
   const associationsBefore = cloneDimensionAssociations();
   s.checkpoint();
-  let result: {
-    ok: boolean;
-    reason?: string;
-    text?: string;
-    created?: number[];
-    placed?: number;
-    method?: 'matched' | 'library' | 'symbol' | 'traced' | 'synthesized' | 'box';
-  };
+  let result: EditRunResult;
   try {
     result = run(s);
     if (!result.ok) {
@@ -1594,6 +1730,13 @@ function applyEdit(
       created: result.created,
       placed: result.placed,
       method: result.method,
+      overlaps: result.overlaps,
+      suggested: result.suggested,
+      numbered: result.numbered,
+      seats: result.seats,
+      tableIds: result.tableIds,
+      labelIds: result.labelIds,
+      chairIds: result.chairIds,
       doc: describe(s),
     };
   } catch (err) {
@@ -3547,6 +3690,23 @@ app.whenReady().then(async () => {
     return { ok: true, text: `Grouped ${members.length} items` };
   });
 
+  handle('edit:attach-stairs', (_event, stageId: number, stairsId: number) => {
+    const s = session;
+    if (!s) return { ok: false, reason: 'open a plan first' };
+    if (!s.editable) return { ok: false, reason: 'this plan is read-only' };
+    const stage = Number(stageId);
+    const stairs = Number(stairsId);
+    if (!(Number.isFinite(stage) && Number.isFinite(stairs)) || stage === stairs) {
+      return { ok: false, reason: 'pick a stage and a different stairs piece' };
+    }
+    if (!s.index.byId.has(stage) || !s.index.byId.has(stairs)) {
+      return { ok: false, reason: 'object no longer exists' };
+    }
+    linkObjects(stage, stairs, 'stage-stairs');
+    scheduleObjectLinkPersist();
+    return { ok: true, text: 'Stairs attached to stage · move together', doc: describe(s) };
+  });
+
   handle('edit:ungroup', (_event, ids: number[]) => {
     const s = session;
     if (!s) return { ok: false, reason: 'open a plan first' };
@@ -3627,7 +3787,7 @@ app.whenReady().then(async () => {
    * The delta is computed here rather than in the renderer so the whole thing
    * is one undoable step and cannot drift if the selection moved in between.
    */
-  handle('edit:move-to', (_event, nodeId: number, x: number | null, y: number | null) =>
+  handle('edit:move-to', (_event, nodeId: number, x: number | null, y: number | null, options?: PlaceMoveOverlapOptions) =>
     applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
       if (!node) return { ok: false, reason: 'object no longer exists' };
@@ -3635,9 +3795,20 @@ app.whenReady().then(async () => {
       const centreY = (node.bounds.top + node.bounds.bottom) / 2;
       // A null axis is "leave this one alone", so X and Y can be committed
       // independently as the user tabs between the two fields.
-      const dx = x == null ? 0 : x - centreX;
-      const dy = y == null ? 0 : y - centreY;
+      let dx = x == null ? 0 : x - centreX;
+      let dy = y == null ? 0 : y - centreY;
       if (dx === 0 && dy === 0) return { ok: true };
+      const resolved = resolveMoveDelta(s.loaded.document, nodeId, dx, dy, options);
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          reason: resolved.reason,
+          overlaps: resolved.overlaps,
+          suggested: resolved.suggested,
+        };
+      }
+      dx = resolved.dx;
+      dy = resolved.dy;
       const partners = expandLinkedIds([nodeId]).filter((id) => id !== nodeId);
       const moved = moveNode(s.loaded.document, node, dx, dy);
       if (!moved.ok) return moved;
@@ -3647,26 +3818,37 @@ app.whenReady().then(async () => {
         const next = moveNode(s.loaded.document, partner, dx, dy);
         if (!next.ok) return next;
       }
-      return { ok: true };
-    }),
+      return { ok: true, text: resolved.text };
+    }, { skipRoundTripVerify: true }),
   );
 
-  handle('edit:move', (_event, nodeId: number, dx: number, dy: number) =>
+  handle('edit:move', (_event, nodeId: number, dx: number, dy: number, options?: PlaceMoveOverlapOptions) =>
     applyEdit((s) => {
       const node = s.index.byId.get(nodeId);
       if (!node) return { ok: false, reason: 'object no longer exists' };
+      const resolved = resolveMoveDelta(s.loaded.document, nodeId, dx, dy, options);
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          reason: resolved.reason,
+          overlaps: resolved.overlaps,
+          suggested: resolved.suggested,
+        };
+      }
+      const moveDx = resolved.dx;
+      const moveDy = resolved.dy;
       // Keep stack / stage partners with a solo nudge from older callers.
       const partners = expandLinkedIds([nodeId]).filter((id) => id !== nodeId);
-      const moved = moveNode(s.loaded.document, node, dx, dy);
+      const moved = moveNode(s.loaded.document, node, moveDx, moveDy);
       if (!moved.ok) return moved;
       for (const id of partners) {
         const partner = s.index.byId.get(id);
         if (!partner) continue;
-        const next = moveNode(s.loaded.document, partner, dx, dy);
+        const next = moveNode(s.loaded.document, partner, moveDx, moveDy);
         if (!next.ok) return next;
       }
-      return { ok: true };
-    }),
+      return { ok: true, text: resolved.text };
+    }, { skipRoundTripVerify: true }),
   );
 
   handle('edit:delete', (_event, nodeId: number) =>
@@ -4301,7 +4483,9 @@ app.whenReady().then(async () => {
   });
 
   /** Places a inventory item, using its remembered footprint when it has one. */
-  handle('inventory:place', async (_event, id: string, x: number, y: number) => {
+  handle(
+    'inventory:place',
+    async (_event, id: string, x: number, y: number, options?: PlaceMoveOverlapOptions) => {
     const item = locateInventoryItem(inventory, id);
     if (!item) return { ok: false, reason: 'item no longer exists' };
 
@@ -4322,16 +4506,14 @@ app.whenReady().then(async () => {
       }
     }
 
-    const finish = (reply: {
-      ok: boolean;
-      reason?: string;
-      created?: number[];
-      method?: string;
-      doc?: OpenResult;
-    }) => {
+    const placeAt = { x: atX, y: atY };
+    const guarded = (run: (s: Session) => EditRunResult) =>
+      applyEdit((s) => settlePlacedOverlap(s.loaded.document, run(s), placeAt, options));
+
+    const finish = (reply: EditRunResult & { doc?: OpenResult; method?: string }) => {
       if (!reply.ok || alignAngle == null || !reply.created?.length) return reply;
       const rotated = applyEdit((s) => {
-        const node = s.index.byId.get(reply.created![0]);
+        const node = s.index.byId.get(reply.created![0]!);
         if (!node) return { ok: false, reason: 'placed item missing' };
         return rotateNode(s.loaded.document, node, alignAngle!);
       });
@@ -4341,7 +4523,7 @@ app.whenReady().then(async () => {
 
     const placeAsBox = () =>
       finish(
-        applyEdit((s) =>
+        guarded((s) =>
           placeGear(
             s.loaded.document,
             s.index,
@@ -4371,7 +4553,7 @@ app.whenReady().then(async () => {
         // harvested symbol file is missing.
         if (item.tracedIcon?.paths?.length) {
           return finish(
-            applyEdit((s) =>
+            guarded((s) =>
               placeTracedIcon(s.loaded.document, s.index, item.name, atX, atY, item.tracedIcon!),
             ),
           );
@@ -4388,24 +4570,27 @@ app.whenReady().then(async () => {
       // put down from the palette the same kind of object as everything else on
       // the drawing.
       if (isLibrary(from)) {
-        const built = applyEdit((s) => placeFromLibrary(s.loaded.document, from, lookFor, atX, atY));
+        const built = guarded((s) => placeFromLibrary(s.loaded.document, from, lookFor, atX, atY));
         if (built.ok) return finish({ ...built, method: built.method ?? 'library' });
+        if (built.overlaps) return built;
       }
-      const imported = applyEdit((s) => importSymbol(s.loaded.document, s.index, from, lookFor, atX, atY));
+      const imported = guarded((s) => importSymbol(s.loaded.document, s.index, from, lookFor, atX, atY));
       // Fall through to a drawn box only if the symbol could not be brought in.
       if (imported.ok) return finish({ ...imported, method: imported.method ?? 'symbol' });
+      if (imported.overlaps) return imported;
     }
 
     if (item.tracedIcon?.paths?.length) {
       return finish(
-        applyEdit((s) =>
+        guarded((s) =>
           placeTracedIcon(s.loaded.document, s.index, item.name, atX, atY, item.tracedIcon!),
         ),
       );
     }
 
     return placeAsBox();
-  });
+  },
+  );
 
   // --- gear lists ---------------------------------------------------------
 
@@ -4675,7 +4860,9 @@ app.whenReady().then(async () => {
     return { ok: true, gear: gearState(), createdId: department.id };
   });
 
-  handle('plan:place-gear', async (_event, description: string, x: number, y: number) => {
+  handle(
+    'plan:place-gear',
+    async (_event, description: string, x: number, y: number, options?: PlaceMoveOverlapOptions) => {
     // Prefer the company inventory when this description is already sized or
     // has a real silhouette — absorb and harvest are wasted if gear placement
     // always synthesizes a bare box.
@@ -4698,16 +4885,14 @@ app.whenReady().then(async () => {
       }
     }
 
-    const alignIfDoor = (reply: {
-      ok: boolean;
-      reason?: string;
-      created?: number[];
-      method?: string;
-      doc?: OpenResult;
-    }) => {
+    const placeAt = { x: atX, y: atY };
+    const guarded = (run: (s: Session) => EditRunResult) =>
+      applyEdit((s) => settlePlacedOverlap(s.loaded.document, run(s), placeAt, options));
+
+    const alignIfDoor = (reply: EditRunResult & { doc?: OpenResult; method?: string }) => {
       if (!reply.ok || alignAngle == null || !reply.created?.length) return reply;
       const rotated = applyEdit((s) => {
-        const node = s.index.byId.get(reply.created![0]);
+        const node = s.index.byId.get(reply.created![0]!);
         if (!node) return { ok: false, reason: 'placed item missing' };
         return rotateNode(s.loaded.document, node, alignAngle!);
       });
@@ -4736,28 +4921,30 @@ app.whenReady().then(async () => {
           }
           const lookFor = item.symbolName ?? item.name;
           if (isLibrary(source)) {
-            const built = applyEdit((s) =>
+            const built = guarded((s) =>
               placeFromLibrary(s.loaded.document, source!, lookFor, atX, atY),
             );
             if (built.ok) return alignIfDoor({ ...built, method: built.method ?? 'library' });
+            if (built.overlaps) return built;
           }
-          const imported = applyEdit((s) =>
+          const imported = guarded((s) =>
             importSymbol(s.loaded.document, s.index, source!, lookFor, atX, atY),
           );
           if (imported.ok) return alignIfDoor({ ...imported, method: imported.method ?? 'symbol' });
+          if (imported.overlaps) return imported;
         } catch {
           // Fall through to traced / sized box.
         }
       }
       if (item.tracedIcon?.paths?.length) {
         return alignIfDoor(
-          applyEdit((s) =>
+          guarded((s) =>
             placeTracedIcon(s.loaded.document, s.index, item.name, atX, atY, item.tracedIcon!),
           ),
         );
       }
       return alignIfDoor(
-        applyEdit((s) => placeGear(s.loaded.document, s.index, item.name, atX, atY, known)),
+        guarded((s) => placeGear(s.loaded.document, s.index, item.name, atX, atY, known)),
       );
     };
 
@@ -4785,24 +4972,27 @@ app.whenReady().then(async () => {
         }
         const lookFor = choice.symbolName;
         if (isLibrary(source)) {
-          const built = applyEdit((s) =>
+          const built = guarded((s) =>
             placeFromLibrary(s.loaded.document, source!, lookFor, atX, atY),
           );
           if (built.ok) return alignIfDoor({ ...built, method: built.method ?? 'library' });
+          if (built.overlaps) return built;
         }
-        const imported = applyEdit((s) =>
+        const imported = guarded((s) =>
           importSymbol(s.loaded.document, s.index, source!, lookFor, atX, atY),
         );
         if (imported.ok) return alignIfDoor({ ...imported, method: imported.method ?? 'symbol' });
+        if (imported.overlaps) return imported;
       } catch {
         // Fall through to synthesis.
       }
     }
 
     return alignIfDoor(
-      applyEdit((s) => placeGear(s.loaded.document, s.index, description, atX, atY)),
+      guarded((s) => placeGear(s.loaded.document, s.index, description, atX, atY)),
     );
-  });
+  },
+  );
 
   handle('plan:rotate', (_event, nodeId: number, degrees: number) =>
     applyEdit((s) => {
@@ -4831,7 +5021,12 @@ app.whenReady().then(async () => {
     }),
   );
 
-  handle('plan:add-seating', async (_event, request: SeatingRequest) => {
+  handle('plan:add-seating', async (_event, request: SeatingRequest & {
+    gridColumns?: number;
+    gridRows?: number;
+    tableSpacingX?: number;
+    tableSpacingY?: number;
+  }) => {
     // Create → Place seating must land real inventory silhouettes on a blank
     // plan, not labelled boxes. Equipment placement already resolves symbols;
     // seating used to call placeGear alone, so the first chair synthesized a
@@ -4877,6 +5072,14 @@ app.whenReady().then(async () => {
           ? { width: tableItem.width, height: tableItem.height }
           : request.tableSize,
     };
+
+    const gridColumns = Math.round(Number(request.gridColumns) || 0);
+    const gridRows = Math.round(Number(request.gridRows) || 0);
+    const useGrid =
+      request.kind === 'round' &&
+      gridColumns >= 1 &&
+      gridRows >= 1 &&
+      gridColumns * gridRows >= 2;
 
     return applyEdit((s) => {
       // Far outside any real room so the seed never collides with the stamp.
@@ -4936,7 +5139,27 @@ app.whenReady().then(async () => {
         placeSeed(request.table, tableItem, tableSource, tableChoice?.symbolName);
       }
 
-      const result = addSeating(s.loaded.document, live, enriched);
+      const result = useGrid
+        ? stampTableGrid(s.loaded.document, live, {
+            x: request.x,
+            y: request.y,
+            columns: gridColumns,
+            rows: gridRows,
+            spacingX:
+              Number(request.tableSpacingX) > 0
+                ? Number(request.tableSpacingX)
+                : 10 * UNITS_PER_FOOT,
+            spacingY:
+              Number(request.tableSpacingY) > 0
+                ? Number(request.tableSpacingY)
+                : 10 * UNITS_PER_FOOT,
+            table: request.table!,
+            chair: request.chair,
+            seats: request.seats ?? 10,
+            chairSize: enriched.chairSize,
+            tableSize: enriched.tableSize,
+          })
+        : addSeating(s.loaded.document, live, enriched);
       if (!result.ok) return result;
 
       live = indexDocument(s.loaded.document);
@@ -4948,12 +5171,188 @@ app.whenReady().then(async () => {
       }
 
       const seedSet = new Set(seeds);
+      const created = result.created?.filter((id) => !seedSet.has(id));
+
+      // Group each banquet set so move/delete keep table+chairs together.
+      if (useGrid) {
+        const stamped = result as ReturnType<typeof stampTableGrid>;
+        stamped.tableIds?.forEach((tableId, i) => {
+          for (const chairId of stamped.chairIdsByTable?.[i] ?? []) {
+            linkObjects(tableId, chairId, 'group');
+          }
+        });
+      } else if (request.kind === 'round' && created && created.length >= 2) {
+        const tableId = created[0]!;
+        for (const chairId of created.slice(1)) {
+          linkObjects(tableId, chairId, 'group');
+        }
+      }
+
+      const tables = useGrid
+        ? ((result as ReturnType<typeof stampTableGrid>).tableIds?.length ?? 0)
+        : request.kind === 'round'
+          ? 1
+          : 0;
       return {
         ...result,
-        created: result.created?.filter((id) => !seedSet.has(id)),
+        created,
+        text: useGrid
+          ? `Stamped ${tables} tables · ${result.placed ?? created?.length ?? 0} pieces`
+          : undefined,
       };
     });
   });
+
+  handle(
+    'plan:set-table-seats',
+    (
+      _event,
+      request: {
+        tableIds: number[];
+        seats: number;
+        chair?: string;
+        standoff?: number;
+      },
+    ) => {
+      const tableIds = Array.isArray(request?.tableIds) ? request.tableIds : [];
+      const seats = Math.round(Number(request?.seats));
+      if (!tableIds.length) return { ok: false, reason: 'select one or more tables' };
+      if (!(seats >= 0 && seats <= 24)) return { ok: false, reason: 'chairs per table must be 0–24' };
+
+      return applyEdit((s) => {
+        const created: number[] = [];
+        let touched = 0;
+        for (const tableId of tableIds) {
+          const table = s.index.byId.get(tableId);
+          if (!table || !isTableNode(table)) continue;
+
+          const linkedChairs = (objectLinks.get(tableId) ?? []).filter((id) => {
+            const node = s.index.byId.get(id);
+            return node != null && isChairNode(node);
+          });
+          const chairIds =
+            linkedChairs.length > 0 ? linkedChairs : nearbyChairIds(s.loaded.document, tableId);
+
+          let chairName = typeof request.chair === 'string' ? request.chair.trim() : '';
+          if (!chairName && chairIds.length) {
+            const first = s.index.byId.get(chairIds[0]!);
+            if (first) chairName = shapeCatalogueName(first);
+          }
+          if (!chairName) {
+            return { ok: false, reason: 'choose a chair (or select a table that already has chairs)' };
+          }
+
+          pruneObjectLinks(chairIds);
+          const live = indexDocument(s.loaded.document);
+          const result = redistributeChairsAroundTable(
+            s.loaded.document,
+            live,
+            tableId,
+            seats,
+            chairName,
+            chairIds,
+            {
+              standoff: Number(request.standoff) > 0 ? Number(request.standoff) : undefined,
+            },
+          );
+          if (!result.ok) return result;
+          if (result.created) created.push(...result.created);
+          for (const chairId of result.chairIds ?? []) {
+            linkObjects(tableId, chairId, 'group');
+          }
+          touched++;
+        }
+        if (!touched) return { ok: false, reason: 'select one or more tables' };
+        return {
+          ok: true,
+          created,
+          seats,
+          text:
+            touched === 1
+              ? `Set ${seats} chair${seats === 1 ? '' : 's'} around the table`
+              : `Set ${seats} chairs on ${touched} tables`,
+        };
+      });
+    },
+  );
+
+  handle(
+    'plan:auto-number-tables',
+    (
+      _event,
+      request: {
+        tableIds: number[];
+        start?: number;
+        order?: TableNumberOrder;
+        prefix?: string;
+        suffix?: string;
+        padWidth?: number;
+      },
+    ) => {
+      const requested = Array.isArray(request?.tableIds) ? request.tableIds : [];
+      return applyEdit((s) => {
+        const tableIds = filterTableIds(s.loaded.document, requested);
+        const result = autoNumberTables(s.loaded.document, s.index, tableIds, {
+          start: request?.start,
+          order: request?.order,
+          prefix: request?.prefix,
+          suffix: request?.suffix,
+          padWidth: request?.padWidth,
+          previousLabelIds: lastTableNumberLabelIds,
+        });
+        if (!result.ok) return result;
+        lastTableNumberLabelIds = result.labelIds ?? [];
+        return {
+          ...result,
+          text: `Numbered ${result.numbered} table${result.numbered === 1 ? '' : 's'}`,
+        };
+      });
+    },
+  );
+
+  handle(
+    'plan:space-tables',
+    (
+      _event,
+      request: {
+        tableIds: number[];
+        spacingX: number;
+        spacingY: number;
+        order?: TableNumberOrder;
+      },
+    ) => {
+      const requested = Array.isArray(request?.tableIds) ? request.tableIds : [];
+      const spacingX = Number(request?.spacingX);
+      const spacingY = Number(request?.spacingY);
+      return applyEdit((s) => {
+        const tableIds = filterTableIds(s.loaded.document, requested);
+        const deltas = tableGridDeltas(
+          s.loaded.document,
+          tableIds,
+          spacingX,
+          spacingY,
+          request?.order ?? 'left-right',
+        );
+        if (!deltas.ok) return deltas;
+
+        const expandedMoves: Array<{ id: number; dx: number; dy: number }> = [];
+        const seen = new Set<number>();
+        for (const move of deltas.moves) {
+          for (const id of expandLinkedIds([move.id])) {
+            if (seen.has(id)) continue;
+            seen.add(id);
+            expandedMoves.push({ id, dx: move.dx, dy: move.dy });
+          }
+        }
+        const result = applyTableMoves(s.loaded.document, expandedMoves);
+        if (!result.ok) return result;
+        return {
+          ...result,
+          text: `Spaced ${tableIds.length} tables`,
+        };
+      });
+    },
+  );
 
   handle('plan:add-label', (_event, text: string, x: number, y: number, color?: number) =>
     applyEdit((s) => createLabel(
@@ -5331,6 +5730,11 @@ app.whenReady().then(async () => {
           units: unitSystem(),
         });
         if (!result.ok) return { ok: false, reason: result.reason };
+        // Kit seating is flattened stamps — drop the fill-room spine so Update
+        // does not try to replace kit chairs with a stale parametric request.
+        if (options?.includeSeating !== false) {
+          clearManagedSeating();
+        }
         return {
           ok: true,
           text: result.status,
@@ -5353,7 +5757,10 @@ app.whenReady().then(async () => {
   handle('plan:clear-furniture', (_event, kind: 'seating' | 'gear' | 'all' = 'seating') =>
     applyEdit((s) => {
       let removed = 0;
-      if (kind === 'seating' || kind === 'all') removed += clearSeatingShapes(s);
+      if (kind === 'seating' || kind === 'all') {
+        removed += clearSeatingShapes(s);
+        clearManagedSeating();
+      }
       if (kind === 'gear' || kind === 'all') removed += clearGearShapes(s);
       return {
         ok: true,
@@ -5457,10 +5864,24 @@ app.whenReady().then(async () => {
         rails?: Array<'front' | 'back' | 'left' | 'right'>;
         deckSize?: string;
         skirted?: boolean;
+        /** Delete the previous managed stage before placing. */
+        replace?: boolean;
       },
     ) => {
       let extra: { buildList?: unknown; warnings?: string[] } = {};
       const reply = applyEdit((s) => {
+        if (more?.replace) {
+          let live = s.index;
+          const previous = stageNodeIds();
+          for (const id of previous) {
+            const node = live.byId.get(id);
+            if (!node) continue;
+            deleteNode(s.loaded.document, live, node);
+            live = indexDocument(s.loaded.document);
+          }
+          pruneObjectLinks(previous);
+          clearStage();
+        }
         const result = addStage(s, x, y, width, depth, height, {
           back: back && back.depth > 0 && back.height > 0 ? back : undefined,
           stairs: Array.isArray(stairs) ? stairs : undefined,
@@ -5474,7 +5895,7 @@ app.whenReady().then(async () => {
         return result;
       });
       if (reply.ok && reply.created && reply.created.length >= 2) {
-        linkObjects(reply.created[0]!, reply.created[1]!);
+        linkObjects(reply.created[0]!, reply.created[1]!, 'stage-stairs');
       }
       return { ...reply, ...extra };
     },
@@ -5591,8 +6012,19 @@ app.whenReady().then(async () => {
   handle('plan:sightline-markers', () => (session ? sightlineMarkers(session) : []), []);
 
   handle('plan:stage-clear', () => {
-    clearStage();
-    return { ok: true };
+    return applyEdit((s) => {
+      let live = s.index;
+      const previous = stageNodeIds();
+      for (const id of previous) {
+        const node = live.byId.get(id);
+        if (!node) continue;
+        deleteNode(s.loaded.document, live, node);
+        live = indexDocument(s.loaded.document);
+      }
+      pruneObjectLinks(previous);
+      clearStage();
+      return { ok: true, text: 'Stage cleared' };
+    });
   });
 
   handle(
@@ -5842,6 +6274,7 @@ app.whenReady().then(async () => {
       ids: number[],
       a = 0,
       b = 0,
+      options?: PlaceMoveOverlapOptions,
     ) => {
       const skipRoundTripVerify =
         kind === 'move' ||
@@ -5865,6 +6298,25 @@ app.whenReady().then(async () => {
           kind === 'move' || kind === 'delete' || kind === 'duplicate' || kind === 'rotate'
             ? expandLinkedIds(ids)
             : ids;
+
+        let moveDx = a;
+        let moveDy = b;
+        let moveText: string | undefined;
+        if (kind === 'move' && ids.length) {
+          const primaryId = ids[0]!;
+          const resolved = resolveMoveDelta(s.loaded.document, primaryId, a, b, options);
+          if (!resolved.ok) {
+            return {
+              ok: false,
+              reason: resolved.reason,
+              overlaps: resolved.overlaps,
+              suggested: resolved.suggested,
+            };
+          }
+          moveDx = resolved.dx;
+          moveDy = resolved.dy;
+          moveText = resolved.text;
+        }
 
         const targets = expanded
           .map((id) => s.index.byId.get(id))
@@ -5919,7 +6371,7 @@ app.whenReady().then(async () => {
           let result: { ok: boolean; reason?: string; created?: number[] };
           switch (kind) {
             case 'move':
-              result = moveNode(s.loaded.document, node, a, b);
+              result = moveNode(s.loaded.document, node, moveDx, moveDy);
               break;
             case 'rotate': {
               const radians = (a * Math.PI) / 180;
@@ -5989,7 +6441,7 @@ app.whenReady().then(async () => {
         if (touched === 0) {
           return { ok: false, reason: reasons[0] ?? 'nothing could be changed' };
         }
-        return { ok: true, created: created.length ? created : undefined };
+        return { ok: true, created: created.length ? created : undefined, text: moveText };
       }, { skipRoundTripVerify });
     },
   );
@@ -6598,14 +7050,39 @@ app.whenReady().then(async () => {
       filters: [{ name: 'CSV', extensions: ['csv'] }],
     });
     if (result.canceled || !result.filePath) return null;
+    const elevations = summary ? undefined : placementElevations(session);
     await atomicWriteFile(
       result.filePath,
-      summary ? scheduleSummaryCsv(schedule) : scheduleToCsv(schedule),
+      summary ? scheduleSummaryCsv(schedule) : scheduleToCsv(schedule, elevations),
       {
         backupPath: existsSync(result.filePath) ? `${result.filePath}.bak` : undefined,
       },
     );
     return grantPath(result.filePath);
+  });
+
+  handle('plan:hang-plot-export', async () => {
+    if (!session) return { ok: false, reason: 'no plan is open' };
+    const { hangPlotItems, hangPlotToCsv } = await import('../format/hang-plot.js');
+    const items = placedItems(session.loaded.document);
+    if (!hangPlotItems(items).length) {
+      return {
+        ok: false,
+        reason: 'No flown items — set AFF height on truss, fixtures, or screens first',
+      };
+    }
+    const csv = hangPlotToCsv(items);
+    const base = session.loaded.name.replace(/\.[^.]+$/, '');
+    const result = await dialog.showSaveDialog({
+      title: 'Export hang plot',
+      defaultPath: `${base} hang plot.csv`,
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+    await atomicWriteFile(result.filePath, csv, {
+      backupPath: existsSync(result.filePath) ? `${result.filePath}.bak` : undefined,
+    });
+    return { ok: true, path: grantPath(result.filePath) };
   });
 
   handle('plan:pull-sheet-export', async (_event, owned: Array<{ name: string; quantity: number }>) => {
@@ -6660,7 +7137,7 @@ app.whenReady().then(async () => {
     try {
       if (!includeSchedule) throw new Error('skipped by preference');
       const { schedule } = await buildStableSchedule(session.loaded.document, session.path);
-      await atomicWriteFile(csvPath, scheduleToCsv(schedule), {
+      await atomicWriteFile(csvPath, scheduleToCsv(schedule, elevations), {
         backupPath: existsSync(csvPath) ? `${csvPath}.bak` : undefined,
       });
       grantPath(csvPath);

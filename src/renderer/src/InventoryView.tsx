@@ -62,6 +62,13 @@ interface Props {
   canPlace: boolean;
   onError: (message: string) => void;
   onStatus: (message: string) => void;
+  onDrawElevation?: (request: {
+    baseName: string;
+    view: 'front' | 'side';
+    category?: string;
+    planWidth?: number;
+    planDepth?: number;
+  }) => void;
 }
 
 interface HarvestProgress {
@@ -102,6 +109,7 @@ export function InventoryView({
   canPlace,
   onError,
   onStatus,
+  onDrawElevation,
 }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -647,11 +655,13 @@ export function InventoryView({
       {editorItem && (
         <InventoryItemEditor
           item={editorItem}
+          catalogNames={(inventory?.items ?? []).map((row) => row.name)}
           units={units}
           onClose={() => setEditorId(null)}
           onSaved={onChanged}
           onError={onError}
           onStatus={onStatus}
+          onDrawElevation={onDrawElevation}
         />
       )}
     </div>

@@ -114,6 +114,7 @@ interface Props {
   onExportSchedule?: () => void;
   onExportReport?: () => void;
   onExportPullSheet?: () => void;
+  onExportHangPlot?: () => void;
   allocationSummary?: { short: number; ok: number; untracked: number } | null;
   completed?: {
     stage?: boolean;
@@ -168,6 +169,7 @@ export default function ShowSetupPanel({
   onExportSchedule,
   onExportReport,
   onExportPullSheet,
+  onExportHangPlot,
   allocationSummary = null,
   completed = {},
 }: Props) {
@@ -313,7 +315,7 @@ export default function ShowSetupPanel({
             <span className={`show-setup-chip is-${roomStatus}`}>Room ready</span>
           </div>
           <div className="show-setup-compact-actions">
-            <button type="button" onClick={onOpenRoom}>Edit geometry</button>
+            <button type="button" onClick={onOpenRoom}>Open room layout</button>
             {onOpenBackground && <button type="button" onClick={onOpenBackground}>{hasBackground ? 'Site plan' : 'Add site plan'}</button>}
             {onPlaceDoor && <button type="button" disabled={!editable} onClick={onPlaceDoor}>Door</button>}
             {onPlaceOpening && <button type="button" disabled={!editable} onClick={onPlaceOpening}>Opening</button>}
@@ -438,6 +440,7 @@ export default function ShowSetupPanel({
             </div>
             <div className="show-setup-advanced-grid">
               <button type="button" disabled={!hasRoom} onClick={() => onExportSchedule?.()}>Schedule…</button>
+              <button type="button" disabled={!hasRoom} onClick={() => onExportHangPlot?.()}>Hang plot…</button>
               <button type="button" disabled={!hasRoom} onClick={() => onExportPullSheet?.()}>Pull sheet…</button>
               <button type="button" disabled={!hasRoom} onClick={() => onExportReport?.()}>Full report…</button>
             </div>

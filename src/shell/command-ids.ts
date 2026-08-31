@@ -68,6 +68,11 @@ export const COMMAND_IDS = [
   'view.layers-show-all',
   'view.layers-hide-all',
   'view.snap',
+  'view.top',
+  'view.front',
+  'view.side',
+  'isolation.exit',
+  'seating.variant-save',
   'edit.select-all',
 ] as const;
 
@@ -108,6 +113,11 @@ export const COMMAND_LIST: CommandListEntry[] = [
   { id: 'view.grid', title: 'Toggle grid', section: 'View', shortcut: 'G' },
   { id: 'view.stack', title: 'Toggle stack markers', section: 'View' },
   { id: 'view.sight', title: 'Toggle sightline grades', section: 'View' },
+  { id: 'view.top', title: 'Top view', section: 'View' },
+  { id: 'view.front', title: 'Front elevation', section: 'View' },
+  { id: 'view.side', title: 'Side elevation', section: 'View' },
+  { id: 'isolation.exit', title: 'Exit solo / isolation', section: 'View' },
+  { id: 'seating.variant-save', title: 'Save seating layout variant', section: 'Show' },
   { id: 'tool.select', title: 'Select tool', section: 'Tool', shortcut: 'Esc' },
   { id: 'tool.hand', title: 'Hand tool', section: 'Tool', shortcut: 'H' },
   { id: 'tool.text', title: 'Text tool', section: 'Tool', shortcut: 'T' },

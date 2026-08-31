@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import type { Scene, ScenePrimitive } from '../../format/scene.js';
+import { classify } from '../../inventory/classify.js';
 import { resolveStyle, type DrawingStyle } from '../../format/style.js';
 import { formatLength, UNITS_PER_METRE, type UnitSystem } from '../../format/units.js';
 import {
@@ -91,6 +92,12 @@ interface Props {
   fitToken: number;
   /** Selected object ids. Empty means nothing is selected. */
   selection: number[];
+  /**
+   * When set, only these ids stay fully opaque and selectable — everything else
+   * is dimmed (isolation / solo section). Empty array means “show nothing to pick”.
+   * Null/undefined means no isolation.
+   */
+  focusIds?: number[] | null;
   onSelect: (ids: number[]) => void;
   /**
    * A right-click that did not pan, with whatever sits under it.
@@ -318,6 +325,7 @@ function hitTestCandidates(
   y: number,
   tolerance: number,
   locked?: Set<string>,
+  focusIds?: Set<number> | null,
 ): Array<{ id: number; distance: number; size: number; name: string }> {
   const hits: Array<{ id: number; distance: number; size: number; name: string }> = [];
   const seen = new Set<number>();
@@ -325,6 +333,7 @@ function hitTestCandidates(
   for (const item of prepared) {
     const p = item.primitive;
     if (!visible.has(p.discipline)) continue;
+    if (focusIds && !focusIds.has(p.selectId)) continue;
     // A locked layer is visible but not touchable: that is the whole point of
     // locking the Architecture layer while placing chairs on top of it.
     if (locked?.has(p.discipline)) continue;
@@ -396,8 +405,9 @@ function hitTest(
   y: number,
   tolerance: number,
   locked?: Set<string>,
+  focusIds?: Set<number> | null,
 ): number | null {
-  return hitTestCandidates(prepared, visible, x, y, tolerance, locked)[0]?.id ?? null;
+  return hitTestCandidates(prepared, visible, x, y, tolerance, locked, focusIds)[0]?.id ?? null;
 }
 
 /** COLORREF (0x00BBGGRR) to a CSS colour. */
@@ -443,6 +453,7 @@ export function PlanCanvas({
   sightlineMarkers = [],
   fitToken,
   selection,
+  focusIds = null,
   onSelect,
   onContextMenu,
   onStackCandidates,
@@ -640,6 +651,10 @@ export function PlanCanvas({
   }, [scene]);
 
   const selectionSet = useMemo(() => new Set(selection), [selection]);
+  const focusSet = useMemo(
+    () => (focusIds == null ? null : new Set(focusIds)),
+    [focusIds],
+  );
 
   /** Selectable ids on a locked layer, so a rubber band can skip them. */
   const lockedIds = useMemo(() => {
@@ -680,6 +695,26 @@ export function PlanCanvas({
     }
     return result;
   }, [prepared, visibleLayers]);
+
+  /** Round tables use a circular selection ring instead of a square AABB. */
+  const roundSelectionIds = useMemo(() => {
+    const round = new Set<number>();
+    for (const item of prepared) {
+      const name = item.primitive.owner ?? item.primitive.cls ?? '';
+      const cat = classify(name).category;
+      if (cat === 'table-round') {
+        round.add(item.primitive.selectId);
+        continue;
+      }
+      if (/\bhalf.?round\b|\bquarter.?round\b/i.test(name)) continue;
+      if (/\b(circular|round)\b/i.test(name) && /\b(table|top)\b/i.test(name)) {
+        round.add(item.primitive.selectId);
+      } else if (/\bround\b/i.test(name) && /\d/.test(name) && /\btable\b/i.test(name)) {
+        round.add(item.primitive.selectId);
+      }
+    }
+    return round;
+  }, [prepared]);
 
   /**
    * The transform frame for the one selected object, or null.
@@ -1000,6 +1035,7 @@ export function PlanCanvas({
       const p = item.primitive;
       if (!visibleLayers.has(p.discipline)) continue;
       const isSelected = selectionSet.has(p.selectId);
+      const isIsolatedOut = focusSet != null && !focusSet.has(p.selectId);
       const ox = isSelected && nudge ? nudge.dx : 0;
       const oy = isSelected && nudge ? nudge.dy : 0;
       if (
@@ -1012,6 +1048,9 @@ export function PlanCanvas({
       }
 
       const isHovered = !isSelected && hover != null && p.selectId === hover;
+
+      ctx.save();
+      if (isIsolatedOut) ctx.globalAlpha = 0.22;
 
       ctx.strokeStyle = isSelected ? '#4d94ff' : isHovered ? '#8bb9ff' : paper ? item.paperColor : item.darkColor;
       ctx.fillStyle = ctx.strokeStyle;
@@ -1105,6 +1144,7 @@ export function PlanCanvas({
           break;
         }
       }
+      ctx.restore();
     }
 
     // One editable object in select mode gets the real transform frame; every
@@ -1127,12 +1167,19 @@ export function PlanCanvas({
       if (!b) continue;
       // Crowded multi-select: light per-item frames only when the set is small.
       if (selection.length === 1 || selection.length <= 12) {
-        drawSelectionFrame(ctx, b, view, nudge, selection.length > 1 ? 'item' : 'solo');
+        drawSelectionFrame(
+          ctx,
+          b,
+          view,
+          nudge,
+          selection.length > 1 ? 'item' : 'solo',
+          roundSelectionIds.has(id) ? 'circle' : 'rect',
+        );
       }
     }
     if (selection.length > 1) {
       const group = boundsOfMany(objectBounds, selection);
-      if (group) drawSelectionFrame(ctx, group, view, nudge, 'group', selection.length);
+      if (group) drawSelectionFrame(ctx, group, view, nudge, 'group', 'rect', selection.length);
     }
 
     if (placeOnParentId != null) {
@@ -1354,6 +1401,7 @@ export function PlanCanvas({
     units,
     selection,
     selectionSet,
+    focusSet,
     hover,
     nudge,
     spanFrom,
@@ -1638,7 +1686,7 @@ export function PlanCanvas({
       // grid snapping changes the coordinate. This lets a dimension follow the
       // object that was clicked instead of becoming a detached drawing line.
       const nodeId = pointerMode.associate
-        ? (hitTest(prepared, visibleLayers, point.x, point.y, 8 / view.scale, lockedLayers) ?? undefined)
+        ? (hitTest(prepared, visibleLayers, point.x, point.y, 8 / view.scale, lockedLayers, focusSet) ?? undefined)
         : undefined;
       const coordinate =
         pointerMode.snap === 'grid'
@@ -1669,7 +1717,7 @@ export function PlanCanvas({
     if (scene) {
       const { x, y } = toPlan(e);
       const tolerance = 8 / view.scale;
-      const candidates = hitTestCandidates(prepared, visibleLayers, x, y, tolerance, lockedLayers);
+      const candidates = hitTestCandidates(prepared, visibleLayers, x, y, tolerance, lockedLayers, focusSet);
 
       if (candidates.length >= 2) {
         onStackCandidates?.(candidates.map((c) => ({ id: c.id, name: c.name })));
@@ -1748,6 +1796,8 @@ export function PlanCanvas({
       x,
       y,
       10 / view.scale,
+      lockedLayers,
+      focusSet,
     );
     if (hit == null) return;
     const textPrimitive = prepared.find(
@@ -1921,6 +1971,8 @@ export function PlanCanvas({
             point.x,
             point.y,
             8 / viewRef.current.scale,
+            lockedLayers,
+            focusSet,
           );
           setHover(candidates[0]?.id ?? null);
           const peek =
@@ -2045,7 +2097,7 @@ export function PlanCanvas({
           planY: at.y,
           clientX: e.clientX,
           clientY: e.clientY,
-          nodeId: hitTest(prepared, visibleLayers, at.x, at.y, 8 / view.scale, lockedLayers),
+          nodeId: hitTest(prepared, visibleLayers, at.x, at.y, 8 / view.scale, lockedLayers, focusSet),
         });
       }
     }
@@ -2655,11 +2707,14 @@ function drawSelectionFrame(
   view: View,
   nudge: { dx: number; dy: number } | null,
   kind: 'solo' | 'item' | 'group' = 'solo',
+  shape: 'rect' | 'circle' = 'rect',
   count?: number,
 ): void {
   const dx = nudge?.dx ?? 0;
   const dy = nudge?.dy ?? 0;
   const pad = kind === 'group' ? 8 : 5;
+  const cx = ((b.minX + b.maxX) / 2 + dx) * view.scale + view.offsetX;
+  const cy = screenY(view, (b.minY + b.maxY) / 2 + dy);
   const x0 = (b.minX + dx) * view.scale + view.offsetX - pad;
   const y0 = screenY(view, b.maxY + dy) - pad;
   const x1 = (b.maxX + dx) * view.scale + view.offsetX + pad;
@@ -2668,6 +2723,7 @@ function drawSelectionFrame(
   const h = Math.round(y1 - y0);
   const left = Math.round(x0) + 0.5;
   const top = Math.round(y0) + 0.5;
+  const radius = Math.min(w, h) / 2;
 
   ctx.save();
   if (kind === 'group') {
@@ -2687,6 +2743,13 @@ function drawSelectionFrame(
     ctx.fillStyle = '#fff';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, chipX + 6, chipY + chipH / 2);
+  } else if (shape === 'circle' && kind === 'solo') {
+    ctx.strokeStyle = 'rgba(77,148,255,0.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.arc(Math.round(cx) + 0.5, Math.round(cy) + 0.5, Math.max(4, radius), 0, Math.PI * 2);
+    ctx.stroke();
   } else if (kind === 'item') {
     ctx.strokeStyle = 'rgba(77,148,255,0.28)';
     ctx.lineWidth = 1;

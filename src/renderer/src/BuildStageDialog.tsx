@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { DECK_SIZES, type StairEdge } from '../../format/stage.js';
+import { DECK_SIZES, type StairEdge, type StageBuild } from '../../format/stage.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../../format/rv.js';
 
@@ -27,6 +27,16 @@ const STAIR_OPTIONS: Array<{ id: string; label: string; short: string; edges: St
   { id: 'none', label: 'None', short: 'None', edges: [] },
 ];
 
+function stairsIdFromBuild(build: StageBuild): string {
+  const edges = new Set(build.stairs.map((s) => s.edge));
+  if (!edges.size) return 'none';
+  if (edges.has('left') && edges.has('right') && edges.size === 2) return 'sides';
+  if (edges.has('front') && edges.size === 1) return 'front';
+  if (edges.has('left') && edges.size === 1) return 'left';
+  if (edges.has('right') && edges.size === 1) return 'right';
+  return 'front';
+}
+
 interface Props {
   open: boolean;
   units: UnitSystem;
@@ -40,6 +50,8 @@ interface Props {
    * the house default guaranteed the warning came back.
    */
   wanted?: { widthFt?: number; depthFt?: number; heightIn?: number } | null;
+  /** Prefill from companion stage and replace on build. */
+  rebuild?: StageBuild | null;
   disabled?: boolean;
   onClose: () => void;
   onBuilt: (doc?: unknown, created?: number[]) => void;
@@ -52,6 +64,7 @@ export default function BuildStageDialog({
   units,
   origin,
   wanted,
+  rebuild = null,
   disabled,
   onClose,
   onBuilt,
@@ -70,19 +83,35 @@ export default function BuildStageDialog({
 
   useEffect(() => {
     if (!open) return;
+    setBusy(false);
+    if (rebuild?.levels?.length) {
+      const front = rebuild.levels[0]!;
+      const back = rebuild.levels[1];
+      setPreset('4x8');
+      setTiered(!!back);
+      setWidthText(formatLength(front.width, units));
+      setDepthText(formatLength(front.depth, units));
+      setHeightText(formatLength(front.height, units));
+      if (back) {
+        setBackDepthText(formatLength(back.depth, units));
+        setBackHeightText(formatLength(back.height, units));
+      } else {
+        setBackDepthText(formatLength(8 * UNITS_PER_FOOT, units));
+        setBackHeightText(formatLength(24 * UNITS_PER_INCH, units));
+      }
+      setStairs(stairsIdFromBuild(rebuild));
+      return;
+    }
     // Single-deck default — house/tiered presets are one click away.
-    // Resetting to house-42 on every open made custom W×D×H easy to miss.
     setPreset('4x8');
     setTiered(false);
-    // The brief wins where it has an answer; the house default fills the rest.
     setWidthText(formatLength((wanted?.widthFt ?? 24) * UNITS_PER_FOOT, units));
     setDepthText(formatLength((wanted?.depthFt ?? 16) * UNITS_PER_FOOT, units));
     setHeightText(formatLength((wanted?.heightIn ?? 24) * UNITS_PER_INCH, units));
     setBackDepthText(formatLength(8 * UNITS_PER_FOOT, units));
     setBackHeightText(formatLength(24 * UNITS_PER_INCH, units));
     setStairs('front');
-    setBusy(false);
-  }, [open, units, wanted?.widthFt, wanted?.depthFt, wanted?.heightIn]);
+  }, [open, units, wanted?.widthFt, wanted?.depthFt, wanted?.heightIn, rebuild]);
 
   const isCircular = preset === 'circ';
 
@@ -175,7 +204,7 @@ export default function BuildStageDialog({
           units === 'metric'
             ? `Circular deck ${formatLength(diameter, units)}`
             : `${Math.round(diameter / UNITS_PER_FOOT)}' Circular deck`;
-        const reply = await api.placeGear(label, origin.x, origin.y);
+        const reply = await api.placeGear(label, origin.x, origin.y, { allowOverlap: true });
         if (!reply.ok) {
           onError(reply.reason ?? 'circular deck could not be placed');
           return;
@@ -203,6 +232,7 @@ export default function BuildStageDialog({
         height,
         back,
         stairEdges,
+        rebuild ? { replace: true } : undefined,
       );
       if (!reply.ok) {
         onError(reply.reason ?? 'stage could not be built');
@@ -244,8 +274,12 @@ export default function BuildStageDialog({
       >
         <div className="sheet-title">
           <div className="stage-sheet-heading">
-            <h2>Build a Stage</h2>
-            <p>Stock decks tile automatically · place at the front of the room</p>
+            <h2>{rebuild ? 'Edit stage' : 'Build a Stage'}</h2>
+            <p>
+              {rebuild
+                ? 'Changes replace the current stage · stairs stay linked'
+                : 'Stock decks tile automatically · place at the front of the room'}
+            </p>
           </div>
           <button type="button" className="btn-outline" onClick={onClose} disabled={busy}>
             Close

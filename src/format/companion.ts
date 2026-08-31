@@ -35,11 +35,70 @@ import type { RVDocument } from './rv.js';
 import type { AspectRatio, InstanceOverride, ItemSpec, Obstruction } from './definition.js';
 import type { RoomModel, WallSegment } from './room.js';
 import { parseShowBrief, type ShowBrief } from './show-brief.js';
+import type { SeatingStyle } from './seating-plan.js';
 import type { Rail, Ramp, StageBuild, StageLevel, Stair, StairEdge } from './stage.js';
 import type { UnitSystem } from './units.js';
 
 export const COMPANION_FORMAT = 'groundplan-companion';
 export const COMPANION_VERSION = 1;
+
+/**
+ * Parametric seating spine — the request that produced managed chairs/tables.
+ *
+ * Geometry still lives in the `.rv4`; this is the intent so Update placed
+ * seating can replace the same nodes after reopen instead of stacking a second
+ * layout (and so the planner restores style / clearances / assets).
+ */
+export interface CompanionSeatingBank {
+  id: string;
+  label: string;
+  ids: number[];
+}
+
+export interface CompanionSeating {
+  style: SeatingStyle;
+  chairName: string;
+  tableName?: string;
+  focusX: number;
+  focusY: number;
+  seatSpacing?: number;
+  rowSpacing?: number;
+  front?: number;
+  perimeter?: number;
+  aisle?: number;
+  rowsPerBlock?: number;
+  centreAisle?: number;
+  side?: number;
+  wing?: number;
+  rear?: number;
+  frontWall?: number;
+  stagger?: boolean;
+  splay?: number;
+  seatsPerTable?: number;
+  optimum?: boolean;
+  crescent?: boolean;
+  banquetEndChairs?: boolean;
+  banquetRotate90?: boolean;
+  chairsBothSides?: boolean;
+  tablesAcross?: number;
+  sectionCentre?: number;
+  sectionWing?: number;
+  /** Node ids managed by the last fill/update (replace target). */
+  nodeIds: number[];
+  banks: CompanionSeatingBank[];
+  chairs: number;
+  tables: number;
+  clearances?: {
+    front: number;
+    side: number;
+    wing: number;
+    rear: number;
+    centreAisle: number;
+    perimeter: number;
+    aisle: number;
+    frontWall: number;
+  };
+}
 
 /** Identifies the archive a companion was written against. */
 export interface PlanFingerprint {
@@ -86,6 +145,8 @@ export interface CompanionDocument {
   background?: PlanBackground;
   /** Authored stage build (deck heights / stairs) — survives reopen for pull lists and DXF Z. */
   stage?: StageBuild;
+  /** Last fill-room seating request + managed node ids (parametric spine). */
+  seating?: CompanionSeating;
   /** Keeps a traced room labelled as derived when a background alone creates a sidecar. */
   roomIsDerived?: boolean;
   /**
@@ -286,6 +347,107 @@ const isFinitePoint = (value: unknown): value is { x: number; y: number } =>
   Number.isFinite(value.x) &&
   Number.isFinite(value.y);
 
+const SEATING_STYLES = new Set<SeatingStyle>([
+  'theatre',
+  'theatre-curved',
+  'chevron',
+  'schoolroom',
+  'banquet',
+  'cabaret',
+  'crescent',
+  'conference',
+  'u-shape',
+  'hollow-square',
+  'reception',
+  'perimeter',
+]);
+
+function optionalFinite(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parseSeatingBank(value: unknown): CompanionSeatingBank | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || !value.id) return null;
+  if (typeof value.label !== 'string') return null;
+  if (!Array.isArray(value.ids)) return null;
+  const ids = value.ids.filter((id): id is number => typeof id === 'number' && Number.isFinite(id));
+  return { id: value.id, label: value.label, ids };
+}
+
+/** Reads a companion seating spine; returns null when absent or unusable. */
+export function parseCompanionSeating(value: unknown): CompanionSeating | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.style !== 'string' || !SEATING_STYLES.has(value.style as SeatingStyle)) return null;
+  if (typeof value.chairName !== 'string' || !value.chairName.trim()) return null;
+  if (typeof value.focusX !== 'number' || !Number.isFinite(value.focusX)) return null;
+  if (typeof value.focusY !== 'number' || !Number.isFinite(value.focusY)) return null;
+  if (!Array.isArray(value.nodeIds)) return null;
+
+  const nodeIds = value.nodeIds.filter(
+    (id): id is number => typeof id === 'number' && Number.isFinite(id),
+  );
+  const banks = Array.isArray(value.banks)
+    ? value.banks.map(parseSeatingBank).filter((b): b is CompanionSeatingBank => b != null)
+    : [];
+
+  const clearancesRaw = isRecord(value.clearances) ? value.clearances : null;
+  const clearances = clearancesRaw
+    ? {
+        front: optionalFinite(clearancesRaw.front) ?? 0,
+        side: optionalFinite(clearancesRaw.side) ?? 0,
+        wing: optionalFinite(clearancesRaw.wing) ?? 0,
+        rear: optionalFinite(clearancesRaw.rear) ?? 0,
+        centreAisle: optionalFinite(clearancesRaw.centreAisle) ?? 0,
+        perimeter: optionalFinite(clearancesRaw.perimeter) ?? 0,
+        aisle: optionalFinite(clearancesRaw.aisle) ?? 0,
+        frontWall: optionalFinite(clearancesRaw.frontWall) ?? 0,
+      }
+    : undefined;
+
+  const chairs = optionalFinite(value.chairs) ?? 0;
+  const tables = optionalFinite(value.tables) ?? 0;
+  const tableName =
+    typeof value.tableName === 'string' && value.tableName.trim() ? value.tableName : undefined;
+
+  return {
+    style: value.style as SeatingStyle,
+    chairName: value.chairName.trim(),
+    ...(tableName ? { tableName } : {}),
+    focusX: value.focusX,
+    focusY: value.focusY,
+    seatSpacing: optionalFinite(value.seatSpacing),
+    rowSpacing: optionalFinite(value.rowSpacing),
+    front: optionalFinite(value.front),
+    perimeter: optionalFinite(value.perimeter),
+    aisle: optionalFinite(value.aisle),
+    rowsPerBlock: optionalFinite(value.rowsPerBlock),
+    centreAisle: optionalFinite(value.centreAisle),
+    side: optionalFinite(value.side),
+    wing: optionalFinite(value.wing),
+    rear: optionalFinite(value.rear),
+    frontWall: optionalFinite(value.frontWall),
+    ...(typeof value.stagger === 'boolean' ? { stagger: value.stagger } : {}),
+    splay: optionalFinite(value.splay),
+    seatsPerTable: optionalFinite(value.seatsPerTable),
+    ...(typeof value.optimum === 'boolean' ? { optimum: value.optimum } : {}),
+    ...(typeof value.crescent === 'boolean' ? { crescent: value.crescent } : {}),
+    ...(typeof value.banquetEndChairs === 'boolean'
+      ? { banquetEndChairs: value.banquetEndChairs }
+      : {}),
+    ...(typeof value.banquetRotate90 === 'boolean' ? { banquetRotate90: value.banquetRotate90 } : {}),
+    ...(typeof value.chairsBothSides === 'boolean' ? { chairsBothSides: value.chairsBothSides } : {}),
+    tablesAcross: optionalFinite(value.tablesAcross),
+    sectionCentre: optionalFinite(value.sectionCentre),
+    sectionWing: optionalFinite(value.sectionWing),
+    nodeIds,
+    banks,
+    chairs,
+    tables,
+    ...(clearances ? { clearances } : {}),
+  };
+}
+
 function parseWall(value: unknown): WallSegment | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== 'string' || !value.id) return null;
@@ -476,6 +638,7 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
 
   const background = parsePlanBackground(value.background);
   const stage = parseStage(value.stage);
+  const seating = parseCompanionSeating(value.seating);
   // Absent on every plan predating the brief, which must still open.
   const showBrief = parseShowBrief(value.showBrief);
   return {
@@ -494,6 +657,7 @@ export function parseCompanion(value: unknown): CompanionDocument | null {
       : [],
     ...(background ? { background } : {}),
     ...(stage ? { stage } : {}),
+    ...(seating ? { seating } : {}),
     ...(value.roomIsDerived === true ? { roomIsDerived: true } : {}),
     ...(showBrief ? { showBrief } : {}),
   };

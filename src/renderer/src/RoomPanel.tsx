@@ -33,6 +33,7 @@ import {
 } from './icons.js';
 import { SnappySlider } from './SnappySlider.js';
 import { filterSeatingAssets } from './seating-options.js';
+import { loadSeatingSession, saveSeatingSession } from './seating-session.js';
 import type { WallEditSession } from './wall-edit.js';
 
 const api = window.groundplan;
@@ -75,6 +76,36 @@ interface Props {
   /** Colour seats by A/V sightline grade on the plan canvas. */
   showSightlineMarkers?: boolean;
   onShowSightlineMarkersChange?: (next: boolean) => void;
+  /** Plan path — used to persist seating controls across overlay open/close. */
+  planPath?: string | null;
+  /** Arm a click-to-stamp seating bank (theatre / round / schoolroom / table grid). */
+  onArmSeatingStamp?: (request: {
+    kind: 'round' | 'theatre' | 'schoolroom';
+    chair: string;
+    table?: string;
+    seats: number;
+    rows: number;
+    perRow: number;
+    angle?: number;
+    seatSpacing?: number;
+    rowSpacing?: number;
+    rowLengths?: number[];
+    gridColumns?: number;
+    gridRows?: number;
+    tableSpacingX?: number;
+    tableSpacingY?: number;
+  }) => void;
+  seatingStampArmed?: boolean;
+  onDoneSeatingStamp?: () => void;
+  /** Solo a seating bank (isolation focus). */
+  onSoloSeatingBank?: (ids: number[]) => void;
+  /** Save current seating as a named layout variant kit. */
+  onSaveSeatingVariant?: () => void;
+  /** User-saved layout kits with seating (for variant switch). */
+  layoutVariants?: Array<{ id: string; name: string; chairs: number; banks: number }>;
+  layoutVariantsBusy?: boolean;
+  /** Apply a saved variant (seating only; caller snapshots first). */
+  onApplyLayoutVariant?: (kitId: string) => void | Promise<void>;
 }
 
 /**
@@ -178,6 +209,15 @@ export default function RoomPanel({
   onPreferredWallActionChange,
   showSightlineMarkers = false,
   onShowSightlineMarkersChange,
+  planPath = null,
+  onArmSeatingStamp,
+  seatingStampArmed = false,
+  onDoneSeatingStamp,
+  onSoloSeatingBank,
+  onSaveSeatingVariant,
+  layoutVariants = [],
+  layoutVariantsBusy = false,
+  onApplyLayoutVariant,
 }: Props) {
   const [model, setModel] = useState<PlanModelView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -498,6 +538,7 @@ export default function RoomPanel({
   // ---- Event Room Data / seating ------------------------------------------
   type ErdTab = 'seating' | 'spacing' | 'av' | 'design';
   const [erdTab, setErdTab] = useState<ErdTab>('seating');
+  const [selectedLayoutVariant, setSelectedLayoutVariant] = useState('');
   const [roomName, setRoomName] = useState('');
   const ceiling = useLength(10 * 120, units);
   const [rvStyle, setRvStyle] = useState<
@@ -523,6 +564,16 @@ export default function RoomPanel({
   const [sectionCentre, setSectionCentre] = useState(0);
   const [sectionWing, setSectionWing] = useState(0);
   const [seatingPlacementMode, setSeatingPlacementMode] = useState<'replace' | 'add'>('replace');
+  const [seatingWorkMode, setSeatingWorkMode] = useState<'fill' | 'stamp'>('fill');
+  const [stampKind, setStampKind] = useState<'round' | 'theatre' | 'schoolroom'>('round');
+  const [stampRows, setStampRows] = useState(8);
+  const [stampPerRow, setStampPerRow] = useState(12);
+  const [stampAngle, setStampAngle] = useState(0);
+  const [stampCount, setStampCount] = useState(10);
+  const [stampGridColumns, setStampGridColumns] = useState(1);
+  const [stampGridRows, setStampGridRows] = useState(1);
+  const stampTableSpacing = useLength(10 * 120, units);
+  const [sessionHydrated, setSessionHydrated] = useState(false);
   const [banquetEndChairs, setBanquetEndChairs] = useState(false);
   const [banquetRotate90, setBanquetRotate90] = useState(false);
   const [chairsBothSides, setChairsBothSides] = useState(false);
@@ -566,6 +617,7 @@ export default function RoomPanel({
   const [metaSeeded, setMetaSeeded] = useState(false);
   useEffect(() => {
     setMetaSeeded(false);
+    setSessionHydrated(false);
   }, [doc.path]);
   useEffect(() => {
     if (!room || metaSeeded) return;
@@ -578,6 +630,148 @@ export default function RoomPanel({
   useEffect(() => {
     if (rvStyle !== 'custom') setStyle(rvStyle);
   }, [rvStyle]);
+
+  // Prefer companion seating spine (survives reopen); fall back to local session.
+  useEffect(() => {
+    if (sessionHydrated || mode !== 'seating' || !model) return;
+
+    const spine = model.seatingSpine;
+    const snap = spine
+      ? null
+      : loadSeatingSession(planPath ?? doc.path);
+
+    const applyLength = (
+      field: { setText: (v: string) => void },
+      value: number | undefined,
+    ) => {
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        field.setText(formatLength(value, units));
+      }
+    };
+
+    if (spine) {
+      setStyle(spine.style);
+      if (
+        spine.style === 'schoolroom' ||
+        spine.style === 'theatre' ||
+        spine.style === 'banquet' ||
+        spine.style === 'hollow-square' ||
+        spine.style === 'u-shape' ||
+        spine.style === 'conference'
+      ) {
+        setRvStyle(spine.style);
+      } else {
+        setRvStyle('custom');
+      }
+      setChair(spine.chairName);
+      if (spine.tableName) setTable(spine.tableName);
+      if (typeof spine.seatsPerTable === 'number') setSeatsPerTableDraft(String(spine.seatsPerTable));
+      if (typeof spine.optimum === 'boolean') setOptimum(spine.optimum);
+      if (typeof spine.crescent === 'boolean') setCrescent(spine.crescent);
+      if (typeof spine.stagger === 'boolean') setStagger(spine.stagger);
+      if (typeof spine.splay === 'number') setSplay(spine.splay);
+      if (typeof spine.tablesAcross === 'number') setTablesAcross(spine.tablesAcross);
+      if (typeof spine.sectionCentre === 'number') setSectionCentre(spine.sectionCentre);
+      if (typeof spine.sectionWing === 'number') setSectionWing(spine.sectionWing);
+      if (typeof spine.banquetEndChairs === 'boolean') setBanquetEndChairs(spine.banquetEndChairs);
+      if (typeof spine.banquetRotate90 === 'boolean') setBanquetRotate90(spine.banquetRotate90);
+      if (typeof spine.chairsBothSides === 'boolean') setChairsBothSides(spine.chairsBothSides);
+      if (typeof spine.rowsPerBlock === 'number') {
+        setRowsPerBlockDraft(spine.rowsPerBlock > 0 ? String(spine.rowsPerBlock) : '');
+      }
+      applyLength(seatSpacing, spine.seatSpacing);
+      applyLength(rowSpacing, spine.rowSpacing);
+      applyLength(frontClearance, spine.front);
+      applyLength(sideClearance, spine.side);
+      applyLength(wingClearance, spine.wing);
+      applyLength(rearClearance, spine.rear);
+      applyLength(frontWallClearance, spine.frontWall);
+      applyLength(aisleClearance, spine.aisle);
+      applyLength(centreAisle, spine.centreAisle);
+      setSeatingPlacementMode('replace');
+      setSeatingWorkMode('fill');
+    } else if (snap) {
+      if (snap.style) setStyle(snap.style);
+      if (snap.chair) setChair(snap.chair);
+      if (snap.table) setTable(snap.table);
+      if (typeof snap.seatsPerTable === 'number') setSeatsPerTableDraft(String(snap.seatsPerTable));
+      if (typeof snap.optimum === 'boolean') setOptimum(snap.optimum);
+      if (typeof snap.crescent === 'boolean') setCrescent(snap.crescent);
+      if (snap.placementMode) setSeatingPlacementMode(snap.placementMode);
+      if (typeof snap.splay === 'number') setSplay(snap.splay);
+      if (typeof snap.tablesAcross === 'number') setTablesAcross(snap.tablesAcross);
+      if (typeof snap.sectionCentre === 'number') setSectionCentre(snap.sectionCentre);
+      if (typeof snap.sectionWing === 'number') setSectionWing(snap.sectionWing);
+      if (typeof snap.stagger === 'boolean') setStagger(snap.stagger);
+      if (snap.stampMode) setSeatingWorkMode(snap.stampMode);
+      if (snap.stampKind) setStampKind(snap.stampKind);
+      if (typeof snap.stampRows === 'number') setStampRows(snap.stampRows);
+      if (typeof snap.stampPerRow === 'number') setStampPerRow(snap.stampPerRow);
+      if (typeof snap.stampAngle === 'number') setStampAngle(snap.stampAngle);
+      if (typeof snap.stampCount === 'number') setStampCount(snap.stampCount);
+      if (typeof snap.stampGridColumns === 'number') setStampGridColumns(snap.stampGridColumns);
+      if (typeof snap.stampGridRows === 'number') setStampGridRows(snap.stampGridRows);
+      if (typeof snap.stampTableSpacing === 'number' && snap.stampTableSpacing > 0) {
+        stampTableSpacing.setText(formatLength(snap.stampTableSpacing, units));
+      }
+    }
+    setSessionHydrated(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate once per plan open after model loads
+  }, [sessionHydrated, mode, planPath, doc.path, model]);
+
+  // Persist seating controls while the planner is open.
+  useEffect(() => {
+    if (!sessionHydrated || mode !== 'seating') return;
+    saveSeatingSession(planPath ?? doc.path, {
+      style,
+      chair,
+      table,
+      seatsPerTable,
+      optimum,
+      crescent,
+      placementMode: seatingPlacementMode,
+      splay,
+      tablesAcross,
+      sectionCentre,
+      sectionWing,
+      stagger,
+      stampMode: seatingWorkMode,
+      stampKind,
+      stampRows,
+      stampPerRow,
+      stampAngle,
+      stampCount,
+      stampGridColumns,
+      stampGridRows,
+      stampTableSpacing: stampTableSpacing.value ?? undefined,
+    });
+  }, [
+    sessionHydrated,
+    mode,
+    planPath,
+    doc.path,
+    style,
+    chair,
+    table,
+    seatsPerTable,
+    optimum,
+    crescent,
+    seatingPlacementMode,
+    splay,
+    tablesAcross,
+    sectionCentre,
+    sectionWing,
+    stagger,
+    seatingWorkMode,
+    stampKind,
+    stampRows,
+    stampPerRow,
+    stampAngle,
+    stampCount,
+    stampGridColumns,
+    stampGridRows,
+    stampTableSpacing.value,
+  ]);
 
   const seatingRequest = useMemo(
     () => ({
@@ -641,10 +835,8 @@ export default function RoomPanel({
     ],
   );
 
-  // Live count, settled just after the operator pauses. Running an IPC solve
-  // for every character in `4' 6"` made the panel visibly repaint while the
-  // field was still being typed; the short debounce keeps the useful live
-  // answer without making the controls feel unstable.
+  // Live count, settled just after the operator pauses. Keep the previous preview
+  // visible while a new solve is in flight so the panel does not flash empty.
   useEffect(() => {
     let cancelled = false;
     if (!room) {
@@ -666,12 +858,22 @@ export default function RoomPanel({
           });
         }
       });
-    }, 140);
+    }, 180);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
   }, [room, seatingRequest, onSeatingStatus]);
+
+  useEffect(() => {
+    if (!layoutVariants.length) {
+      setSelectedLayoutVariant('');
+      return;
+    }
+    setSelectedLayoutVariant((current) =>
+      current && layoutVariants.some((kit) => kit.id === current) ? current : layoutVariants[0]!.id,
+    );
+  }, [layoutVariants]);
 
   useEffect(() => {
     if (erdTab !== 'av') return;
@@ -1058,7 +1260,7 @@ export default function RoomPanel({
                   onClick={() => setReshapeOp('union')}
                   disabled={!editable || !canReshapeRect}
                 >
-                  Add area
+                  Open airwall
                 </button>
                 <button
                   type="button"
@@ -1069,7 +1271,11 @@ export default function RoomPanel({
                   Cut out
                 </button>
               </div>
-
+              <p className="hint">
+                {reshapeOp === 'union'
+                  ? 'Union a rectangle onto the room — opens an airwall between adjoining volumes.'
+                  : 'Subtract a rectangle (alcove / opening).'}
+              </p>
               <div className="field-row">
                 <LengthField id="reshape-x" label="X" field={reshapeX} units={units} disabled={!editable || !canReshapeRect} />
                 <LengthField id="reshape-y" label="Y" field={reshapeY} units={units} disabled={!editable || !canReshapeRect} />
@@ -1102,7 +1308,7 @@ export default function RoomPanel({
                   }
                 >
                   <IconPlus size={14} />
-                  {reshapeOp === 'union' ? 'Add to room' : 'Cut from room'}
+                  {reshapeOp === 'union' ? 'Open airwall' : 'Cut from room'}
                 </button>
               </div>
             </div>
@@ -1559,9 +1765,13 @@ export default function RoomPanel({
         <span className="seating-panel-hero-copy">
           <small>Seating generator</small>
           <strong>Seating planner</strong>
-          <span>Design full-room seating with a live capacity preview.</span>
+          <span>
+            {seatingWorkMode === 'stamp'
+              ? 'Stamp one bank per click — change settings and click again.'
+              : 'Design full-room seating with a live capacity preview.'}
+          </span>
         </span>
-        {preview && (
+        {preview && seatingWorkMode === 'fill' && (
           <span className="seating-panel-hero-count">
             <strong>{preview.seats.toLocaleString()}</strong>
             <small>seats</small>
@@ -1569,6 +1779,335 @@ export default function RoomPanel({
         )}
       </div>
 
+      <div className="section" style={{ paddingTop: 0 }}>
+        <div className="seg tabs" role="radiogroup" aria-label="Seating work mode">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={seatingWorkMode === 'fill'}
+            className={seatingWorkMode === 'fill' ? 'active' : ''}
+            onClick={() => setSeatingWorkMode('fill')}
+            disabled={!editable}
+          >
+            Fill room
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={seatingWorkMode === 'stamp'}
+            className={seatingWorkMode === 'stamp' ? 'active' : ''}
+            onClick={() => setSeatingWorkMode('stamp')}
+            disabled={!editable}
+          >
+            Stamp bank
+          </button>
+        </div>
+      </div>
+
+      {seatingWorkMode === 'stamp' && (
+        <div className="section">
+          <div className="section-title">
+            <span>Stamp a seating bank</span>
+          </div>
+          <p className="hint">
+            One click places a bank or a table grid. Use Fill room for a whole-floor layout.
+          </p>
+          <div className="seg tabs" role="radiogroup" aria-label="Bank type">
+            {(
+              [
+                ['round', 'Banquet'],
+                ['theatre', 'Theatre'],
+                ['schoolroom', 'Schoolroom'],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={stampKind === id}
+                className={stampKind === id ? 'active' : ''}
+                onClick={() => setStampKind(id)}
+                disabled={!editable}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="field-row" style={{ marginTop: 10 }}>
+            <div className="field">
+              <label htmlFor="stamp-chair">Chair</label>
+              <select
+                id="stamp-chair"
+                value={chair}
+                onChange={(e) => setChair(e.target.value)}
+                disabled={!editable}
+              >
+                <option value="">Choose…</option>
+                {chairShapes.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {stampKind !== 'theatre' && (
+              <div className="field">
+                <label htmlFor="stamp-table">Table</label>
+                <select
+                  id="stamp-table"
+                  value={table}
+                  onChange={(e) => setTable(e.target.value)}
+                  disabled={!editable}
+                >
+                  <option value="">Choose…</option>
+                  {tableShapes.map((t) => (
+                    <option key={t.name} value={t.name}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+          {stampKind === 'round' ? (
+            <>
+              <div className="field">
+                <label htmlFor="stamp-count">Chairs per table</label>
+                <input
+                  id="stamp-count"
+                  className="num"
+                  type="number"
+                  min={1}
+                  max={24}
+                  value={stampCount}
+                  onChange={(e) => setStampCount(Math.max(1, Math.min(24, Number(e.target.value) || 1)))}
+                  disabled={!editable}
+                />
+              </div>
+              <div className="field-row" style={{ marginTop: 10 }}>
+                <div className="field">
+                  <label htmlFor="stamp-grid-cols">Columns</label>
+                  <input
+                    id="stamp-grid-cols"
+                    className="num"
+                    type="number"
+                    min={1}
+                    max={40}
+                    value={stampGridColumns}
+                    onChange={(e) =>
+                      setStampGridColumns(Math.max(1, Math.min(40, Number(e.target.value) || 1)))
+                    }
+                    disabled={!editable}
+                    title="1×1 stamps one table. Larger grids place many tables in one click."
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="stamp-grid-rows">Rows</label>
+                  <input
+                    id="stamp-grid-rows"
+                    className="num"
+                    type="number"
+                    min={1}
+                    max={40}
+                    value={stampGridRows}
+                    onChange={(e) =>
+                      setStampGridRows(Math.max(1, Math.min(40, Number(e.target.value) || 1)))
+                    }
+                    disabled={!editable}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="stamp-table-spacing">Table spacing</label>
+                  <input
+                    id="stamp-table-spacing"
+                    className="num"
+                    value={stampTableSpacing.text}
+                    onChange={(e) => stampTableSpacing.setText(e.target.value)}
+                    disabled={!editable || stampGridColumns * stampGridRows < 2}
+                    title="Centre-to-centre distance between tables"
+                  />
+                </div>
+              </div>
+              {stampGridColumns * stampGridRows >= 2 && (
+                <p className="hint">
+                  Click places a {stampGridColumns}×{stampGridRows} grid of individual tables
+                  (grouped with their chairs).
+                </p>
+              )}
+            </>
+          ) : (
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="stamp-rows">Rows</label>
+                <input
+                  id="stamp-rows"
+                  className="num"
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={stampRows}
+                  onChange={(e) => setStampRows(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
+                  disabled={!editable}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="stamp-per-row">Seats per row</label>
+                <input
+                  id="stamp-per-row"
+                  className="num"
+                  type="number"
+                  min={1}
+                  max={80}
+                  value={stampPerRow}
+                  onChange={(e) => setStampPerRow(Math.max(1, Math.min(80, Number(e.target.value) || 1)))}
+                  disabled={!editable}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="stamp-angle">Wing angle (°)</label>
+                <input
+                  id="stamp-angle"
+                  className="num"
+                  type="number"
+                  min={-60}
+                  max={60}
+                  value={stampAngle}
+                  onChange={(e) => setStampAngle(Number(e.target.value) || 0)}
+                  disabled={!editable}
+                  title="Rotates the stamped bank. Positive turns the bank toward stage left."
+                />
+              </div>
+            </div>
+          )}
+          <div className="actions-row">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={
+                !editable ||
+                !chair ||
+                (stampKind !== 'theatre' && !table) ||
+                !onArmSeatingStamp ||
+                (stampKind === 'round' &&
+                  stampGridColumns * stampGridRows >= 2 &&
+                  !stampTableSpacing.positive)
+              }
+              onClick={() => {
+                const useGrid =
+                  stampKind === 'round' &&
+                  stampGridColumns * stampGridRows >= 2 &&
+                  stampTableSpacing.positive;
+                onArmSeatingStamp?.({
+                  kind: stampKind,
+                  chair,
+                  table: stampKind === 'theatre' ? undefined : table || undefined,
+                  seats: stampCount,
+                  rows: stampRows,
+                  perRow: stampPerRow,
+                  angle: stampAngle || undefined,
+                  seatSpacing:
+                    stampKind !== 'round' && seatSpacing.value != null && seatSpacing.value > 0
+                      ? seatSpacing.value
+                      : undefined,
+                  rowSpacing:
+                    stampKind !== 'round' && rowSpacing.value != null && rowSpacing.value > 0
+                      ? rowSpacing.value
+                      : undefined,
+                  gridColumns: useGrid ? stampGridColumns : undefined,
+                  gridRows: useGrid ? stampGridRows : undefined,
+                  tableSpacingX: useGrid ? stampTableSpacing.value! : undefined,
+                  tableSpacingY: useGrid ? stampTableSpacing.value! : undefined,
+                });
+              }}
+            >
+              <IconPlus size={14} />
+              {seatingStampArmed ? 'Update stamp' : 'Arm stamp'}
+            </button>
+            {seatingStampArmed && onDoneSeatingStamp ? (
+              <button type="button" className="btn-outline" onClick={onDoneSeatingStamp}>
+                Done placing
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {seatingWorkMode === 'fill' && (
+      <>
+      {(model?.seatingBanks?.length ?? 0) > 0 ||
+      layoutVariants.length > 0 ||
+      onSaveSeatingVariant ? (
+        <div className="section">
+          <div className="section-title">
+            <span>Layout variants</span>
+            {layoutVariants.length > 0 && (
+              <span className="section-count">{layoutVariants.length}</span>
+            )}
+          </div>
+          {(model?.seatingBanks?.length ?? 0) > 0 && (
+            <>
+              <p className="hint">Solo dims everything outside a bank so you can edit one section.</p>
+              <ul className="stack-pick-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {model!.seatingBanks.map((bank) => (
+                  <li key={bank.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                    <strong style={{ flex: 1 }}>{bank.label}</strong>
+                    <span className="hint">{bank.ids.length}</span>
+                    <button
+                      type="button"
+                      className="text-action"
+                      onClick={() => {
+                        onSelect(bank.ids);
+                        onSoloSeatingBank?.(bank.ids);
+                      }}
+                    >
+                      Solo
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {layoutVariants.length > 0 && (
+            <>
+              <p className="hint">
+                Switch to a saved seating layout. A version snapshot is taken before replacing chairs.
+              </p>
+              <div className="field">
+                <label htmlFor="layout-variant-select">Saved variant</label>
+                <select
+                  id="layout-variant-select"
+                  value={selectedLayoutVariant}
+                  disabled={!editable || layoutVariantsBusy}
+                  onChange={(e) => setSelectedLayoutVariant(e.target.value)}
+                >
+                  {layoutVariants.map((kit) => (
+                    <option key={kit.id} value={kit.id}>
+                      {kit.name} · {kit.chairs.toLocaleString()} chairs
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="actions-row">
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={!editable || !selectedLayoutVariant || layoutVariantsBusy}
+                  onClick={() => selectedLayoutVariant && onApplyLayoutVariant?.(selectedLayoutVariant)}
+                >
+                  {layoutVariantsBusy ? 'Applying…' : 'Apply variant'}
+                </button>
+              </div>
+            </>
+          )}
+          {onSaveSeatingVariant && (
+            <div className="actions-row" style={{ marginTop: 8 }}>
+              <button type="button" className="btn-outline" disabled={!editable} onClick={onSaveSeatingVariant}>
+                Save as layout variant
+              </button>
+            </div>
+          )}
+        </div>
+      ) : null}
       {/* ---------------------------------------------------------------- */}
       <div className="section">
         <div className="section-title">
@@ -1815,11 +2354,11 @@ export default function RoomPanel({
                       checked={showSightlineMarkers}
                       onChange={(event) => onShowSightlineMarkersChange(event.target.checked)}
                     />
-                    Color seats by sightline result
+                    Color seats by sightline grade
                   </label>
                 )}
                 <p className="field-hint">
-                  Seat colors show whether each chair has a clear view, is blocked, too close, too far away, or too far off-axis from the screen.
+                  Sightline grades (not packing quality): clear view, blocked, too close, too far, or off-axis from the screen.
                 </p>
               </>
             ) : (
@@ -1831,9 +2370,9 @@ export default function RoomPanel({
         {erdTab === 'design' && (
           <>
             <div className="room-slider-stack">
-              <p className="field-hint" style={{ margin: '0 0 8px' }}>
-                Splay turns the side banks in towards the stage, so the wings face the screen
-                instead of facing across the room. Zero is a single straight block.
+              <p className="field-hint" style={{ margin: '0 0 8px' }} title="Formerly called bank splay.">
+                Wing angle turns the side banks toward the stage so wings face the screen.
+                Zero is a single straight block.
               </p>
               <SnappySlider
                 label="Wing angle"
@@ -1931,6 +2470,11 @@ export default function RoomPanel({
             {note}
           </p>
         ))}
+        {preview?.capacity?.summary && (
+          <p className="hint seating-capacity-estimate" role="status">
+            {preview.capacity.summary}
+          </p>
+        )}
 
         <div className="seating-placement-mode">
           <span>Placement mode</span>
@@ -1984,18 +2528,20 @@ export default function RoomPanel({
             <IconPlus size={14} />
             {seatingPlacementMode === 'add'
               ? 'Add seating section'
-              : model.seatingStatus
+              : model.seatingSpine || model.seatingStatus
                 ? 'Update placed seating'
                 : 'Place seating'}
           </button>
         </div>
         <p className="hint">
-          The count above is what the room will actually take — seats that fall outside the walls, inside a column or on
-          reserved floor are left out. Replace keeps one managed layout; Add section preserves the existing banks for
-          multi-part arrangements.
+          {model.seatingSpine
+            ? 'This plan remembers the seating layout. Update replaces the same chairs instead of stacking a second set.'
+            : 'The count above is what the room will actually take — seats that fall outside the walls, inside a column or on reserved floor are left out. Replace keeps one managed layout; Add section preserves the existing banks for multi-part arrangements.'}
         </p>
       </div>
         </>
+      )}
+      </>
       )}
 
       {roomPanelTab === 'more' && (

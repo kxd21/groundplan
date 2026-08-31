@@ -14,11 +14,22 @@
  */
 
 import type { PendingEffect } from './machine.js';
+import type { PlaceMoveOverlapOptions } from '../collision-ui.js';
 
 /** The slice of the preload API the tools need. Injected, never reached for. */
 export interface ToolApi {
-  placeGear(description: string, x: number, y: number): Promise<EditLike & { method?: string }>;
-  inventoryPlace(id: string, x: number, y: number): Promise<EditLike & { method?: string }>;
+  placeGear(
+    description: string,
+    x: number,
+    y: number,
+    options?: PlaceMoveOverlapOptions,
+  ): Promise<EditLike & { method?: string }>;
+  inventoryPlace(
+    id: string,
+    x: number,
+    y: number,
+    options?: PlaceMoveOverlapOptions,
+  ): Promise<EditLike & { method?: string }>;
   addLabel(text: string, x: number, y: number, color?: number): Promise<EditLike>;
   addSeating(request: unknown): Promise<EditLike & { placed?: number }>;
   addDimension(
@@ -40,6 +51,8 @@ interface EditLike {
   reason?: string;
   created?: number[];
   doc?: unknown;
+  overlaps?: Array<{ id: number; name: string; area: number; fraction: number }>;
+  suggested?: { x: number; y: number };
 }
 
 export type EffectResult = {
@@ -49,12 +62,22 @@ export type EffectResult = {
   doc?: unknown;
   /** What to say in the status line when it worked. */
   status?: string;
+  overlaps?: Array<{ id: number; name: string; area: number; fraction: number }>;
+  suggested?: { x: number; y: number };
 };
 
 export async function runEffect(effect: PendingEffect, api: ToolApi): Promise<EffectResult> {
   switch (effect.do) {
     case 'placeGear': {
       const reply = await api.placeGear(effect.description, effect.at.x, effect.at.y);
+      if (!reply.ok) {
+        return {
+          ok: false,
+          reason: reply.reason,
+          overlaps: reply.overlaps,
+          suggested: reply.suggested,
+        };
+      }
       const status = reply.ok
         ? reply.method === 'matched'
           ? `Placed ${effect.description} from the plan's own shapes`
@@ -72,6 +95,14 @@ export async function runEffect(effect: PendingEffect, api: ToolApi): Promise<Ef
     }
     case 'placeInventory': {
       const reply = await api.inventoryPlace(effect.id, effect.at.x, effect.at.y);
+      if (!reply.ok) {
+        return {
+          ok: false,
+          reason: reply.reason,
+          overlaps: reply.overlaps,
+          suggested: reply.suggested,
+        };
+      }
       const status = reply.ok
         ? reply.method === 'matched'
           ? `Placed ${effect.name} from the plan's own shapes`

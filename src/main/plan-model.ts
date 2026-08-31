@@ -30,7 +30,7 @@ import {
   type SightlineSummary,
   type SightlineVerdict,
 } from '../format/av.js';
-import type { CompanionDocument, PlanBackground } from '../format/companion.js';
+import type { CompanionDocument, CompanionSeating, PlanBackground } from '../format/companion.js';
 import { createCompanion, parsePlanBackground } from '../format/companion.js';
 import { instanceKey, resolveInstances, SpecLibrary, type PlacedItem } from '../format/definition.js';
 import {
@@ -108,6 +108,7 @@ import {
   type SeatingSolution,
   type SeatingStyle,
 } from '../format/seating-plan.js';
+import { estimateLayoutCapacity } from '../format/seating-capacity.js';
 import { renderSeating } from '../format/seating-render.js';
 import {
   simpleStage,
@@ -151,6 +152,8 @@ interface PlanModelState {
   derivedSource: 'walls' | 'region' | 'extent' | 'none';
   /** Objects created by every currently managed seating section. */
   seatingIds: number[];
+  /** Named seating banks (append creates a new bank; replace resets to one). */
+  seatingBanks: Array<{ id: string; label: string; ids: number[] }>;
   /** Counts for managed seating on the drawing (preview counts are separate). */
   placedSeatCounts: { chairs: number; tables: number } | null;
   /** Clearances from the last seating preview/apply, for the status bar. */
@@ -167,6 +170,8 @@ interface PlanModelState {
   lastSeatCounts: { chairs: number; tables: number } | null;
   /** The stage as last built, for the report. */
   stage: StageBuild | null;
+  /** Stage + stairs node ids from the last build (for rebuild / clear). */
+  stageIds: number[];
 }
 
 const EMPTY: PlanModelState = {
@@ -176,10 +181,12 @@ const EMPTY: PlanModelState = {
   derivedSource: 'none',
   rendered: null,
   seatingIds: [],
+  seatingBanks: [],
   placedSeatCounts: null,
   lastClearances: null,
   lastSeatCounts: null,
   stage: null,
+  stageIds: [],
 };
 
 let state: PlanModelState = { ...EMPTY };
@@ -209,6 +216,9 @@ function takePendingCeiling(room: RoomModel): RoomModel {
 /** Reads the companion beside a plan, or derives one from the drawing. */
 export async function openPlanModel(planPath: string, doc: RVDocument, units: UnitSystem): Promise<void> {
   const loaded = await loadCompanion(planPath, doc, units);
+  const spine = loaded.companion.seating;
+  const liveIds = spine ? liveSeatingNodeIds(doc, spine.nodeIds) : [];
+  const liveIdSet = new Set(liveIds);
   state = {
     companion: loaded.companion,
     freshness: loaded.freshness,
@@ -219,12 +229,35 @@ export async function openPlanModel(planPath: string, doc: RVDocument, units: Un
     // what was last rendered. A derived one was read back off the drawing,
     // which amounts to the same thing.
     rendered: loaded.companion.rooms[0] ?? null,
-    seatingIds: [],
-    placedSeatCounts: null,
-    lastClearances: null,
-    lastSeatCounts: null,
+    seatingIds: liveIds,
+    seatingBanks: spine
+      ? spine.banks
+          .map((bank) => ({
+            id: bank.id,
+            label: bank.label,
+            ids: bank.ids.filter((id) => liveIdSet.has(id)),
+          }))
+          .filter((bank) => bank.ids.length > 0)
+      : [],
+    placedSeatCounts:
+      spine && (spine.chairs > 0 || spine.tables > 0)
+        ? { chairs: spine.chairs, tables: spine.tables }
+        : null,
+    lastClearances: spine?.clearances ?? null,
+    lastSeatCounts:
+      spine && (spine.chairs > 0 || spine.tables > 0)
+        ? { chairs: spine.chairs, tables: spine.tables }
+        : null,
     stage: loaded.companion.stage ?? null,
+    stageIds: [],
   };
+}
+
+/** Keeps only seating node ids that still exist in the open document. */
+function liveSeatingNodeIds(doc: RVDocument, ids: number[]): number[] {
+  if (!ids.length) return [];
+  const index = indexDocument(doc);
+  return ids.filter((id) => index.byId.has(id));
 }
 
 /**
@@ -243,6 +276,7 @@ export async function savePlanModel(planPath: string, body: Buffer): Promise<voi
     !state.derived ||
     !!companion.background ||
     !!companion.stage ||
+    !!companion.seating ||
     // The brief is authored, not derived. Without this line a plan whose room
     // was read off the drawing — which is every plan started with "Draw
     // custom" — wrote no sidecar at all, so a show somebody had described in
@@ -270,6 +304,82 @@ export function adoptCompanionSnapshot(companion: CompanionDocument): void {
   state.rendered = companion.rooms[0] ?? null;
   state.derivedSource = state.derived ? state.derivedSource : 'none';
   state.stage = companion.stage ?? null;
+  const spine = companion.seating;
+  if (spine) {
+    state.seatingIds = [...spine.nodeIds];
+    state.seatingBanks = spine.banks.map((bank) => ({
+      id: bank.id,
+      label: bank.label,
+      ids: [...bank.ids],
+    }));
+    state.placedSeatCounts = { chairs: spine.chairs, tables: spine.tables };
+    state.lastSeatCounts = { chairs: spine.chairs, tables: spine.tables };
+    state.lastClearances = spine.clearances ?? null;
+  }
+}
+
+/** Clears managed seating tracking and the companion spine (after Clear seating / kit replace). */
+export function clearManagedSeating(): void {
+  state.seatingIds = [];
+  state.seatingBanks = [];
+  state.placedSeatCounts = null;
+  state.lastClearances = null;
+  state.lastSeatCounts = null;
+  if (state.companion?.seating) delete state.companion.seating;
+}
+
+function persistSeatingSpine(
+  doc: RVDocument,
+  request: SeatingRequestView,
+  chair: string,
+  table: string | undefined,
+): void {
+  if (!state.companion) state.companion = createCompanion(doc, 'imperial');
+  const spine: CompanionSeating = {
+    style: request.style,
+    chairName: chair,
+    ...(table?.trim() ? { tableName: table.trim() } : {}),
+    focusX: request.focusX,
+    focusY: request.focusY,
+    seatSpacing: request.seatSpacing,
+    rowSpacing: request.rowSpacing,
+    front: request.front,
+    perimeter: request.perimeter,
+    aisle: request.aisle,
+    rowsPerBlock: request.rowsPerBlock,
+    centreAisle: request.centreAisle,
+    side: request.side,
+    wing: request.wing,
+    rear: request.rear,
+    frontWall: request.frontWall,
+    ...(typeof request.stagger === 'boolean' ? { stagger: request.stagger } : {}),
+    splay: request.splay,
+    seatsPerTable: request.seatsPerTable,
+    ...(typeof request.optimum === 'boolean' ? { optimum: request.optimum } : {}),
+    ...(typeof request.crescent === 'boolean' ? { crescent: request.crescent } : {}),
+    ...(typeof request.banquetEndChairs === 'boolean'
+      ? { banquetEndChairs: request.banquetEndChairs }
+      : {}),
+    ...(typeof request.banquetRotate90 === 'boolean'
+      ? { banquetRotate90: request.banquetRotate90 }
+      : {}),
+    ...(typeof request.chairsBothSides === 'boolean'
+      ? { chairsBothSides: request.chairsBothSides }
+      : {}),
+    tablesAcross: request.tablesAcross,
+    sectionCentre: request.sectionCentre,
+    sectionWing: request.sectionWing,
+    nodeIds: [...state.seatingIds],
+    banks: state.seatingBanks.map((bank) => ({
+      id: bank.id,
+      label: bank.label,
+      ids: [...bank.ids],
+    })),
+    chairs: state.placedSeatCounts?.chairs ?? 0,
+    tables: state.placedSeatCounts?.tables ?? 0,
+    ...(state.lastClearances ? { clearances: { ...state.lastClearances } } : {}),
+  };
+  state.companion.seating = spine;
 }
 
 /** The current room, from the companion or derived from the drawing. */
@@ -496,6 +606,42 @@ export interface PlanModelView {
     chairs: number;
     tables: number;
   } | null;
+  /** Managed seating banks for isolation / section work. */
+  seatingBanks: Array<{ id: string; label: string; ids: number[] }>;
+  /**
+   * Parametric seating spine from the companion — restores planner controls and
+   * marks that Update placed seating will replace managed nodes.
+   */
+  seatingSpine: {
+    style: SeatingStyle;
+    chairName: string;
+    tableName?: string;
+    focusX: number;
+    focusY: number;
+    seatSpacing?: number;
+    rowSpacing?: number;
+    front?: number;
+    perimeter?: number;
+    aisle?: number;
+    rowsPerBlock?: number;
+    centreAisle?: number;
+    side?: number;
+    wing?: number;
+    rear?: number;
+    frontWall?: number;
+    stagger?: boolean;
+    splay?: number;
+    seatsPerTable?: number;
+    optimum?: boolean;
+    crescent?: boolean;
+    banquetEndChairs?: boolean;
+    banquetRotate90?: boolean;
+    chairsBothSides?: boolean;
+    tablesAcross?: number;
+    sectionCentre?: number;
+    sectionWing?: number;
+    managedIds: number[];
+  } | null;
   stage: {
     present: boolean;
     buildList: Array<{ item: string; quantity: number; detail?: string }>;
@@ -504,6 +650,10 @@ export interface PlanModelView {
     widthFt?: number;
     depthFt?: number;
     heightIn?: number;
+    /** Raw build for Edit stage rebuild. */
+    build?: StageBuild;
+    /** Deck + stairs node ids from last place. */
+    nodeIds?: number[];
   } | null;
 }
 
@@ -642,6 +792,45 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
             tables: state.lastSeatCounts.tables,
           }
         : null,
+    seatingBanks: state.seatingBanks.map((bank) => ({
+      id: bank.id,
+      label: bank.label,
+      ids: [...bank.ids],
+    })),
+    seatingSpine: (() => {
+      const spine = state.companion?.seating;
+      if (!spine) return null;
+      return {
+        style: spine.style,
+        chairName: spine.chairName,
+        tableName: spine.tableName,
+        focusX: spine.focusX,
+        focusY: spine.focusY,
+        seatSpacing: spine.seatSpacing,
+        rowSpacing: spine.rowSpacing,
+        front: spine.front,
+        perimeter: spine.perimeter,
+        aisle: spine.aisle,
+        rowsPerBlock: spine.rowsPerBlock,
+        centreAisle: spine.centreAisle,
+        side: spine.side,
+        wing: spine.wing,
+        rear: spine.rear,
+        frontWall: spine.frontWall,
+        stagger: spine.stagger,
+        splay: spine.splay,
+        seatsPerTable: spine.seatsPerTable,
+        optimum: spine.optimum,
+        crescent: spine.crescent,
+        banquetEndChairs: spine.banquetEndChairs,
+        banquetRotate90: spine.banquetRotate90,
+        chairsBothSides: spine.chairsBothSides,
+        tablesAcross: spine.tablesAcross,
+        sectionCentre: spine.sectionCentre,
+        sectionWing: spine.sectionWing,
+        managedIds: [...state.seatingIds],
+      };
+    })(),
     stage:
       state.stage && stageSolution
         ? {
@@ -655,6 +844,8 @@ export function planModelView(session: Session, units: UnitSystem): PlanModelVie
             // 12ft riser on it satisfies "a stage exists" and satisfies nothing
             // a general session needs.
             ...stageExtent(state.stage),
+            build: structuredClone(state.stage),
+            nodeIds: [...state.stageIds],
           }
         : null,
   };
@@ -1386,6 +1577,12 @@ export interface SeatingPreview {
   rows: number;
   dropped: number;
   notes: string[];
+  /** Room ceiling at current clearances (solver without maxSeats cap). */
+  capacity?: {
+    maxTables: number;
+    maxSeats: number;
+    summary: string | null;
+  };
   clearances: {
     front: number;
     side: number;
@@ -1424,6 +1621,11 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
 
   const plan = planFrom(session, request);
   const solution = plan.optimum ? solveOptimum(plan, room) : solveSeating(plan, room);
+  const capacity = estimateLayoutCapacity(plan, room, {
+    seats: solution.seats.length,
+    tables: solution.tables.length,
+    dropped: solution.dropped,
+  });
   // Preview must not write shared plan-model state — rapid slider updates would
   // race applySeating / planModelView seatingStatus. Return clearances locally.
   const clearances = {
@@ -1442,6 +1644,11 @@ export function previewSeating(session: Session, request: SeatingRequestView): S
     rows: solution.rowCount,
     dropped: solution.dropped,
     notes: solution.notes,
+    capacity: {
+      maxTables: capacity.maxTables,
+      maxSeats: capacity.maxSeats,
+      summary: capacity.summary,
+    },
     clearances,
   };
 }
@@ -1478,6 +1685,15 @@ export function applySeating(
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };
 
   state.seatingIds = append ? [...state.seatingIds, ...drawn.created] : drawn.created;
+  const bankLabel = STYLE_LABELS[request.style] ?? request.style ?? 'Seating';
+  const bank = {
+    id: `bank-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    label: append
+      ? `${bankLabel} ${state.seatingBanks.length + 1}`
+      : bankLabel,
+    ids: [...(drawn.created ?? [])],
+  };
+  state.seatingBanks = append ? [...state.seatingBanks, bank] : [bank];
   const previousPlaced = append ? state.placedSeatCounts : null;
   state.placedSeatCounts = {
     chairs: (previousPlaced?.chairs ?? 0) + solution.seats.length,
@@ -1494,6 +1710,7 @@ export function applySeating(
     frontWall: plan.clearances.frontWall,
   };
   state.lastSeatCounts = { ...state.placedSeatCounts };
+  persistSeatingSpine(doc, request, chair, table);
   const notes = [...solution.notes];
   if (drawn.removed) notes.unshift(`Replaced the previous layout (${drawn.removed} items).`);
   else if (append) notes.unshift(`Added a seating section (${drawn.chairs} chairs${drawn.tables ? `, ${drawn.tables} tables` : ''}).`);
@@ -1657,6 +1874,7 @@ export function addStage(
   }
 
   state.stage = build;
+  state.stageIds = [...created];
   if (!state.companion) state.companion = createCompanion(doc, 'imperial');
   state.companion.stage = structuredClone(build);
   return {
@@ -1670,7 +1888,18 @@ export function addStage(
 
 export function clearStage(): void {
   state.stage = null;
+  state.stageIds = [];
   if (state.companion) delete state.companion.stage;
+}
+
+/** Ids of the last built stage + stairs (empty if none / unknown). */
+export function stageNodeIds(): number[] {
+  return [...state.stageIds];
+}
+
+/** Current stage build for Edit stage, if any. */
+export function currentStageBuild(): StageBuild | null {
+  return state.stage ? structuredClone(state.stage) : null;
 }
 
 /**

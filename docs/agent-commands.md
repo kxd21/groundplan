@@ -77,7 +77,46 @@ The status bar shows `status-mode` and `status-command` after each run.
 - `plan.export-dxf` / `plan.export-svg`  
 - `workspace.plan` | `workspace.gear` | `workspace.inventory`
 
-## Notes
+## View modes
+
+- `view.top` / `view.front` / `view.side` — editor viewports (Place filters inventory by view)
+- Top (default floor plan)
+- Front / Side elevation silhouettes (`planView` in the ribbon)
+
+Place (Add) filters inventory by the active view so FV/SV drawings do not stamp into Top.
+
+### Layout variants (Phase 4)
+
+1. `seating.planner` — open seating overlay  
+2. Tune layout → **Place seating** or **Update placed seating**  
+3. `seating.variant-save` — snapshot current chairs as a user kit  
+4. Pick a saved variant in the planner → **Apply variant** (auto version snapshot before replace)  
+5. `isolation.exit` — leave solo mode (or Esc)
+
+### Seating spine (Phase 5)
+
+Fill-room Place writes a companion `seating` block (style, clearances, chair/table names, managed node ids).  
+After save + reopen, **Update placed seating** replaces those ids instead of stacking. Kit applies clear the spine.
+
+### Hang plot (Phase 6)
+
+1. Set AFF on truss / fixtures / screens in Inspect → Properties (presets 12′ / 16′ / 20′ for truss)  
+2. Setup → Advanced → **Hang plot…** — CSV of flown items (X, Y, AFF, Top)  
+3. Full report includes **Hang / flown**; schedule CSV gains an **AFF (ft)** column (also beside DXF export)
+
+### Custom elevations (Phase 6)
+
+Inventory item → **Draw Front (FV)…** / **Draw Side (SV)…** opens Shape Editor in elevation mode.  
+Plan create checkbox still adds rectangle stubs; redraw for real silhouettes.
+
+### Table ops (Inspect → Properties)
+
+Select one or more tables, then use chair count / spacing / auto-number in Properties.  
+(MCP headless: `setTableSeats`, `autoNumberTables`, `spaceTables` on the plan file.)
+
+## Ownership
+
+See [ui-ownership.md](./ui-ownership.md) for Add / Seating / Stage / Inspector homes.
 
 - IDs are kebab-stable; treat renames as breaking.  
 - Prefer `commandsRun` over clicking chrome when automating.  

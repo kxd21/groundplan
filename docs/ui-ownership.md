@@ -17,6 +17,7 @@ Single homes for each capability. New UI must land in the owner — not a second
 | **Layers / underlay** | Inspect → Layers + `BackgroundLayerPanel` | Setup “Add site plan” opens import wizard |
 | **Room layout / walls** | Rail **Room** primary = wall-edit overlay; secondary ▾ = exclusive `room-layout` workspace | Inspect → Room gate, Setup venue actions |
 | **Draw / annotations** | Rail **Draw** workspace + Draw tools dock (shapes, text, cables, measure) | Compact rail Tools = Select / Edit points / Hand / Measure only |
+| **Seating / room layout** | `RoomPanel` + companion spine; table ops in Inspect | See `docs/seat-planner-implementation-map.md` |
 | **View (Top / Front / Side)** | Workspace `planView` + PlanCanvas | Ribbon view switcher |
 
 ## Rules
