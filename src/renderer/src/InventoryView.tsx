@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
-import { IconPlus, IconTrash, IconFit, IconExport, IconWarning, IconFolder, IconEdit } from './icons.js';
+import {
+  IconPlus,
+  IconTrash,
+  IconFit,
+  IconExport,
+  IconWarning,
+  IconFolder,
+  IconEdit,
+  IconMore,
+} from './icons.js';
 import InventoryItemEditor from './InventoryItemEditor.js';
 
 const api = window.groundplan;
@@ -91,6 +100,65 @@ function sizeHint(system: UnitSystem): string {
     : 'Enter sizes like 4\', 48", 4\' 6" (or 120cm, 1.2m)';
 }
 
+type InventoryReadiness = 'all' | 'placeable' | 'needs-size' | 'needs-shape' | 'elevations';
+
+const READINESS_FILTERS: Array<{ id: InventoryReadiness; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'placeable', label: 'Ready to place' },
+  { id: 'needs-size', label: 'Needs size' },
+  { id: 'needs-shape', label: 'Needs outline' },
+  { id: 'elevations', label: 'Elevations' },
+];
+
+function isPlaceable(item: InventoryItem): boolean {
+  return Boolean(
+    (item.view ?? 'plan') === 'plan' &&
+      ((item.tracedIcon?.paths.length ?? 0) > 0 || item.symbolPath || (item.width && item.height)),
+  );
+}
+
+function matchesReadiness(item: InventoryItem, filter: InventoryReadiness): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'placeable') return isPlaceable(item);
+  if (filter === 'needs-size') return !item.width || !item.height;
+  if (filter === 'needs-shape') {
+    return (item.view ?? 'plan') === 'plan' && !item.symbolPath && !(item.tracedIcon?.paths.length ?? 0);
+  }
+  return (item.view ?? 'plan') !== 'plan';
+}
+
+function InventoryPreview({ item, photo }: { item: InventoryItem; photo?: string | null }) {
+  if (photo) return <img src={photo} alt="" />;
+  const icon = item.tracedIcon;
+  if (icon?.paths.length && icon.width > 0 && icon.height > 0) {
+    return (
+      <svg
+        className="inv-thumb-outline"
+        viewBox={`${-icon.width / 2} ${-icon.height / 2} ${icon.width} ${icon.height}`}
+        aria-hidden
+      >
+        {icon.paths.map((path, index) => {
+          const points: string[] = [];
+          for (let i = 0; i < path.points.length; i += 2) {
+            points.push(`${path.points[i]},${path.points[i + 1]}`);
+          }
+          return path.closed ? (
+            <polygon key={index} points={points.join(' ')} />
+          ) : (
+            <polyline key={index} points={points.join(' ')} />
+          );
+        })}
+      </svg>
+    );
+  }
+  return (
+    <span
+      className={`inv-thumb-dot${item.symbolPath ? ' has-symbol' : ' missing'}`}
+      title={item.symbolPath ? 'Has plan symbol' : 'No outline'}
+    />
+  );
+}
+
 /**
  * The company's equipment inventory.
  *
@@ -122,16 +190,59 @@ export function InventoryView({
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [harvestProgress, setHarvestProgress] = useState<HarvestProgress | null>(null);
   const [photos, setPhotos] = useState<Record<string, string | null>>({});
+  const [health, setHealth] = useState<Awaited<ReturnType<typeof api.inventoryHealth>> | null>(null);
+  const [readiness, setReadiness] = useState<InventoryReadiness>('all');
 
   useEffect(() => {
     setEditing(null);
     setVisibleCount(PAGE_SIZE);
-  }, [query, department]);
+  }, [query, department, readiness]);
 
   useEffect(() => api.onHarvestProgress(setHarvestProgress), []);
 
   const items = inventory?.items ?? [];
-  const shownItems = items.slice(0, visibleCount);
+  const filteredItems = useMemo(
+    () => items.filter((item) => matchesReadiness(item, readiness)),
+    [items, readiness],
+  );
+  const shownItems = filteredItems.slice(0, visibleCount);
+
+  const readinessCounts = useMemo(() => {
+    const counts = new Map<InventoryReadiness, number>();
+    for (const filter of READINESS_FILTERS) {
+      counts.set(filter.id, items.filter((item) => matchesReadiness(item, filter.id)).length);
+    }
+    return counts;
+  }, [items]);
+
+  useEffect(() => {
+    let live = true;
+    void api
+      .inventoryHealth()
+      .then((report) => {
+        if (live) setHealth(report);
+      })
+      .catch(() => {
+        if (live) setHealth(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [inventory?.total, inventory?.path, inventory?.notice, items.length]);
+
+  const mergeStarter = async () => {
+    const reply = await api.inventoryMergeStarter();
+    if (!reply.ok) {
+      if (reply.reason) onError(reply.reason);
+      return;
+    }
+    onChanged();
+    onStatus(
+      reply.seeded
+        ? `Loaded ${reply.items ?? 0} starter equipment items`
+        : `Merged ${reply.toppedUp ?? 0} starter shapes into the library`,
+    );
+  };
 
   useEffect(() => {
     const wanted = shownItems.filter((i) => i.hasPhoto && !(i.id in photos)).map((i) => i.id);
@@ -337,6 +448,10 @@ export function InventoryView({
           builds up across jobs, so the next plan can be drawn from your real inventory.
         </p>
         <div className="placeholder-actions">
+          <button className="btn-primary" onClick={() => void mergeStarter()}>
+            <IconPlus size={14} />
+            Restore starter equipment
+          </button>
           <button
             className="btn-outline"
             onClick={async () => {
@@ -398,76 +513,131 @@ export function InventoryView({
         </div>
       )}
       {harvestStatus}
-      <div className="inv-bar">
-        <span className="num">
-          {items.length.toLocaleString()} of {inventory.total.toLocaleString()} items · {sized.toLocaleString()} sized
-        </span>
-        <div className="spacer" />
-        <button
-          onClick={async () => {
-            const reply = await api.inventoryImport();
-            if (!reply) return;
-            if (!reply.ok) {
-              if (reply.reason) onError(reply.reason);
-              return;
-            }
-            onChanged();
-            const from =
-              reply.inventoryName != null
-                ? ` · ${reply.inventoryName}`
-                : reply.inventoryNames && reply.inventoryNames.length > 1
-                  ? ` · ${reply.inventoryNames.length} Spotlight inventories`
-                  : '';
-            onStatus(`Added ${reply.added} new, updated ${reply.updated}${from}`);
-          }}
-          title="Import gear lists, CSV, Spotlight inventory XML, or shape libraries"
-        >
-          <IconExport size={13} />
-          Upload…
-        </button>
-        <button
-          onClick={async () => {
-            const reply = await api.inventoryExportPack();
-            if (reply.cancelled) return;
-            if (reply.ok) {
-              onStatus(`Exported ${reply.items ?? 0} items for other computers`);
-            } else if (reply.reason) onError(reply.reason);
-          }}
-          title="Write a folder for USB / shared drive so other Groundplan installs can import it"
-        >
-          <IconExport size={13} />
-          Export pack…
-        </button>
-        <button
-          onClick={async () => {
-            const reply = await api.inventoryImportPack();
-            if (reply.cancelled) return;
-            if (reply.ok) {
+      {health && !health.ok && health.issues.length > 0 && (
+        <div className="recovery-notice" role="status">
+          <IconWarning size={14} />
+          <span>{health.issues[0]}</span>
+          <button type="button" className="btn-outline" onClick={() => void mergeStarter()}>
+            Merge starter shapes
+          </button>
+        </div>
+      )}
+      <header className="inventory-workspace-head">
+        <div className="inventory-workspace-title">
+          <span className="inventory-workspace-eyebrow">Company library</span>
+          <strong>Equipment inventory</strong>
+          <span>
+            {inventory.total.toLocaleString()} items · {sized.toLocaleString()} sized
+            {health ? ` · ${health.placeable.toLocaleString()} placeable` : ''}
+          </span>
+        </div>
+        <div className="inventory-primary-actions">
+          <button className="btn-primary" onClick={() => setAdding(true)}>
+            <IconPlus size={13} />
+            New item
+          </button>
+          <button
+            className="btn-outline"
+            onClick={async () => {
+              const reply = await api.inventoryImport();
+              if (!reply) return;
+              if (!reply.ok) {
+                if (reply.reason) onError(reply.reason);
+                return;
+              }
               onChanged();
-              onStatus(`Imported pack: ${reply.added} new, ${reply.updated} updated`);
-            } else if (reply.reason) onError(reply.reason);
-          }}
-          title="Merge an inventory pack from another computer into this one"
-        >
-          <IconFolder size={13} />
-          Import pack…
-        </button>
-        <button
-          onClick={harvest}
-          disabled={!!harvestProgress}
-          title="Take real drawn symbols out of a folder of plans"
-        >
-          <IconFit size={13} />
-          Import symbols…
-        </button>
-        <button onClick={mapShapes} title="Give every remaining item the closest drawn shape">
-          <IconFit size={13} />
-          Match shapes
-        </button>
-        <button onClick={() => setAdding(true)}>
-          <IconPlus size={13} />
-          Add item
-        </button>
+              const from =
+                reply.inventoryName != null
+                  ? ` · ${reply.inventoryName}`
+                  : reply.inventoryNames && reply.inventoryNames.length > 1
+                    ? ` · ${reply.inventoryNames.length} Spotlight inventories`
+                    : '';
+              onStatus(`Added ${reply.added} new, updated ${reply.updated}${from}`);
+            }}
+            title="Import gear lists, CSV, Spotlight inventory XML, or shape libraries"
+          >
+            <IconExport size={13} />
+            Import…
+          </button>
+          <details className="inventory-more-actions">
+            <summary className="btn-outline">
+              <IconMore size={13} />
+              More
+            </summary>
+            <div className="inventory-more-menu" role="menu">
+              <button
+                role="menuitem"
+                onClick={() => void mergeStarter()}
+                title="Add missing starter chairs, tables, doors, and AV shapes without wiping your library"
+              >
+                <IconPlus size={13} />
+                Merge starter equipment
+              </button>
+              <button
+                role="menuitem"
+                onClick={async () => {
+                  const reply = await api.inventoryImportPack();
+                  if (reply.cancelled) return;
+                  if (reply.ok) {
+                    onChanged();
+                    onStatus(`Imported pack: ${reply.added} new, ${reply.updated} updated`);
+                  } else if (reply.reason) onError(reply.reason);
+                }}
+              >
+                <IconFolder size={13} />
+                Import inventory pack…
+              </button>
+              <button
+                role="menuitem"
+                onClick={async () => {
+                  const reply = await api.inventoryExportPack();
+                  if (reply.cancelled) return;
+                  if (reply.ok) onStatus(`Exported ${reply.items ?? 0} items for other computers`);
+                  else if (reply.reason) onError(reply.reason);
+                }}
+              >
+                <IconExport size={13} />
+                Export inventory pack…
+              </button>
+              <span className="inventory-menu-divider" />
+              <button role="menuitem" onClick={harvest} disabled={!!harvestProgress}>
+                <IconFit size={13} />
+                Import outlines from plans…
+              </button>
+              <button role="menuitem" onClick={mapShapes}>
+                <IconFit size={13} />
+                Match missing outlines
+              </button>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      <div className="inventory-readiness" aria-label="Inventory readiness filters">
+        {READINESS_FILTERS.map((filter) => (
+          <button
+            key={filter.id}
+            type="button"
+            className={readiness === filter.id ? 'active' : ''}
+            aria-pressed={readiness === filter.id}
+            onClick={() => setReadiness(filter.id)}
+          >
+            <span>{filter.label}</span>
+            <small className="num">{readinessCounts.get(filter.id) ?? 0}</small>
+          </button>
+        ))}
+        {health && (
+          <span className={`inventory-health-chip${health.seatingReady ? ' is-ready' : ' is-warning'}`}>
+            Seating {health.seatingReady ? 'ready' : 'needs furniture'}
+          </span>
+        )}
+      </div>
+
+      <div className="inventory-column-head" aria-hidden>
+        <span>Item</span>
+        <span>Footprint</span>
+        <span>Jobs</span>
+        <span>Actions</span>
       </div>
 
       <div className="gear-scroll">
@@ -488,23 +658,15 @@ export function InventoryView({
           </div>
         )}
 
-        {items.length === 0 ? (
+        {filteredItems.length === 0 ? (
           <p className="empty" style={{ padding: 24 }}>
-            Nothing matches that search.
+            Nothing matches this search or readiness filter.
           </p>
         ) : (
           shownItems.map((item) => (
             <div className="gear-row inv-row" key={item.id}>
               <span className="inv-thumb" aria-hidden>
-                {photos[item.id] ? (
-                  <img src={photos[item.id]!} alt="" />
-                ) : item.tracedIcon?.paths?.length ? (
-                  <span className="inv-thumb-dot has-icon" title="Has outline" />
-                ) : item.symbolPath ? (
-                  <span className="inv-thumb-dot has-symbol" title="Has plan symbol" />
-                ) : (
-                  <span className="inv-thumb-dot missing" title="No icon" />
-                )}
+                <InventoryPreview item={item} photo={photos[item.id]} />
               </span>
               {renaming === item.id ? (
                 <input
@@ -519,36 +681,43 @@ export function InventoryView({
                   }}
                 />
               ) : (
-              <span
-                className="inv-name"
-                role="button"
-                tabIndex={0}
-                title="Click to rename"
-                onClick={() => {
-                  setRenaming(item.id);
-                  setNameDraft(item.name);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter') return;
-                  setRenaming(item.id);
-                  setNameDraft(item.name);
-                }}
-              >
-                {item.name}
-                {item.symbolPath && (
-                  <em
-                    className={`inv-symbol${item.mappedBy === 'auto' ? ' is-auto' : ''}`}
-                    title={
-                      item.mappedBy === 'auto'
-                        ? `Matched automatically to "${item.symbolName}": ${item.mapReason}. Click the size to correct it.`
-                        : 'Places as the real drawn symbol'
-                    }
+                <span className="inv-item-copy">
+                  <span
+                    className="inv-name"
+                    role="button"
+                    tabIndex={0}
+                    title="Click to rename"
+                    onClick={() => {
+                      setRenaming(item.id);
+                      setNameDraft(item.name);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      setRenaming(item.id);
+                      setNameDraft(item.name);
+                    }}
                   >
-                    {item.mappedBy === 'auto' ? `≈ ${item.symbolName}` : 'symbol'}
-                  </em>
-                )}
-                {item.department && <em className="icat">{item.department}</em>}
-              </span>
+                    {item.name}
+                  </span>
+                  <span className="inv-item-meta">
+                    {item.category && <span>{item.category.replace(/-/g, ' ')}</span>}
+                    <span>{(item.view ?? 'plan').replace('front-side', 'front + side')}</span>
+                    {item.department && <span>{item.department}</span>}
+                    {item.quantityOwned != null && <span className="num">{item.quantityOwned} owned</span>}
+                    {item.symbolPath && (
+                      <span
+                        className={`inv-symbol${item.mappedBy === 'auto' ? ' is-auto' : ''}`}
+                        title={
+                          item.mappedBy === 'auto'
+                            ? `Matched automatically to "${item.symbolName}": ${item.mapReason}.`
+                            : 'Places as the real drawn symbol'
+                        }
+                      >
+                        {item.mappedBy === 'auto' ? `matched · ${item.symbolName}` : 'outline ready'}
+                      </span>
+                    )}
+                  </span>
+                </span>
               )}
 
               {editing === item.id ? (
@@ -600,8 +769,8 @@ export function InventoryView({
                 </button>
               )}
 
-              <span className="inv-seen num" title={`On ${item.timesSeen} job${item.timesSeen === 1 ? '' : 's'}`}>
-                ×{item.timesSeen}
+              <span className="inv-seen num" title={`Used on ${item.timesSeen} job${item.timesSeen === 1 ? '' : 's'}`}>
+                {item.timesSeen}
               </span>
 
               <span className="gear-actions">
@@ -642,11 +811,11 @@ export function InventoryView({
             </div>
           ))
         )}
-        {shownItems.length < items.length && (
+        {shownItems.length < filteredItems.length && (
           <div className="inventory-more">
             <button className="btn-outline" onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}>
-              Show {Math.min(PAGE_SIZE, items.length - shownItems.length)} more
-              <span className="num">{shownItems.length} of {items.length}</span>
+              Show {Math.min(PAGE_SIZE, filteredItems.length - shownItems.length)} more
+              <span className="num">{shownItems.length} of {filteredItems.length}</span>
             </button>
           </div>
         )}

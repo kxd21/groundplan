@@ -4,6 +4,8 @@ import type { PlanBackground } from '../../format/companion.js';
 import type { Extent } from '../../format/index.js';
 import type { UnitSystem } from '../../format/units.js';
 import BackgroundLayerPanel from './BackgroundLayerPanel.js';
+import { IconLayers } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 
 interface Props {
   background: PlanBackground | null;
@@ -37,14 +39,14 @@ export default function BackgroundImageDialog({ onClose, ...panelProps }: Props)
         aria-labelledby="background-dialog-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="background-dialog-header">
-          <span>
-            <small>Plan underlay</small>
-            <strong id="background-dialog-title">Background Studio</strong>
-          </span>
-          <p>Align a venue image beneath the editable plot and control how it appears on screen and in exports.</p>
-          <button type="button" onClick={onClose} aria-label="Close Background Studio">×</button>
-        </header>
+        <SheetHeader
+          eyebrow="Plan underlay"
+          title="Background Studio"
+          subtitle="Align a venue image beneath the plot · control screen and export visibility"
+          titleId="background-dialog-title"
+          mark={<IconLayers size={18} />}
+          onClose={onClose}
+        />
         <div className="background-dialog-body">
           <BackgroundLayerPanel {...panelProps} expanded />
         </div>

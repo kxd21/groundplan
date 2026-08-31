@@ -6,6 +6,7 @@
 import type { RefObject } from 'react';
 
 import DockTitlebar from './DockTitlebar.js';
+import SheetHeader from './SheetHeader.js';
 import ShowSetupPanel, { type ShowKitInfo } from './ShowSetupPanel.js';
 import type { ShowBrief } from '../../format/show-brief.js';
 
@@ -181,21 +182,26 @@ export default function CreateDialog({
       onMouseDown={(event) => event.stopPropagation()}
     >
       {docked ? (
-        <DockTitlebar title="Show Setup" sub={headline} onClose={onClose} closeLabel="Close Show Setup" />
+        <DockTitlebar
+          eyebrow="Setup"
+          title="Show Setup"
+          titleId="create-dialog-title"
+          sub={headline}
+          onClose={onClose}
+          closeLabel="Close Show Setup"
+        />
       ) : (
-        <header className="create-dialog-head">
-          <div>
-            <small>Show Setup</small>
-            <h2 id="create-dialog-title">{headline}</h2>
-            <p>{guidance}</p>
-          </div>
-          <button type="button" className="create-dialog-close" onClick={onClose} aria-label="Close Show Setup">
-            ×
-          </button>
-        </header>
+        <SheetHeader
+          eyebrow="Show Setup"
+          title={headline}
+          subtitle={guidance}
+          titleId="create-dialog-title"
+          onClose={onClose}
+          closeLabel="Close Show Setup"
+        />
       )}
       {docked && (
-        <p className="create-dialog-guidance" id="create-dialog-title">
+        <p className="create-dialog-guidance">
           {guidance}
         </p>
       )}

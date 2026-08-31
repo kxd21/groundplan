@@ -100,6 +100,15 @@ const PRODUCTION = new Set([
   'speaker',
   'subwoofer',
   'mixer',
+  'monitor',
+  'rack',
+  'switcher',
+  'distro',
+  'power',
+  'network',
+  'rigging',
+  'motor',
+  'scaffold',
 ]);
 
 const ANNOTATIONS = new Set([

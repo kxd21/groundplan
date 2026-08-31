@@ -7,6 +7,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { traceImage, type TraceResult } from '../../catalog/trace.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { splitView } from '../../inventory/classify.js';
+import { IconEdit } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 import { SnappySlider } from './SnappySlider.js';
 
 const api = window.groundplan;
@@ -346,12 +348,13 @@ export default function InventoryItemEditor({
         aria-label={`Edit ${item.name}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sheet-title">
-          <h2>Edit item</h2>
-          <button type="button" className="btn-outline" onClick={onClose}>
-            Close
-          </button>
-        </div>
+        <SheetHeader
+          eyebrow="Equipment library"
+          title="Edit item"
+          subtitle={item.name}
+          mark={<IconEdit size={16} />}
+          onClose={onClose}
+        />
 
         <div className="sheet-body item-editor-body">
           <div className="item-editor-preview" aria-label="Item icon">

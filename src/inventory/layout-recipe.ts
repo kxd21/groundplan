@@ -22,13 +22,13 @@ import {
 import type { RVDocument } from '../format/rv.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../format/rv.js';
 import { indexDocument, type DocumentIndex } from '../format/edit.js';
-import { placeGear, placeFromLibrary } from '../format/place.js';
+import { placeGear, placeFromLibrary, placeTracedIcon } from '../format/place.js';
 import { importSymbol } from '../format/symbol.js';
 import { readLibrary } from '../format/library.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { loadBuffer } from '../format/index.js';
 import { createLabel, createDimension } from '../format/annotate.js';
-import type { IncomingItem, Inventory } from './model.js';
+import type { IncomingItem, Inventory, InventoryItem } from './model.js';
 
 export const LAYOUT_RECIPE_FORMAT = 'groundplan-layout-recipe' as const;
 export const LAYOUT_RECIPE_VERSION = 1 as const;
@@ -400,18 +400,52 @@ function loadSymbolSource(path: string): RVDocument | null {
 }
 
 /** The real outline for a chair name, when the inventory carries one. */
+export type SeedChairOutline =
+  | { kind: 'symbol'; source: RVDocument; name: string }
+  | {
+      kind: 'traced';
+      name: string;
+      icon: NonNullable<InventoryItem['tracedIcon']>;
+      width?: number;
+      height?: number;
+    };
+
+/**
+ * Prefers a harvested symbol file, then a traced catalog silhouette — never a
+ * silent miss that forces every kit chair into a sized box.
+ */
+export function seedChairOutline(
+  inventory: Inventory | undefined,
+  chair: string,
+): SeedChairOutline | null {
+  if (!inventory) return null;
+  const resolved = resolveInventoryQuery(inventory, chair, { requireExact: true });
+  if (resolved.status !== 'exact' && resolved.status !== 'unique') return null;
+  const item = resolved.item;
+  const path = item.symbolPath;
+  if (path && existsSync(path)) {
+    const source = loadSymbolSource(path);
+    if (source) return { kind: 'symbol', source, name: item.symbolName ?? item.name };
+  }
+  if (item.tracedIcon?.paths?.length) {
+    return {
+      kind: 'traced',
+      name: item.name,
+      icon: item.tracedIcon,
+      width: item.width,
+      height: item.height,
+    };
+  }
+  return null;
+}
+
+/** @deprecated Prefer seedChairOutline — symbol-only callers miss starter chairs. */
 export function seedChairSymbol(
   inventory: Inventory | undefined,
   chair: string,
 ): { source: RVDocument; name: string } | null {
-  if (!inventory) return null;
-  const resolved = resolveInventoryQuery(inventory, chair, { requireExact: true });
-  if (resolved.status !== 'exact' && resolved.status !== 'unique') return null;
-  const path = resolved.item.symbolPath;
-  if (!path) return null;
-  const source = loadSymbolSource(path);
-  if (!source) return null;
-  return { source, name: resolved.item.symbolName ?? resolved.item.name };
+  const outline = seedChairOutline(inventory, chair);
+  return outline?.kind === 'symbol' ? { source: outline.source, name: outline.name } : null;
 }
 
 export function applyLayoutRecipeGear(
@@ -426,6 +460,7 @@ export function applyLayoutRecipeGear(
     let name = g.name;
     let known: { width: number; height: number } | undefined;
     let symbol: { path: string; name: string } | undefined;
+    let traced: InventoryItem['tracedIcon'] | undefined;
     if (inventory) {
       const resolved = resolveInventoryQuery(inventory, g.name, { requireExact: true });
       if (resolved.status !== 'exact' && resolved.status !== 'unique') {
@@ -440,9 +475,10 @@ export function applyLayoutRecipeGear(
         resolved.item.width && resolved.item.height
           ? { width: resolved.item.width, height: resolved.item.height }
           : undefined;
-      if (resolved.item.symbolPath) {
+      if (resolved.item.symbolPath && existsSync(resolved.item.symbolPath)) {
         symbol = { path: resolved.item.symbolPath, name: resolved.item.symbolName ?? resolved.item.name };
       }
+      if (resolved.item.tracedIcon?.paths?.length) traced = resolved.item.tracedIcon;
     }
 
     // An inventory item that carries a harvested outline gets the real drawing.
@@ -467,29 +503,28 @@ export function applyLayoutRecipeGear(
     // back — 664 chairs and a stage discarded because two speakers were
     // invisible to the schedule. `placeFromLibrary` rebuilds the outline as a
     // proper named placement, which is what every other object on the plan is.
+    //
+    // Starter catalog rows often have tracedIcon only (no .rv4). Fall through
+    // to placeTracedIcon before the sized-box path so kits stay faithful.
     const source = symbol ? loadSymbolSource(symbol.path) : null;
     const fromLibrary =
       source != null &&
       readLibrary(source).some((e) => e.name.trim().toLowerCase() === symbol!.name.trim().toLowerCase());
 
-    const placed = !source
-      ? placeGear(doc, live, name, g.xFt * UNITS_PER_FOOT, g.yFt * UNITS_PER_FOOT, known)
-      : fromLibrary
-        ? placeFromLibrary(
-            doc,
-            source,
-            symbol!.name,
-            g.xFt * UNITS_PER_FOOT,
-            g.yFt * UNITS_PER_FOOT,
-          )
-        : importSymbol(
-            doc,
-            live,
-            source,
-            symbol!.name,
-            g.xFt * UNITS_PER_FOOT,
-            g.yFt * UNITS_PER_FOOT,
-          );
+    const x = g.xFt * UNITS_PER_FOOT;
+    const y = g.yFt * UNITS_PER_FOOT;
+    let placed =
+      source == null
+        ? null
+        : fromLibrary
+          ? placeFromLibrary(doc, source, symbol!.name, x, y)
+          : importSymbol(doc, live, source, symbol!.name, x, y);
+    if (!placed?.ok && traced) {
+      placed = placeTracedIcon(doc, live, name, x, y, traced);
+    }
+    if (!placed?.ok) {
+      placed = placeGear(doc, live, name, x, y, known);
+    }
     if (!placed.ok) {
       return { ok: false, reason: placed.reason ?? `failed to place ${name}`, gearPlaced };
     }

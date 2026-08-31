@@ -273,7 +273,8 @@ export async function connectCdp(options = {}) {
       if (!view) return null;
       return {
         x: cr.x + ${xFt} * ${unitsPerFoot} * view.scale + view.offsetX,
-        y: cr.y + ${yFt} * ${unitsPerFoot} * view.scale + view.offsetY,
+        // Groundplan plan Y grows upward; canvas screen Y grows downward.
+        y: cr.y - ${yFt} * ${unitsPerFoot} * view.scale + view.offsetY,
       };
     })()`);
     if (!pt) return false;

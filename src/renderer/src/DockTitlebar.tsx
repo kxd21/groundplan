@@ -16,8 +16,12 @@ import type { ReactNode } from 'react';
 import { IconClose } from './icons.js';
 
 interface Props {
+  /** Optional uppercase context above the title (matches sheet headers). */
+  eyebrow?: string;
   /** The mode this panel belongs to, in the mode strip's own wording. */
   title: string;
+  /** Associates with aria-labelledby when the dock is a dialog. */
+  titleId?: string;
   /** One short clause about what the panel does, or the state it is in. */
   sub?: string;
   /** Status that belongs to the panel rather than to the plan, e.g. Read only. */
@@ -27,11 +31,22 @@ interface Props {
   closeLabel?: string;
 }
 
-export default function DockTitlebar({ title, sub, trailing, onClose, closeLabel }: Props) {
+export default function DockTitlebar({
+  eyebrow,
+  title,
+  titleId,
+  sub,
+  trailing,
+  onClose,
+  closeLabel,
+}: Props) {
   return (
     <header className="dock-titlebar">
       <span className="dock-titlebar-copy">
-        <span className="dock-titlebar-title">{title}</span>
+        {eyebrow ? <span className="dock-titlebar-eyebrow">{eyebrow}</span> : null}
+        <span className="dock-titlebar-title" id={titleId}>
+          {title}
+        </span>
         {sub ? (
           <span className="dock-titlebar-sub" title={sub}>
             {sub}

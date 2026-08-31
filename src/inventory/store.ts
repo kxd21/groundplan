@@ -22,6 +22,7 @@ import {
   type InventorySymbolAsset,
   type SizeSource,
 } from './model.js';
+import { doorIcon, doorSwingFromName } from '../format/synthesize.js';
 
 export const INVENTORY_FILENAME = 'inventory.json';
 export const INVENTORY_FILE_VERSION = 3;
@@ -247,6 +248,44 @@ export function migrateInventory(value: unknown): {
     item.timesSeen = (item.legacyTimesSeen as number) + provenanceIds.length;
     item.addedAt = typeof item.addedAt === 'string' ? item.addedAt : new Date(0).toISOString();
     item.symbolAsset = normaliseAsset(item.symbolAsset);
+
+    // Doors harvested from empty plan husks kept a lone box silhouette — replace
+    // with the synthesized jamb/leaf/swing mark so the palette matches place.
+    const doorName = String(item.name);
+    const isDoor =
+      item.category === 'door' ||
+      (/\bdoors?\b|\bopening\b/i.test(doorName) && !/\bbarn\s*doors?\b/i.test(doorName));
+    if (isDoor && item.tracedIcon && typeof item.tracedIcon === 'object') {
+      const traced = item.tracedIcon as {
+        paths?: Array<{ points?: number[]; closed?: boolean }>;
+        width?: number;
+        height?: number;
+      };
+      const paths = Array.isArray(traced.paths) ? traced.paths : [];
+      const loneBox =
+        paths.length === 1 &&
+        Array.isArray(paths[0]?.points) &&
+        paths[0]!.points!.length === 8 &&
+        paths[0]!.closed === true;
+      const reason = typeof item.mapReason === 'string' ? item.mapReason : '';
+      if (loneBox || /synthetic box \(empty geometry in plan\)/i.test(reason)) {
+        const w =
+          (typeof item.width === 'number' && item.width > 0 ? item.width : undefined) ??
+          (typeof traced.width === 'number' && traced.width > 0 ? traced.width : 360);
+        const h =
+          (typeof item.height === 'number' && item.height > 0 ? item.height : undefined) ??
+          (typeof traced.height === 'number' && traced.height > 0 ? traced.height : 380);
+        item.tracedIcon = doorIcon(w, h, doorSwingFromName(doorName));
+        if (/synthetic box \(empty geometry in plan\)/i.test(reason)) {
+          item.mapReason = reason.replace(
+            /synthetic box \(empty geometry in plan\)/i,
+            'synthetic door (empty geometry in plan)',
+          );
+        }
+        report.changed = true;
+      }
+    }
+
     return item as unknown as InventoryItem;
   });
 
@@ -439,7 +478,12 @@ function hydrateManagedSymbols(path: string, inventory: Inventory, warnings: str
     if (existsSync(managed)) item.symbolPath = managed;
     else {
       warnings.push(`Managed symbol is missing for "${item.name}".`);
-      item.symbolPath = item.symbolAsset.sourcePath;
+      // Never fall back to another machine's absolute path (e.g. a Mac path
+      // baked into a starter pack on Windows) — prefer tracedIcon placement.
+      if (item.symbolPath && !existsSync(item.symbolPath)) delete item.symbolPath;
+      else if (item.symbolAsset.sourcePath && !existsSync(item.symbolAsset.sourcePath)) {
+        delete item.symbolPath;
+      }
     }
   }
 }

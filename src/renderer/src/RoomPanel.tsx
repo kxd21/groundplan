@@ -32,7 +32,12 @@ import {
   IconWarning,
 } from './icons.js';
 import { SnappySlider } from './SnappySlider.js';
-import { filterSeatingAssets } from './seating-options.js';
+import {
+  filterSeatingAssets,
+  pickPreferredSeatingName,
+  PREFERRED_SEATING_CHAIRS,
+  PREFERRED_SEATING_TABLES,
+} from './seating-options.js';
 import { loadSeatingSession, saveSeatingSession } from './seating-session.js';
 import type { WallEditSession } from './wall-edit.js';
 
@@ -78,6 +83,8 @@ interface Props {
   onShowSightlineMarkersChange?: (next: boolean) => void;
   /** Plan path — used to persist seating controls across overlay open/close. */
   planPath?: string | null;
+  /** Bumps when the equipment library changes so chair/table pickers refresh. */
+  inventoryVersion?: number;
   /** Arm a click-to-stamp seating bank (theatre / round / schoolroom / table grid). */
   onArmSeatingStamp?: (request: {
     kind: 'round' | 'theatre' | 'schoolroom';
@@ -106,6 +113,10 @@ interface Props {
   layoutVariantsBusy?: boolean;
   /** Apply a saved variant (seating only; caller snapshots first). */
   onApplyLayoutVariant?: (kitId: string) => void | Promise<void>;
+  /** One-piece intent: leave Seating and open Place furniture. */
+  onPlaceSingleFurniture?: (prefer?: 'chairs' | 'tables') => void;
+  /** After Merge starter so chair/table pickers refresh. */
+  onInventoryChanged?: () => void;
 }
 
 /**
@@ -210,6 +221,7 @@ export default function RoomPanel({
   showSightlineMarkers = false,
   onShowSightlineMarkersChange,
   planPath = null,
+  inventoryVersion = 0,
   onArmSeatingStamp,
   seatingStampArmed = false,
   onDoneSeatingStamp,
@@ -218,6 +230,8 @@ export default function RoomPanel({
   layoutVariants = [],
   layoutVariantsBusy = false,
   onApplyLayoutVariant,
+  onPlaceSingleFurniture,
+  onInventoryChanged,
 }: Props) {
   const [model, setModel] = useState<PlanModelView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -564,7 +578,7 @@ export default function RoomPanel({
   const [sectionCentre, setSectionCentre] = useState(0);
   const [sectionWing, setSectionWing] = useState(0);
   const [seatingPlacementMode, setSeatingPlacementMode] = useState<'replace' | 'add'>('replace');
-  const [seatingWorkMode, setSeatingWorkMode] = useState<'fill' | 'stamp'>('fill');
+  const [seatingWorkMode, setSeatingWorkMode] = useState<'fill' | 'stamp' | 'piece'>('fill');
   const [stampKind, setStampKind] = useState<'round' | 'theatre' | 'schoolroom'>('round');
   const [stampRows, setStampRows] = useState(8);
   const [stampPerRow, setStampPerRow] = useState(12);
@@ -573,6 +587,7 @@ export default function RoomPanel({
   const [stampGridColumns, setStampGridColumns] = useState(1);
   const [stampGridRows, setStampGridRows] = useState(1);
   const stampTableSpacing = useLength(10 * 120, units);
+  const [mergingStarter, setMergingStarter] = useState(false);
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const [banquetEndChairs, setBanquetEndChairs] = useState(false);
   const [banquetRotate90, setBanquetRotate90] = useState(false);
@@ -592,6 +607,12 @@ export default function RoomPanel({
 
   const styleInfo = model?.seatingStyles.find((s) => s.id === style);
   const needsTable = styleInfo?.needsTable ?? false;
+  const activeNeedsTable =
+    seatingWorkMode === 'fill'
+      ? needsTable
+      : seatingWorkMode === 'stamp'
+        ? stampKind !== 'theatre'
+        : false;
 
   // Where the audience looks: a point beyond the front wall, so every seat is
   // turned towards the front of the room rather than towards a spot inside the
@@ -703,7 +724,9 @@ export default function RoomPanel({
       if (typeof snap.sectionCentre === 'number') setSectionCentre(snap.sectionCentre);
       if (typeof snap.sectionWing === 'number') setSectionWing(snap.sectionWing);
       if (typeof snap.stagger === 'boolean') setStagger(snap.stagger);
-      if (snap.stampMode) setSeatingWorkMode(snap.stampMode);
+      if (snap.stampMode === 'fill' || snap.stampMode === 'stamp' || snap.stampMode === 'piece') {
+        setSeatingWorkMode(snap.stampMode);
+      }
       if (snap.stampKind) setStampKind(snap.stampKind);
       if (typeof snap.stampRows === 'number') setStampRows(snap.stampRows);
       if (typeof snap.stampPerRow === 'number') setStampPerRow(snap.stampPerRow);
@@ -944,7 +967,7 @@ export default function RoomPanel({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [inventoryVersion]);
   const onPlan = new Set(planShapes.map((item) => item.name));
   const availableShapes = [
     ...planShapes,
@@ -953,6 +976,43 @@ export default function RoomPanel({
 
   const chairShapes = filterSeatingAssets(availableShapes, 'chair');
   const tableShapes = filterSeatingAssets(availableShapes, 'table');
+  const preferredChairName = pickPreferredSeatingName(
+    chairShapes.map((c) => c.name),
+    PREFERRED_SEATING_CHAIRS,
+  );
+  const preferredTableName = pickPreferredSeatingName(
+    tableShapes.map((t) => t.name),
+    PREFERRED_SEATING_TABLES,
+  );
+
+  // Prefer hospitality defaults so Place seating is not stuck empty on Windows
+  // installs that just received a top-up, and new plans start on banquet stock.
+  useEffect(() => {
+    if (!chair && preferredChairName) setChair(preferredChairName);
+  }, [chair, preferredChairName]);
+  useEffect(() => {
+    if (!activeNeedsTable) return;
+    if (!table && preferredTableName) setTable(preferredTableName);
+  }, [activeNeedsTable, table, preferredTableName]);
+
+  const mergeStarterFurniture = async () => {
+    setMergingStarter(true);
+    try {
+      const reply = await api.inventoryMergeStarter();
+      if (!reply.ok) {
+        onError(reply.reason ?? 'Could not merge starter furniture');
+        return;
+      }
+      onInventoryChanged?.();
+      onStatus(
+        reply.seeded
+          ? `Loaded ${reply.items ?? 0} starter equipment items`
+          : `Merged ${reply.toppedUp ?? 0} starter shapes into the library`,
+      );
+    } finally {
+      setMergingStarter(false);
+    }
+  };
 
   const shapeOptions = (items: SeatingShape[]) => {
     const plan = items.filter((item) => item.source === 'plan');
@@ -1763,111 +1823,227 @@ export default function RoomPanel({
           <IconChair size={20} />
         </span>
         <span className="seating-panel-hero-copy">
-          <small>Seating generator</small>
+          <small>
+            {seatingWorkMode === 'stamp'
+              ? 'Click to place'
+              : seatingWorkMode === 'piece'
+                ? 'Single furniture'
+                : 'Full-room layout'}
+          </small>
           <strong>Seating planner</strong>
           <span>
             {seatingWorkMode === 'stamp'
-              ? 'Stamp one bank per click — change settings and click again.'
-              : 'Design full-room seating with a live capacity preview.'}
+              ? 'Arm a bank, then click the plan. Change settings and click again for another section.'
+              : seatingWorkMode === 'piece'
+                ? 'Layouts stay here. One chair or table opens Place.'
+                : 'Pick furniture, choose a style, preview capacity, then place.'}
           </span>
         </span>
         {preview && seatingWorkMode === 'fill' && (
-          <span className="seating-panel-hero-count">
+          <span className="seating-panel-hero-count" title="Live capacity at current settings">
             <strong>{preview.seats.toLocaleString()}</strong>
             <small>seats</small>
           </span>
         )}
+        {seatingWorkMode === 'stamp' && seatingStampArmed && (
+          <span className="seating-panel-hero-count is-armed" title="Stamp tool is armed">
+            <strong>Ready</strong>
+            <small>click plan</small>
+          </span>
+        )}
       </div>
 
-      <div className="section" style={{ paddingTop: 0 }}>
-        <div className="seg tabs" role="radiogroup" aria-label="Seating work mode">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={seatingWorkMode === 'fill'}
-            className={seatingWorkMode === 'fill' ? 'active' : ''}
-            onClick={() => setSeatingWorkMode('fill')}
-            disabled={!editable}
-          >
-            Fill room
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={seatingWorkMode === 'stamp'}
-            className={seatingWorkMode === 'stamp' ? 'active' : ''}
-            onClick={() => setSeatingWorkMode('stamp')}
-            disabled={!editable}
-          >
-            Stamp bank
-          </button>
+      <div className="section seating-intent-section" style={{ paddingTop: 0 }}>
+        <div className="seating-intent-cards" role="radiogroup" aria-label="Seating intent">
+          {(
+            [
+              {
+                id: 'fill' as const,
+                title: 'Fill the room',
+                blurb: 'Auto-layout + live capacity',
+              },
+              {
+                id: 'stamp' as const,
+                title: 'Place a bank',
+                blurb: 'Stamp one section per click',
+              },
+              {
+                id: 'piece' as const,
+                title: 'One piece',
+                blurb: 'Single chair or table',
+              },
+            ]
+          ).map((intent) => (
+            <button
+              key={intent.id}
+              type="button"
+              role="radio"
+              aria-checked={seatingWorkMode === intent.id}
+              className={`seating-intent-card${seatingWorkMode === intent.id ? ' is-active' : ''}`}
+              onClick={() => setSeatingWorkMode(intent.id)}
+              disabled={!editable}
+            >
+              <strong>{intent.title}</strong>
+              <span>{intent.blurb}</span>
+            </button>
+          ))}
         </div>
       </div>
+
+      {seatingWorkMode === 'piece' && (
+        <div className="section">
+          <div className="seating-piece-panel">
+            <div className="section-title">
+              <span>Place one piece</span>
+            </div>
+            <p className="hint">
+              Use Seating for rooms and banks. Place adds one inventory item at a time — same Tables /
+              Chairs strip as Insert.
+            </p>
+            <div className="seating-piece-actions">
+              <button
+                type="button"
+                className="seating-piece-action"
+                disabled={!editable || !onPlaceSingleFurniture}
+                onClick={() => onPlaceSingleFurniture?.('chairs')}
+              >
+                <strong>Place a chair</strong>
+                <span>Opens Place · Chairs</span>
+              </button>
+              <button
+                type="button"
+                className="seating-piece-action"
+                disabled={!editable || !onPlaceSingleFurniture}
+                onClick={() => onPlaceSingleFurniture?.('tables')}
+              >
+                <strong>Place a table</strong>
+                <span>Opens Place · Tables</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(seatingWorkMode === 'fill' || seatingWorkMode === 'stamp') && (
+        <div className="section seating-furniture-picks">
+          <div className="section-title">
+            <span>Furniture</span>
+            {chair && (
+              <span className="section-count seating-furniture-summary" title="Current picks">
+                {chair}
+                {activeNeedsTable && table
+                  ? ` · ${table}`
+                  : ''}
+              </span>
+            )}
+          </div>
+          {chairShapes.length === 0 ? (
+            <div className="seating-empty-callout" role="status">
+              <strong>No seating furniture yet</strong>
+              <p>
+                Merge the starter hospitality set for banquet chairs, chiavari, rounds, and classroom
+                tables.
+              </p>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!editable || mergingStarter}
+                onClick={() => void mergeStarterFurniture()}
+              >
+                {mergingStarter ? 'Merging…' : 'Merge starter furniture'}
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="field-row">
+                <div className="field">
+                  <label htmlFor="seat-chair-name">Chair</label>
+                  <select
+                    id="seat-chair-name"
+                    value={chair}
+                    onChange={(e) => setChair(e.target.value)}
+                    disabled={!editable}
+                  >
+                    <option value="">{chairShapes.length ? 'Choose a chair…' : 'No chairs in inventory'}</option>
+                    {shapeOptions(chairShapes)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="seat-table-name">
+                    Table
+                    {!activeNeedsTable && (
+                      <span className="field-optional"> · not used</span>
+                    )}
+                  </label>
+                  <select
+                    id="seat-table-name"
+                    value={table}
+                    onChange={(e) => setTable(e.target.value)}
+                    disabled={
+                      !editable ||
+                      !activeNeedsTable
+                    }
+                  >
+                    <option value="">{tableShapes.length ? 'Choose a table…' : 'No tables in inventory'}</option>
+                    {shapeOptions(tableShapes)}
+                  </select>
+                </div>
+              </div>
+              {tableShapes.length === 0 && (
+                <div className="seating-empty-callout is-soft" role="status">
+                  <strong>No tables in the library</strong>
+                  <p>Banquet and classroom layouts need a table shape.</p>
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    disabled={!editable || mergingStarter}
+                    onClick={() => void mergeStarterFurniture()}
+                  >
+                    {mergingStarter ? 'Merging…' : 'Merge starter furniture'}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {seatingWorkMode === 'stamp' && (
         <div className="section">
           <div className="section-title">
-            <span>Stamp a seating bank</span>
+            <span>Bank setup</span>
+            <span className="section-count">
+              {stampKind === 'round'
+                ? stampGridColumns * stampGridRows >= 2
+                  ? `${stampGridColumns}×${stampGridRows} · ${stampCount}/table`
+                  : `1 table · ${stampCount} chairs`
+                : `${stampRows}×${stampPerRow}${stampAngle ? ` · ${stampAngle > 0 ? '+' : ''}${stampAngle}°` : ''}`}
+            </span>
           </div>
           <p className="hint">
-            One click places a bank or a table grid. Use Fill room for a whole-floor layout.
+            One click places a bank or table grid. Switch to Fill the room for a whole-floor solve.
           </p>
-          <div className="seg tabs" role="radiogroup" aria-label="Bank type">
+          <div className="seating-chip-row" role="radiogroup" aria-label="Bank type">
             {(
               [
-                ['round', 'Banquet'],
-                ['theatre', 'Theatre'],
-                ['schoolroom', 'Schoolroom'],
+                ['round', 'Banquet', 'Rounds + chairs'],
+                ['theatre', 'Theatre', 'Rows of chairs'],
+                ['schoolroom', 'Schoolroom', 'Tables + chairs'],
               ] as const
-            ).map(([id, label]) => (
+            ).map(([id, label, blurb]) => (
               <button
                 key={id}
                 type="button"
                 role="radio"
                 aria-checked={stampKind === id}
-                className={stampKind === id ? 'active' : ''}
+                className={`seating-chip${stampKind === id ? ' is-active' : ''}`}
                 onClick={() => setStampKind(id)}
                 disabled={!editable}
               >
-                {label}
+                <strong>{label}</strong>
+                <span>{blurb}</span>
               </button>
             ))}
-          </div>
-          <div className="field-row" style={{ marginTop: 10 }}>
-            <div className="field">
-              <label htmlFor="stamp-chair">Chair</label>
-              <select
-                id="stamp-chair"
-                value={chair}
-                onChange={(e) => setChair(e.target.value)}
-                disabled={!editable}
-              >
-                <option value="">Choose…</option>
-                {chairShapes.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {stampKind !== 'theatre' && (
-              <div className="field">
-                <label htmlFor="stamp-table">Table</label>
-                <select
-                  id="stamp-table"
-                  value={table}
-                  onChange={(e) => setTable(e.target.value)}
-                  disabled={!editable}
-                >
-                  <option value="">Choose…</option>
-                  {tableShapes.map((t) => (
-                    <option key={t.name} value={t.name}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
           {stampKind === 'round' ? (
             <>
@@ -1979,10 +2155,10 @@ export default function RoomPanel({
               </div>
             </div>
           )}
-          <div className="actions-row">
+          <div className="actions-row seating-bank-actions">
             <button
               type="button"
-              className="btn-primary"
+              className="btn-primary seating-place-button"
               disabled={
                 !editable ||
                 !chair ||
@@ -2021,7 +2197,7 @@ export default function RoomPanel({
               }}
             >
               <IconPlus size={14} />
-              {seatingStampArmed ? 'Update stamp' : 'Arm stamp'}
+              {seatingStampArmed ? 'Update bank' : 'Arm bank · click plan'}
             </button>
             {seatingStampArmed && onDoneSeatingStamp ? (
               <button type="button" className="btn-outline" onClick={onDoneSeatingStamp}>
@@ -2144,8 +2320,8 @@ export default function RoomPanel({
 
         {erdTab === 'seating' && (
           <>
-            <fieldset className="erd-styles" disabled={!editable}>
-              <legend>Style</legend>
+            <div className="seating-style-label">Style</div>
+            <div className="seating-chip-row seating-style-chips" role="radiogroup" aria-label="Seating style">
               {(
                 [
                   ['schoolroom', 'Schoolroom'],
@@ -2157,17 +2333,19 @@ export default function RoomPanel({
                   ['custom', 'Custom'],
                 ] as const
               ).map(([id, label]) => (
-                <label key={id} className="check">
-                  <input
-                    type="radio"
-                    name="erd-style"
-                    checked={rvStyle === id}
-                    onChange={() => setRvStyle(id)}
-                  />
-                  {label}
-                </label>
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={rvStyle === id}
+                  className={`seating-chip is-compact${rvStyle === id ? ' is-active' : ''}`}
+                  onClick={() => setRvStyle(id)}
+                  disabled={!editable}
+                >
+                  <strong>{label}</strong>
+                </button>
               ))}
-            </fieldset>
+            </div>
 
             {rvStyle === 'custom' && (
               <div className="field">
@@ -2182,27 +2360,9 @@ export default function RoomPanel({
               </div>
             )}
 
-            <div className="field-row">
-              <div className="field">
-                <label htmlFor="seat-chair-name">Chair type</label>
-                <select id="seat-chair-name" value={chair} onChange={(e) => setChair(e.target.value)} disabled={!editable}>
-                  <option value="">{chairShapes.length ? 'Choose a chair…' : 'No chairs in inventory'}</option>
-                  {shapeOptions(chairShapes)}
-                </select>
-              </div>
-              <div className="field">
-                <label htmlFor="seat-table-name">Table type</label>
-                <select
-                  id="seat-table-name"
-                  value={table}
-                  onChange={(e) => setTable(e.target.value)}
-                  disabled={!editable || !needsTable}
-                >
-                  <option value="">{tableShapes.length ? 'Choose a table…' : 'No tables in inventory'}</option>
-                  {shapeOptions(tableShapes)}
-                </select>
-              </div>
-            </div>
+            <p className="hint">
+              Furniture is chosen above. Open <button type="button" className="text-action" onClick={() => setErdTab('spacing')}>Spacing</button> for aisles and clearances.
+            </p>
 
             <div className="field-row">
               <div className="field">
@@ -2222,7 +2382,7 @@ export default function RoomPanel({
                   }}
                 />
               </div>
-              <div className="field" style={{ justifyContent: 'center', gap: 8 }}>
+              <div className="field seating-option-checks" style={{ justifyContent: 'center', gap: 8 }}>
                 <label
                   className="check"
                   title="Tries each orientation and both stagger settings and keeps whichever seats the most. It never narrows the spacing you asked for — an optimum that quietly closed the aisles would be a fire risk, not a feature."
@@ -2235,7 +2395,7 @@ export default function RoomPanel({
                   />
                   Maximize capacity
                 </label>
-                <small className="field-hint">Tests room orientation and stagger, then keeps the arrangement with the most seats without reducing your clearances.</small>
+                <small className="field-hint">Tests orientation and stagger without reducing your clearances.</small>
                 <label
                   className="check"
                   title="Leaves the stage side of every round open, so nobody is seated with their back to the screen."
@@ -2278,6 +2438,10 @@ export default function RoomPanel({
 
         {erdTab === 'spacing' && (
           <>
+            <p className="hint seating-spacing-intro">
+              These clearances drive the live seat count. Wider aisles mean fewer seats — adjust here
+              before you place.
+            </p>
             <div className="field-row">
               <LengthField id="seat-spacing" label="Chair center-to-center" hint="Distance from one chair's center to the next across a row." field={seatSpacing} units={units} disabled={!editable} />
               <LengthField
@@ -2484,68 +2648,73 @@ export default function RoomPanel({
           </p>
         )}
 
-        <div className="seating-placement-mode">
-          <span>Placement mode</span>
-          <div className="seg tabs" role="radiogroup" aria-label="Seating placement mode">
+        <div className="seating-place-footer">
+          <div className="seating-placement-mode">
+            <span>When placing</span>
+            <div className="seg tabs" role="radiogroup" aria-label="Seating placement mode">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={seatingPlacementMode === 'replace'}
+                className={seatingPlacementMode === 'replace' ? 'active' : ''}
+                onClick={() => setSeatingPlacementMode('replace')}
+                disabled={!editable}
+              >
+                Replace layout
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={seatingPlacementMode === 'add'}
+                className={seatingPlacementMode === 'add' ? 'active' : ''}
+                onClick={() => setSeatingPlacementMode('add')}
+                disabled={!editable}
+              >
+                Add section
+              </button>
+            </div>
+          </div>
+
+          <div className="actions-row">
             <button
-              type="button"
-              role="radio"
-              aria-checked={seatingPlacementMode === 'replace'}
-              className={seatingPlacementMode === 'replace' ? 'active' : ''}
-              onClick={() => setSeatingPlacementMode('replace')}
-              disabled={!editable}
+              className="btn-primary seating-place-button"
+              onClick={() =>
+                void run(
+                  seatingPlacementMode === 'add' ? 'Seating section added' : 'Seating placed',
+                  () => api.seatingApply(seatingRequest, chair, table || undefined),
+                  false,
+                ).then((ok) => {
+                  if (ok) onSeatingApplied?.();
+                })
+              }
+              disabled={!editable || !room || !chair || (needsTable && !table) || !preview?.seats}
+              title={
+                !room
+                  ? 'Draw a room first'
+                  : !chair
+                    ? 'Choose a chair to place'
+                    : seatingPlacementMode === 'add'
+                      ? 'Add this as another seating section'
+                      : 'Place this layout, replacing managed seating'
+              }
             >
-              Replace layout
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={seatingPlacementMode === 'add'}
-              className={seatingPlacementMode === 'add' ? 'active' : ''}
-              onClick={() => setSeatingPlacementMode('add')}
-              disabled={!editable}
-            >
-              Add section
+              <IconPlus size={14} />
+              {seatingPlacementMode === 'add'
+                ? 'Add seating section'
+                : model.seatingSpine || model.seatingStatus
+                  ? 'Update placed seating'
+                  : 'Place seating'}
+              {preview?.seats ? (
+                <span className="seating-place-button-count">{preview.seats.toLocaleString()}</span>
+              ) : null}
             </button>
           </div>
+          <p className="hint">
+            {model.seatingSpine
+              ? 'This plan remembers the seating layout. Update replaces the same chairs instead of stacking a second set.'
+              : 'The count above is what the room will actually take — seats outside walls, in columns, or on reserved floor are left out. Replace keeps one managed layout; Add section preserves existing banks.'}
+          </p>
         </div>
-
-        <div className="actions-row">
-          <button
-            className="btn-primary seating-place-button"
-            onClick={() =>
-              void run(
-                seatingPlacementMode === 'add' ? 'Seating section added' : 'Seating placed',
-                () => api.seatingApply(seatingRequest, chair, table || undefined),
-                false,
-              ).then((ok) => {
-                if (ok) onSeatingApplied?.();
-              })
-            }
-            disabled={!editable || !room || !chair || (needsTable && !table) || !preview?.seats}
-            title={
-              !room
-                ? 'Draw a room first'
-                : !chair
-                  ? 'Choose a chair to place'
-                  : seatingPlacementMode === 'add'
-                    ? 'Add this as another seating section'
-                    : 'Place this layout, replacing managed seating'
-            }
-          >
-            <IconPlus size={14} />
-            {seatingPlacementMode === 'add'
-              ? 'Add seating section'
-              : model.seatingSpine || model.seatingStatus
-                ? 'Update placed seating'
-                : 'Place seating'}
-          </button>
-        </div>
-        <p className="hint">
-          {model.seatingSpine
-            ? 'This plan remembers the seating layout. Update replaces the same chairs instead of stacking a second set.'
-            : 'The count above is what the room will actually take — seats that fall outside the walls, inside a column or on reserved floor are left out. Replace keeps one managed layout; Add section preserves the existing banks for multi-part arrangements.'}
-        </p>
       </div>
         </>
       )}

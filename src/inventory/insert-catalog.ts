@@ -294,15 +294,98 @@ export const INSERT_TREE: InsertBranch[] = [
     id: 'tables',
     label: 'Tables',
     children: [
-      leaf('round-60', '60″ round', ['60 Round', '60" Round', 'Banquet 60'], ['table-round'], '60" Round'),
-      leaf('round-72', '72″ round', ['72 Round', '72" Round'], ['table-round'], '72" Round'),
-      leaf('round-8', '8′ round', ["8' Circle", '8ft Round'], ['table-round'], "8' Circle"),
-      leaf('rect-6', '6′ banquet', ["6' Table", '6 ft Banquet', 'Rectangular Table'], ['table-rect'], "6' x 30\" Table"),
-      leaf('rect-6-30', '6′ × 30″', ["6' x 30\"", "6' x 30"], ['table-rect'], "6' x 30\" Table"),
-      leaf('rect-8', '8′ banquet', ["8' Table", '8 ft Banquet'], ['table-rect'], "8' x 30\" Table"),
-      leaf('rect-8-30', '8′ × 30″', ["8' x 30\"", "8' x 30"], ['table-rect'], "8' x 30\" Table"),
-      leaf('rect-6-18', '6′ × 18″', ["6' x 18\"", "6' x 18"], ['table-rect'], "6' x 18\" Table"),
-      leaf('rect-8-18', '8′ × 18″', ["8' x 18\"", "8' x 18"], ['table-rect'], "8' x 18\" Table"),
+      leaf(
+        'round-60',
+        '60″ round',
+        [
+          'Banquet Round 60"',
+          'Round 60"',
+          '60 Round',
+          '60" Round',
+          'Banquet 60',
+          'Round 60',
+        ],
+        ['table-round'],
+        'Banquet Round 60"',
+      ),
+      leaf(
+        'round-72',
+        '72″ round',
+        ['Banquet Round 72"', 'Round 72"', '72 Round', '72" Round', 'Round 72'],
+        ['table-round'],
+        'Banquet Round 72"',
+      ),
+      leaf(
+        'round-30-cocktail',
+        '30″ cocktail',
+        ['Cocktail Round 30"', 'Highboy 30"', 'Round 30"', '30" Cocktail', 'Highboy'],
+        ['table-round'],
+        'Cocktail Round 30"',
+      ),
+      leaf(
+        'round-36-cocktail',
+        '36″ cocktail',
+        ['Cocktail Round 36"', 'Round 36"', '36" Cocktail'],
+        ['table-round'],
+        'Cocktail Round 36"',
+      ),
+      leaf('round-8', '8′ round', ["8' Circle", '8ft Round', 'Round 96"'], ['table-round'], "8' Circle"),
+      leaf(
+        'rect-6',
+        '6′ banquet',
+        ['Banquet 6′ × 30″', 'Banquet 6\' × 30"', `6' x 30"`, "6' Table", '6 ft Banquet'],
+        ['table-rect'],
+        'Banquet 6′ × 30″',
+      ),
+      leaf(
+        'rect-6-30',
+        '6′ × 30″',
+        ['Banquet 6′ × 30″', `6' x 30"`, "6' x 30"],
+        ['table-rect'],
+        'Banquet 6′ × 30″',
+      ),
+      leaf(
+        'rect-8',
+        '8′ banquet',
+        ['Banquet 8′ × 30″', 'Banquet 8\' × 30"', `8' x 30"`, "8' Table", '8 ft Banquet'],
+        ['table-rect'],
+        'Banquet 8′ × 30″',
+      ),
+      leaf(
+        'rect-8-30',
+        '8′ × 30″',
+        ['Banquet 8′ × 30″', `8' x 30"`, "8' x 30"],
+        ['table-rect'],
+        'Banquet 8′ × 30″',
+      ),
+      leaf(
+        'rect-6-18',
+        '6′ × 18″',
+        ['Classroom 6′ × 18″', 'Banquet 6′ × 18″', `6' x 18"`, "6' x 18"],
+        ['table-rect'],
+        'Classroom 6′ × 18″',
+      ),
+      leaf(
+        'rect-8-18',
+        '8′ × 18″',
+        ['Classroom 8′ × 18″', 'Banquet 8′ × 18″', `8' x 18"`, "8' x 18"],
+        ['table-rect'],
+        'Classroom 8′ × 18″',
+      ),
+      leaf(
+        'half-round-60',
+        '60″ half-round',
+        ['Half-Round 60″', 'Half-Round 60"', 'Half Round', 'Serpentine 8′', 'Serpentine'],
+        ['table-round', 'table-rect'],
+        'Half-Round 60″',
+      ),
+      leaf(
+        'conference-8',
+        '8′ conference',
+        ['Conference 8′ × 42″', 'Conference 8\' × 42"', 'Conference Table'],
+        ['table-rect'],
+        'Conference 8′ × 42″',
+      ),
     ],
   },
   {
@@ -312,11 +395,45 @@ export const INSERT_TREE: InsertBranch[] = [
       leaf(
         'banquet-chair',
         'Banquet chair',
-        ['Chair 20.5W X 23.23D', 'Banquet Chair', 'Chair'],
+        [
+          'Banquet Chair 18" × 20"',
+          'Banquet Chair 18" x 20"',
+          'Chair 20.5W X 23.23D',
+          'Banquet Chair',
+          'Chair',
+        ],
         ['chair'],
-        '20.5" x 23.23" Chair',
+        'Banquet Chair 18" × 20"',
       ),
-      leaf('stack-chair', 'Stack chair', ['Stack Chair'], ['chair'], '20" x 20" Chair'),
+      leaf(
+        'stack-chair',
+        'Stack chair',
+        ['Banquet Chair 18" × 20"', 'Folding Chair', 'Stack Chair', 'Chair 20.5W X 23.23D'],
+        ['chair'],
+        'Banquet Chair 18" × 20"',
+      ),
+      leaf(
+        'chiavari',
+        'Chiavari chair',
+        ['Chiavari Chair', 'Chiavari', 'Ballroom Chair'],
+        ['chair'],
+        'Chiavari Chair',
+      ),
+      leaf(
+        'folding-chair',
+        'Folding chair',
+        ['Folding Chair', 'Folding'],
+        ['chair'],
+        'Folding Chair',
+      ),
+      leaf(
+        'conference-chair',
+        'Conference chair',
+        ['Conference Chair', 'Meeting Chair'],
+        ['chair'],
+        'Conference Chair',
+      ),
+      leaf('barstool', 'Barstool', ['Barstool', 'Bar Stool', 'Stool'], ['chair'], 'Barstool'),
     ],
   },
   {
@@ -393,16 +510,28 @@ export function flattenInsertLeaves(nodes: Array<InsertBranch | InsertLeaf> = IN
  * Picks the best inventory row for a leaf: prefer category match, then
  * keyword substring on the name (case-insensitive).
  */
+/** Normalize quote/feet marks so Round 60" matches 60" Round keywords. */
+function normalizeMatchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[“”″]/g, '"')
+    .replace(/[‘’′]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function matchInsertItem<T extends { id: string; name: string; category?: string | null }>(
   leaf: InsertLeaf,
   items: T[],
 ): T | null {
   if (!items.length) return null;
-  const lowered = leaf.keywords.map((k) => k.toLowerCase());
+  const lowered = leaf.keywords.map((k) => normalizeMatchText(k));
+  const stock = leaf.stockName ? normalizeMatchText(leaf.stockName) : '';
   const scored = items
     .map((item) => {
-      const name = item.name.toLowerCase();
+      const name = normalizeMatchText(item.name);
       let keywordScore = 0;
+      if (stock && name === stock) keywordScore += 24;
       for (const key of lowered) {
         if (key.length < 3) {
           // Short tokens (PAR, TV, sub) need a word boundary so "adapter" does not win.

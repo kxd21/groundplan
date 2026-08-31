@@ -42,7 +42,12 @@ export function renderSeating(
   doc: RVDocument,
   index: DocumentIndex,
   solution: SeatingSolution,
-  names: { chair: string; table?: string },
+  names: {
+    chair: string;
+    table?: string;
+    chairWidth?: number;
+    chairDepth?: number;
+  },
   previous: number[] = [],
 ): SeatingRenderResult {
   const result: SeatingRenderResult = { ok: true, created: [], removed: 0, chairs: 0, tables: 0 };
@@ -96,7 +101,15 @@ export function renderSeating(
   }
 
   for (const seat of solution.seats) {
-    const placed = put(names.chair, seat.x, seat.y, seat.rotation);
+    const placed = put(
+      names.chair,
+      seat.x,
+      seat.y,
+      seat.rotation,
+      names.chairWidth && names.chairDepth
+        ? { width: names.chairWidth, height: names.chairDepth }
+        : undefined,
+    );
     if (!placed.ok) return { ...result, ok: false, reason: placed.reason };
     result.chairs++;
   }

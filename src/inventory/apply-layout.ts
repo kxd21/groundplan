@@ -7,9 +7,9 @@
  */
 
 import { indexDocument, deleteNode } from '../format/edit.js';
-import { placeGear } from '../format/place.js';
+import { placeGear, placeTracedIcon } from '../format/place.js';
 import { importSymbol } from '../format/symbol.js';
-import { seedChairSymbol } from './layout-recipe.js';
+import { seedChairOutline } from './layout-recipe.js';
 import { setPlanIdentity } from '../format/plan-skeleton.js';
 import { buildSchedule } from '../format/schedule.js';
 import { verifyWritable } from '../format/write.js';
@@ -284,27 +284,31 @@ export function applyFullLayoutRecipe(
       // The seating generator clones this one seed for every chair, so the seed
       // decides what all 2,234 of them look like. If the inventory knows a real
       // outline for the chair, seed from that rather than from a sized box.
-      const seedSymbol = seedChairSymbol(options.inventory, chair);
-      const seed = seedSymbol
-        ? importSymbol(
-            session.loaded.document,
-            index,
-            seedSymbol.source,
-            seedSymbol.name,
-            500 * UNITS_PER_FOOT,
-            500 * UNITS_PER_FOOT,
-          )
-        : placeGear(
-            session.loaded.document,
-            index,
-            chair,
-            500 * UNITS_PER_FOOT,
-            500 * UNITS_PER_FOOT,
-            {
-              width: 20.5 * UNITS_PER_INCH,
-              height: 23.23 * UNITS_PER_INCH,
-            },
-          );
+      const seedOutline = seedChairOutline(options.inventory, chair);
+      const park = 500 * UNITS_PER_FOOT;
+      const seed =
+        seedOutline?.kind === 'symbol'
+          ? importSymbol(
+              session.loaded.document,
+              index,
+              seedOutline.source,
+              seedOutline.name,
+              park,
+              park,
+            )
+          : seedOutline?.kind === 'traced'
+            ? placeTracedIcon(
+                session.loaded.document,
+                index,
+                seedOutline.name,
+                park,
+                park,
+                seedOutline.icon,
+              )
+            : placeGear(session.loaded.document, index, chair, park, park, {
+                width: 20.5 * UNITS_PER_INCH,
+                height: 23.23 * UNITS_PER_INCH,
+              });
       if (seed.ok) {
         seedId = seed.created?.[0];
         session.refresh();

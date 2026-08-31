@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
+import { IconClose } from './icons.js';
 import { SnappySlider } from './SnappySlider.js';
 
 const api = window.groundplan;
@@ -21,6 +22,8 @@ interface Settings {
     nudgeStep: number;
     fineNudgeStep: number;
     bulkDeleteWarning: number;
+    wheelPrimary: 'pan' | 'zoom';
+    wheelInvertZoom: boolean;
   };
   catalog: {
     policy: 'automatic' | 'automatic-small' | 'notify' | 'manual';
@@ -80,6 +83,8 @@ const PLAN_DEFAULTS: Pick<Settings, 'print' | 'dxf' | 'drawing'> = {
     nudgeStep: 10,
     fineNudgeStep: 1,
     bulkDeleteWarning: 25,
+    wheelPrimary: 'pan',
+    wheelInvertZoom: false,
   },
 };
 
@@ -234,7 +239,9 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
           >
             {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save issue' : 'Saved'}
           </span>
-          <button type="button" onClick={onClose} aria-label="Close settings">×</button>
+          <button type="button" className="sheet-header-close" onClick={onClose} aria-label="Close settings">
+            <IconClose size={14} />
+          </button>
         </header>
 
         <div className="settings-body settings-body-expanded">
@@ -260,6 +267,10 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                 <div className="settings-health-strip" aria-label="Current plan settings summary">
                   <span><small>Units</small><strong>{drawing.units === 'metric' ? 'Metric' : 'Imperial'}</strong></span>
                   <span><small>Grid snap</small><strong>{snapLabel}</strong></span>
+                  <span>
+                    <small>Scroll</small>
+                    <strong>{drawing.wheelPrimary === 'zoom' ? 'Zoom' : 'Pan'}</strong>
+                  </span>
                   <span><small>Bulk safety</small><strong>{drawing.bulkDeleteWarning ? `${drawing.bulkDeleteWarning}+ items` : 'Off'}</strong></span>
                 </div>
 
@@ -302,6 +313,51 @@ export function SettingsDialog({ appPreferences, onAppPreferences, onClose, onEr
                       <span><strong>Zoom to fit on open</strong><small>Frame the room automatically after loading.</small></span>
                     </label>
                   </div>
+                </section>
+
+                <section className="settings-card">
+                  <div className="settings-card-title">
+                    <strong>Scroll wheel</strong>
+                    <span>Map the mouse wheel or trackpad swipe on the plan.</span>
+                  </div>
+                  <div className="settings-grid">
+                    <div className="setting">
+                      <label htmlFor="s-wheel-primary">Scroll does</label>
+                      <select
+                        id="s-wheel-primary"
+                        value={drawing.wheelPrimary === 'zoom' ? 'zoom' : 'pan'}
+                        onChange={(event) =>
+                          void patch({
+                            drawing: {
+                              ...drawing,
+                              wheelPrimary: event.target.value === 'zoom' ? 'zoom' : 'pan',
+                            },
+                          })
+                        }
+                      >
+                        <option value="pan">Pan the plan (trackpad default)</option>
+                        <option value="zoom">Zoom in and out (CAD / mouse default)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <label className="setting-check">
+                    <input
+                      type="checkbox"
+                      checked={drawing.wheelInvertZoom === true}
+                      onChange={(event) =>
+                        void patch({ drawing: { ...drawing, wheelInvertZoom: event.target.checked } })
+                      }
+                    />
+                    <span>
+                      <strong>Invert zoom direction</strong>
+                      <small>Scroll up zooms out. Pinch and Ctrl/⌘+wheel still zoom.</small>
+                    </span>
+                  </label>
+                  <p className="settings-note">
+                    {drawing.wheelPrimary === 'zoom'
+                      ? 'With zoom as primary, hold Alt while scrolling to pan. Shift still pans sideways.'
+                      : 'With pan as primary, use Ctrl/⌘+wheel or pinch to zoom. Shift pans sideways.'}
+                  </p>
                 </section>
 
                 <section className="settings-card">

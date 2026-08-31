@@ -132,7 +132,14 @@ import { INSERT_TREE, isInsertLeaf, type InsertBranch, type InsertLeaf } from '.
 import { UNITS_PER_FOOT, walk, type RVDocument, type RVNode } from '../format/rv.js';
 import { importDetachedObject, listSymbols, importSymbol } from '../format/symbol.js';
 import { snapshotPlanSelection } from '../format/plan-clipboard.js';
-import { placeFromLibrary, placeGear, placeTracedIcon, parseDimensions, findMatchingShape } from '../format/place.js';
+import {
+  placeFromLibrary,
+  placeGear,
+  placeTracedIcon,
+  parseDimensions,
+  findMatchingShape,
+  prefersDoorSynthesis,
+} from '../format/place.js';
 import { nearestWallSnap, wallSetback, wantsWallSnap } from '../format/wall-snap.js';
 import { arrayGrid } from '../format/array-grid.js';
 import { deriveRoom } from '../format/room.js';
@@ -196,7 +203,8 @@ import {
 } from '../inventory/classify.js';
 import { loadInventoryWithStatus, saveInventory, inventoryPath } from '../inventory/store.js';
 import { exportInventoryPack, importInventoryPack } from '../inventory/share.js';
-import { seedStarterInventory } from '../inventory/seed.js';
+import { ensureStarterInventory, mergeStarterInventory } from '../inventory/seed.js';
+import { inventoryHealth } from '../inventory/health.js';
 import { applyFullLayoutRecipe, clearGearShapes, clearSeatingShapes } from '../inventory/apply-layout.js';
 import { exportLayoutRecipe } from '../inventory/export-layout-recipe.js';
 import {
@@ -509,6 +517,8 @@ export interface SelectionInfo {
    * Null for free geometry that only supports relative rotate-by.
    */
   angleDegrees: number | null;
+  /** Actual chairs linked to, or spatially associated with, this table. */
+  chairsAround?: number;
   /** Saved typography for an RVLabel. */
   textStyle?: {
     family: string;
@@ -3902,6 +3912,33 @@ app.whenReady().then(async () => {
       inventoryState(query ?? '', department ?? null, (category as Category) ?? null),
   );
 
+  handle('inventory:health', () => inventoryHealth(inventory));
+
+  handle('inventory:merge-starter', async () => {
+    const busy = inventoryBusyReason();
+    if (busy) return { ok: false, reason: busy };
+    const result = await mergeStarterInventory({
+      inventoryFile,
+      inventory,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    });
+    if (!result.ok) return { ok: false, reason: result.reason };
+    ensureCategories(inventory);
+    await persistInventory();
+    inventoryNotice =
+      (result.toppedUp ?? 0) > 0
+        ? `Merged ${result.toppedUp} starter equipment shapes into the library.`
+        : result.seeded
+          ? `Loaded ${result.items} starter equipment items.`
+          : 'Starter equipment was already present.';
+    return inventoryMutateOk({
+      seeded: result.seeded,
+      toppedUp: result.toppedUp ?? 0,
+      items: result.items,
+    });
+  });
+
   handle('inventory:get-photo', (_event, id: string) => {
     const item = locateInventoryItem(inventory, id);
     if (!item) return { ok: false, reason: 'item no longer exists' };
@@ -4549,6 +4586,8 @@ app.whenReady().then(async () => {
       }
       const from = source;
       if (!from) {
+        // Doors with empty source geometry must synthesize, not stamp a box husk.
+        if (prefersDoorSynthesis(item.name, item.category)) return placeAsBox();
         // Prefer the item's own traced silhouette over a generic box when the
         // harvested symbol file is missing.
         if (item.tracedIcon?.paths?.length) {
@@ -4579,6 +4618,10 @@ app.whenReady().then(async () => {
       if (imported.ok) return finish({ ...imported, method: imported.method ?? 'symbol' });
       if (imported.overlaps) return imported;
     }
+
+    // Empty door symbols fall through here — synthesize jamb/leaf/swing instead
+    // of placing the harvested box husk from tracedIcon.
+    if (prefersDoorSynthesis(item.name, item.category)) return placeAsBox();
 
     if (item.tracedIcon?.paths?.length) {
       return finish(
@@ -4936,6 +4979,11 @@ app.whenReady().then(async () => {
           // Fall through to traced / sized box.
         }
       }
+      if (prefersDoorSynthesis(item.name, item.category)) {
+        return alignIfDoor(
+          guarded((s) => placeGear(s.loaded.document, s.index, item.name, atX, atY, known)),
+        );
+      }
       if (item.tracedIcon?.paths?.length) {
         return alignIfDoor(
           guarded((s) =>
@@ -5109,7 +5157,11 @@ app.whenReady().then(async () => {
             placed = importSymbol(s.loaded.document, live, source, lookFor, PARK, PARK);
           }
         }
-        if (!placed?.ok && item?.tracedIcon?.paths?.length) {
+        if (
+          !placed?.ok &&
+          item?.tracedIcon?.paths?.length &&
+          !prefersDoorSynthesis(item.name, item.category)
+        ) {
           placed = placeTracedIcon(
             s.loaded.document,
             live,
@@ -5734,7 +5786,11 @@ function seedSeatingTemplate(
       placed = importSymbol(doc, live, source, lookFor, PARK, PARK);
     }
   }
-  if (!placed?.ok && item?.tracedIcon?.paths?.length) {
+  if (
+    !placed?.ok &&
+    item?.tracedIcon?.paths?.length &&
+    !prefersDoorSynthesis(item.name, item.category)
+  ) {
     placed = placeTracedIcon(doc, live, item.name, PARK, PARK, item.tracedIcon);
   }
   if (!placed?.ok) {
@@ -6842,6 +6898,15 @@ function seedSeatingTemplate(
       : node.angle != null && Number.isFinite(node.angle)
         ? normalise((node.angle * 180) / Math.PI)
         : null;
+    const chairsAround = isTableNode(node)
+      ? (() => {
+          const linked = (objectLinks.get(nodeId) ?? []).filter((id) => {
+            const candidate = session!.index.byId.get(id);
+            return candidate != null && isChairNode(candidate);
+          });
+          return linked.length || nearbyChairIds(session!.loaded.document, nodeId).length;
+        })()
+      : undefined;
     const info: SelectionInfo = {
       nodeId,
       cls: node.cls,
@@ -6856,6 +6921,7 @@ function seedSeatingTemplate(
       x: (node.bounds.left + node.bounds.right) / 2,
       y: (node.bounds.top + node.bounds.bottom) / 2,
       angleDegrees: facing,
+      chairsAround,
       textStyle:
         node.cls === 'RVLabel'
           ? {
@@ -7419,8 +7485,9 @@ function seedSeatingTemplate(
 
   // First launch (or an empty unused library from an older build): fill the
   // private inventory from the bundled starter pack so the palette already has
-  // placeable shapes. Libraries with any import history are left alone.
-  const starter = await seedStarterInventory({
+  // placeable shapes. Existing libraries that lack chairs/tables (common after
+  // gear-only absorbs on Windows) get a seating top-up without wiping rows.
+  const starter = await ensureStarterInventory({
     inventoryFile,
     inventory,
     resourcesPath: process.resourcesPath,
@@ -7430,8 +7497,17 @@ function seedSeatingTemplate(
     inventoryMessages.push(
       `Loaded ${starter.items} starter equipment items with shapes ready to place.`,
     );
+  } else if (starter.toppedUp && starter.toppedUp > 0) {
+    inventoryMessages.push(
+      `Added ${starter.toppedUp} starter chairs and tables so seating can place.`,
+    );
   } else if (!starter.ok && inventory.items.length === 0) {
     inventoryMessages.push(starter.reason ?? 'The starter equipment pack could not be loaded.');
+  }
+
+  const health = inventoryHealth(inventory);
+  if (!health.ok && health.issues[0]) {
+    inventoryMessages.push(health.issues[0]);
   }
 
   inventoryNotice = inventoryMessages.length ? inventoryMessages.join(' ') : undefined;
@@ -7440,6 +7516,7 @@ function seedSeatingTemplate(
   if (
     filledCategories > 0 ||
     starter.seeded ||
+    (starter.toppedUp ?? 0) > 0 ||
     (loadedInventory.migration?.changed && !loadedInventory.warnings.some((message) => message.includes('could not be read')))
   ) {
     await persistInventory();

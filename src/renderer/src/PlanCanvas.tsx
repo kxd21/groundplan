@@ -157,6 +157,13 @@ interface Props {
   onDropGear?: (description: string, x: number, y: number) => void;
   /** Grid step to snap to, in logical units. Zero disables snapping. */
   snapStep?: number;
+  /**
+   * Unmodified scroll wheel / trackpad swipe on the plan.
+   * `pan` (default) or `zoom`. Ctrl/⌘+wheel and pinch always zoom.
+   */
+  wheelPrimary?: 'pan' | 'zoom';
+  /** When true, scroll-up zooms out. */
+  wheelInvertZoom?: boolean;
   /** How rulers and temporary measurements are labelled. */
   units?: UnitSystem;
   /**
@@ -473,6 +480,8 @@ export function PlanCanvas({
   onDropItem,
   onDropGear,
   snapStep = 0,
+  wheelPrimary = 'pan',
+  wheelInvertZoom = false,
   units = 'imperial',
   pointerMode,
   spanFrom,
@@ -1476,11 +1485,9 @@ export function PlanCanvas({
   /**
    * Wheel and trackpad.
    *
-   * A two-finger scroll is how anyone moves around a drawing on a laptop, so it
-   * pans. Zoom is the pinch gesture — which Chromium reports as a wheel event
-   * with `ctrlKey` set — or ctrl/cmd with the wheel, matching every other
-   * drawing tool. Zooming on every wheel event left no way to pan at all
-   * without holding Alt, which nobody discovers.
+   * Default: two-finger scroll pans; pinch or Ctrl/⌘+wheel zooms. Users who
+   * prefer a mouse-wheel zoom (CAD style) set Scroll wheel → Zoom in Settings;
+   * Alt then pans so the plan is never stuck without a pan gesture.
    */
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -1491,9 +1498,11 @@ export function PlanCanvas({
     const deltaX = e.deltaX * unit;
     const deltaY = e.deltaY * unit;
 
-    if (e.ctrlKey || e.metaKey) {
+    const zoomGesture = e.ctrlKey || e.metaKey || (wheelPrimary === 'zoom' && !e.altKey);
+    if (zoomGesture) {
       scheduleView((v) => {
-        const factor = Math.exp(-deltaY * 0.0015);
+        const signed = wheelInvertZoom ? deltaY : -deltaY;
+        const factor = Math.exp(signed * 0.0015);
         const scale = Math.min(4, Math.max(0.0015, v.scale * factor));
         const k = scale / v.scale;
         return { scale, offsetX: mx - (mx - v.offsetX) * k, offsetY: my - (my - v.offsetY) * k };
@@ -2153,7 +2162,11 @@ export function PlanCanvas({
       <canvas
         ref={canvasRef}
         role="application"
-        aria-label="Plan canvas. Click to select, drag to move, press H for the Hand tool, hold Space to pan, and use Control or Command plus the wheel to zoom."
+        aria-label={
+          wheelPrimary === 'zoom'
+            ? 'Plan canvas. Click to select, drag to move, press H for the Hand tool, hold Space to pan, scroll to zoom, and hold Alt while scrolling to pan.'
+            : 'Plan canvas. Click to select, drag to move, press H for the Hand tool, hold Space to pan, and use Control or Command plus the wheel to zoom.'
+        }
         tabIndex={0}
         onWheel={onWheel}
         onPointerDown={onPointerDown}

@@ -21,6 +21,7 @@ import { listSymbols } from '../src/format/symbol.js';
 import { walk } from '../src/format/rv.js';
 import { sanitiseIcon, type CatalogIcon } from '../src/catalog/icon.js';
 import { classify } from '../src/inventory/classify.js';
+import { doorIcon, doorSwingFromName } from '../src/format/synthesize.js';
 import {
   emptyInventory,
   normaliseName,
@@ -130,7 +131,12 @@ for (const sym of wanted) {
   let icon = sanitiseIcon(scene, sym.name).icon;
   let source = 'plan outline';
   if (!icon?.paths?.length) {
-    if (/\bcircle\b|\bround\b/i.test(sym.name)) {
+    const classifiedEmpty = classify(sym.name);
+    if (classifiedEmpty.category === 'door') {
+      icon = doorIcon(sym.width, sym.height, doorSwingFromName(sym.name));
+      source = 'synthetic door (empty geometry in plan)';
+      synthetic++;
+    } else if (/\bcircle\b|\bround\b/i.test(sym.name)) {
       icon = circleIcon(sym.width, sym.height);
       source = 'synthetic circle';
       synthetic++;

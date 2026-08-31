@@ -228,6 +228,9 @@ export interface IncomingItem {
   symbolAsset?: InventorySymbolAsset;
   /** Spotlight virtual / independent virtual part. */
   virtual?: boolean;
+  /** Pack / starter category when already classified. */
+  category?: Category;
+  view?: ItemView;
 }
 
 function shortHash(value: string): string {
@@ -340,7 +343,8 @@ export function mergeItems(
         width: item.width,
         height: item.height,
         sizeSource: item.sizeSource ?? (item.width ? 'parsed' : 'unknown'),
-        category: classify(name).category,
+        category: item.category ?? classify(name).category,
+        view: item.view ?? classify(name).view,
         symbolPath: item.symbolPath,
         symbolName: item.symbolName,
         symbolAsset: item.symbolAsset,
@@ -567,7 +571,13 @@ export function updateInventoryItem(
       item.symbolName = item.name;
     }
     item.name = wantedName;
-    item.category = classify(wantedName).category;
+    // A category someone chose by hand must survive rename — only auto rows
+    // reclassify from the new name.
+    if (item.categoryBy !== 'user') {
+      const verdict = classify(wantedName);
+      item.category = verdict.category;
+      item.view = verdict.view;
+    }
   }
   item.department = department;
   item.notes = notes;

@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { estimateThreshold, traceImage, type TraceResult } from '../../catalog/trace.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { IconFit, IconPlus } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 import { SnappySlider } from './SnappySlider.js';
 
 const api = window.groundplan;
@@ -320,15 +321,13 @@ export function TraceDialog({
         aria-label="Trace an outline from a picture"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sheet-title">
-          <div>
-            <small className="trace-eyebrow">{outlineMode ? 'Shape builder' : 'Inventory'}</small>
-            <span>{outlineMode ? 'Auto-trace & refine' : 'Trace an outline from a picture'}</span>
-          </div>
-          <button type="button" className="btn-outline" onClick={onClose}>
-            Close
-          </button>
-        </div>
+        <SheetHeader
+          eyebrow={outlineMode ? 'Shape builder' : 'Inventory'}
+          title={outlineMode ? 'Auto-trace & refine' : 'Trace an outline'}
+          subtitle="Drop a picture, tune the threshold, then use the outline"
+          mark={<IconFit size={18} />}
+          onClose={onClose}
+        />
 
         <div className="trace-layout">
           <div className="trace-preview-col">

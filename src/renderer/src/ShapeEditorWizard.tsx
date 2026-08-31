@@ -27,6 +27,7 @@ import { UNITS_PER_INCH } from '../../format/rv.js';
 import { formatArea, formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { constrainRoomCorner, type CustomRoomAngleLock } from './custom-room.js';
 import { IconDrawEllipse, IconDrawPolygon, IconDrawRect, IconPlus } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 import { TraceDialog } from './TraceDialog.js';
 
 const api = window.groundplan;
@@ -953,16 +954,21 @@ export default function ShapeEditorWizard({
           aria-label="Shape Editor Wizard"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="sheet-title">
-            <h2>
-              {seed?.elevationView
+          <SheetHeader
+            eyebrow="Shape builder"
+            title={
+              seed?.elevationView
                 ? `Elevation · ${seed.elevationView === 'front' ? 'Front (FV)' : 'Side (SV)'}`
-                : `Shape Editor · Step ${step + 1} of 3`}
-            </h2>
-            <button type="button" className="btn-outline" onClick={onClose}>
-              Close
-            </button>
-          </div>
+                : `Shape editor · Step ${step + 1} of 3`
+            }
+            subtitle={
+              seed?.elevationView
+                ? `Silhouette for ${seed.baseName}`
+                : 'Category, seating notes, then outline'
+            }
+            mark={<IconDrawPolygon size={18} />}
+            onClose={onClose}
+          />
           <div className="sheet-body">
             {step === 0 && (
               <>

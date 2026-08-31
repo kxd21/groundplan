@@ -202,12 +202,17 @@ const MODELS: Array<[RegExp, Category, string]> = [
 
   [/\b(podium|lectern|acrylic podium)\b/i, 'podium', 'podium / lectern'],
   [/\b(registration desk|desk\b|counter\b)\b/i, 'desk', 'desk'],
+  // Chairs before any "banquet …" table catch-all — "Banquet Chair" is a chair.
+  [/\bchiavari\b/i, 'chair', 'chiavari chair'],
+  [/\b(bar\s*stool|barstool)\b/i, 'chair', 'barstool'],
+  [/\bchairs?\b|\bseat\b|\bstool\b/i, 'chair', 'chair'],
   [/\bround\s*\d+/i, 'table-round', 'round table'],
   [/\b\d+\s*(?:["″]|in(?:ch(?:es)?)?)\s*round\b/i, 'table-round', 'round table'],
+  [/\b(cocktail|highboy|hi-?top)\b/i, 'table-round', 'cocktail / highboy'],
   [/\bcircular\s+deck\b/i, 'riser', 'circular deck'],
-  [/\b(6|8)\s*['’]?\s*x\s*(18|30)\s*["”]?/i, 'table-rect', 'banquet table'],
-  [/\b(table|banquet|cocktail|highboy|hi-?top)\b/i, 'table-rect', 'table'],
-  [/\bchair\b|\bseat\b|\bstool\b/i, 'chair', 'chair'],
+  [/\b(6|8|10)\s*['’]?\s*x\s*(18|30|36|48)\s*["”]?/i, 'table-rect', 'banquet table'],
+  [/\b(table|classroom|conference)\b/i, 'table-rect', 'table'],
+  [/\bbanquet\b/i, 'table-rect', 'banquet table'],
   [/\b(technician|operator|staff|crew|labor position)\b/i, 'person', 'technician position'],
 ];
 

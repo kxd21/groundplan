@@ -3,6 +3,24 @@
 Installers for a first-time setup. Existing copies can update from
 **Help → Check for Updates** or from a signed update folder on a USB drive.
 
+### Seating that matches how shows get built
+
+- Three clear intents: **Fill the room**, **Place a bank**, and **One piece**
+  (hands off to Place for a single chair or table).
+- Furniture comes first, with hospitality defaults (banquet chair / round 60″)
+  and a Merge starter path when the library is empty.
+- Clearances stay on Spacing; style picks are chip buttons; Place shows the
+  live seat count on the button.
+- Starter inventory tops up placeable seating on Windows installs so Place
+  seating is not stuck empty after a gear-first setup.
+
+### Cleaner dialogs and menus
+
+- Sheets, docks, Settings, New Plan, Insert, Stage, Trace, and Folder Workspace
+  share one header language: mark, eyebrow, title, and square close.
+- Ribbon Create/More menus, the plan context menu, and the command palette match
+  the same chrome.
+
 ### Seating planner reliability
 
 - Chair and table pickers now show only the correct top-down furniture; front,

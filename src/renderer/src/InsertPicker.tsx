@@ -12,7 +12,8 @@ import {
   type InsertLeaf,
   type InsertGroupId,
 } from '../../inventory/insert-catalog.js';
-import { IconSearch } from './icons.js';
+import { IconPlus, IconSearch } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 
 interface InventoryRow {
   id: string;
@@ -175,15 +176,13 @@ export default function InsertPicker({
         aria-label="Insert"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sheet-title">
-          <div className="insert-sheet-heading">
-            <h2>Insert</h2>
-            <p>Browse the catalog · prefer inventory when it matches</p>
-          </div>
-          <button type="button" className="btn-outline" onClick={onClose}>
-            Close
-          </button>
-        </div>
+        <SheetHeader
+          eyebrow="Catalog"
+          title="Insert"
+          subtitle="Browse equipment · prefer inventory when it matches"
+          mark={<IconPlus size={18} />}
+          onClose={onClose}
+        />
         <div className="sheet-body">
           <div className="field inv-search insert-search">
             <IconSearch size={14} />

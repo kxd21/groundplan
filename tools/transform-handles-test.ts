@@ -19,7 +19,9 @@ import {
   type TransformFrame,
 } from '../src/renderer/src/transform-handles.js';
 
-const view = { scale: 1, offsetX: 0, offsetY: 0 };
+// Plan Y grows up while screen Y grows down. Offset Y keeps the fixture's
+// centre at screen y=100, making the expected handle positions easy to read.
+const view = { scale: 1, offsetX: 0, offsetY: 200 };
 
 let passed = 0;
 let failed = 0;
@@ -48,8 +50,8 @@ check(
 const turned: TransformFrame = { ...square, angle: 90 };
 const turnedCorners = frameCorners(turned, view);
 check(
-  'a 90° frame swaps its extents',
-  near(turnedCorners[0]!.x, 110) && near(turnedCorners[0]!.y, 80),
+  'a +90° plan frame follows the Y-up drawing',
+  near(turnedCorners[0]!.x, 90) && near(turnedCorners[0]!.y, 120),
   JSON.stringify(turnedCorners[0]),
 );
 
@@ -58,10 +60,35 @@ check('east handle sits on the right edge midpoint', near(east.x, 120) && near(e
 
 const turnedEast = handlePoints(turned, view, true).find((p) => p.id === 'e')!;
 check(
-  'east handle follows the rotation to the south',
-  near(turnedEast.x, 100) && near(turnedEast.y, 120),
+  'east handle follows the rotation to the north',
+  near(turnedEast.x, 100) && near(turnedEast.y, 80),
   `${turnedEast.x},${turnedEast.y}`,
 );
+
+// Regression for a table below plan zero: its handle frame used to be drawn
+// the same distance above zero, visibly detached from the selected circle.
+const belowZero: TransformFrame = { cx: 600, cy: -600, width: 600, height: 600, angle: 0 };
+const belowView = { scale: 0.1, offsetX: 500, offsetY: 400 };
+const belowCorners = frameCorners(belowZero, belowView);
+check(
+  'a frame below plan zero stays centred on the item',
+  near((belowCorners[0]!.x + belowCorners[2]!.x) / 2, 560) &&
+    near((belowCorners[0]!.y + belowCorners[2]!.y) / 2, 460),
+  JSON.stringify(belowCorners),
+);
+for (const [name, frame, candidateView] of [
+  ['positive Y at close zoom', { cx: -240, cy: 840, width: 300, height: 180, angle: 27 }, { scale: 0.5, offsetX: 700, offsetY: 500 }],
+  ['negative Y at far zoom', { cx: 1320, cy: -1560, width: 720, height: 240, angle: -38 }, { scale: 0.04, offsetX: 300, offsetY: 260 }],
+  ['origin at medium zoom', { cx: 0, cy: 0, width: 480, height: 960, angle: 90 }, { scale: 0.2, offsetX: 410, offsetY: 330 }],
+] as const) {
+  const candidateCorners = frameCorners(frame, candidateView);
+  check(
+    `${name} keeps the frame centre attached`,
+    near((candidateCorners[0]!.x + candidateCorners[2]!.x) / 2, frame.cx * candidateView.scale + candidateView.offsetX) &&
+      near((candidateCorners[0]!.y + candidateCorners[2]!.y) / 2, -frame.cy * candidateView.scale + candidateView.offsetY),
+    JSON.stringify(candidateCorners),
+  );
+}
 
 const grip = handlePoints(square, view, true).find((p) => p.id === 'rotate');
 check('rotate grip is offset above the top edge', !!grip && grip.y < 90);
@@ -85,9 +112,9 @@ check('edge handles drop out on a small frame', hitHandle(tiny, view, 10, 0, tru
 // Per-axis clearance: a long thin truss keeps the end handles it has room for
 // and loses only the ones that would sit on top of a corner.
 const truss: TransformFrame = { cx: 0, cy: 0, width: 400, height: 12, angle: 0 };
-check('a long thin frame keeps its north/south handles', hitHandle(truss, view, 0, -6, true) === 'n');
-check('a long thin frame drops its east/west handles', hitHandle(truss, view, 200, 0, true) !== 'e');
-check('corner handles survive on a small frame', hitHandle(tiny, view, 10, 10, true) === 'se');
+check('a long thin frame keeps its north/south handles', hitHandle(truss, view, 0, 194, true) === 'n');
+check('a long thin frame drops its east/west handles', hitHandle(truss, view, 200, 200, true) !== 'e');
+check('corner handles survive on a small frame', hitHandle(tiny, view, 10, 210, true) === 'se');
 
 // ---- resize ---------------------------------------------------------------
 
@@ -102,14 +129,15 @@ check(
 check('dragging west by -5 also widens by 10', near(resizeFrom(square, 'w', -5, 0, free).width, 50));
 check('an east drag leaves the height alone', near(resizeFrom(square, 'e', 5, 7, free).height, 20));
 
-const corner = resizeFrom(square, 'se', 5, 5, free);
+// A five-pixel drag down is -5 in the plan's Y-up coordinates.
+const corner = resizeFrom(square, 'se', 5, -5, free);
 check('a corner drag moves both axes', near(corner.width, 50) && near(corner.height, 30));
 
-// The whole point of the local projection: on a 90° frame a drag DOWN the
-// screen is a drag along the object's own +x, so it is the width that grows.
+// On a +90° plan frame the east handle is visually north. Moving toward it is
+// +Y in plan coordinates, so width—not height—is what grows.
 const turnedDrag = resizeFrom(turned, 'e', 0, 5, free);
 check(
-  'a rotated frame grows along its own axis',
+  'a rotated frame grows along its visible handle axis',
   near(turnedDrag.width, 50) && near(turnedDrag.height, 20),
   JSON.stringify(turnedDrag),
 );
@@ -133,7 +161,7 @@ check(
 // ---- rotate ---------------------------------------------------------------
 
 check('bearing east of centre is 0°', near(angleAt(square, 200, 100), 0));
-check('bearing south of centre is 90°', near(angleAt(square, 100, 200), 90));
+check('bearing north of centre is 90° in plan coordinates', near(angleAt(square, 100, 200), 90));
 
 check('a quarter turn reads as +90', near(rotateFrom(square, 0, 90, false), 90));
 check('the delta wraps to the short way round', near(rotateFrom(square, 0, -170, false), -170));
@@ -153,6 +181,7 @@ check(
 check('east handle gets the horizontal cursor', cursorFor('e', 0) === 'ew-resize');
 check('north handle gets the vertical cursor', cursorFor('n', 0) === 'ns-resize');
 check('a 90° turn swaps the two', cursorFor('e', 90) === 'ns-resize');
+check('a +45° plan turn gives east the visible NE/SW cursor', cursorFor('e', 45) === 'nesw-resize');
 check('the rotate grip gets a grab cursor', cursorFor('rotate', 0) === 'grab');
 
 console.log(`\n${passed} passed, ${failed} failed`);

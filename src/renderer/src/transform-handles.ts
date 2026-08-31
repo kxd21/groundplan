@@ -21,7 +21,7 @@ import type { View } from './PlanCanvas.js';
 
 export type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'rotate';
 
-/** The object's own rectangle, in plan units. Angle is degrees, clockwise. */
+/** The object's own rectangle, in plan units. Angle follows the plan's Y-up geometry. */
 export interface TransformFrame {
   cx: number;
   cy: number;
@@ -53,7 +53,15 @@ const AXES: Record<Exclude<HandleId, 'rotate'>, { sx: -1 | 0 | 1; sy: -1 | 0 | 1
 
 export const RESIZE_HANDLES = Object.keys(AXES) as Array<Exclude<HandleId, 'rotate'>>;
 
-/** Rotates a local offset into screen space. Plan y runs down, so does screen y. */
+/**
+ * Rotates a screen-oriented local offset into the plan, then projects it.
+ *
+ * Local `ly` grows down because handle ids are visual (north/south), while the
+ * plan's Y axis grows up. The canvas deliberately flips that axis with
+ * `screenY`; transform handles must use the same projection or every frame is
+ * mirrored across plan Y=0. An item at -6ft was consequently getting handles
+ * at +6ft even though its selected outline was drawn in the right place.
+ */
 function toScreen(
   frame: TransformFrame,
   view: View,
@@ -64,8 +72,8 @@ function toScreen(
   const cos = Math.cos(a);
   const sin = Math.sin(a);
   return {
-    x: (frame.cx + lx * cos - ly * sin) * view.scale + view.offsetX,
-    y: (frame.cy + lx * sin + ly * cos) * view.scale + view.offsetY,
+    x: (frame.cx + lx * cos + ly * sin) * view.scale + view.offsetX,
+    y: -(frame.cy + lx * sin - ly * cos) * view.scale + view.offsetY,
   };
 }
 
@@ -171,11 +179,14 @@ export function resizeFrom(
   const cos = Math.cos(a);
   const sin = Math.sin(a);
   const localX = dx * cos + dy * sin;
-  const localY = -dx * sin + dy * cos;
+  // Pointer deltas arrive in Y-up plan coordinates. AXES uses visual screen
+  // directions, where south is positive, so project onto the object's local
+  // DOWN axis rather than its local plan-Y axis.
+  const localDown = dx * sin - dy * cos;
   const { sx, sy } = AXES[handle];
 
   let width = frame.width + 2 * sx * localX;
-  let height = frame.height + 2 * sy * localY;
+  let height = frame.height + 2 * sy * localDown;
 
   if (options.lockAspect && frame.width > 0 && frame.height > 0) {
     // Whichever axis the drag pushed hardest, in proportion, drives both.
@@ -197,7 +208,7 @@ export function resizeFrom(
   return { width: Math.max(MIN_SIZE, width), height: Math.max(MIN_SIZE, height) };
 }
 
-/** Absolute pointer angle about the frame centre, in degrees, clockwise. */
+/** Absolute pointer angle about the frame centre in the plan's Y-up coordinates. */
 export function angleAt(frame: TransformFrame, planX: number, planY: number): number {
   return (Math.atan2(planY - frame.cy, planX - frame.cx) * 180) / Math.PI;
 }
@@ -236,7 +247,9 @@ const RESIZE_CURSORS = ['ew-resize', 'nwse-resize', 'ns-resize', 'nesw-resize'];
 export function cursorFor(handle: HandleId, angle: number): string {
   if (handle === 'rotate') return 'grab';
   const { sx, sy } = AXES[handle];
-  const direction = (Math.atan2(sy, sx) * 180) / Math.PI + angle;
+  // Positive plan rotation is visually counter-clockwise after the Y flip, so
+  // subtract it from the screen-oriented handle direction.
+  const direction = (Math.atan2(sy, sx) * 180) / Math.PI - angle;
   // 8 compass sectors collapse onto 4 double-headed cursors.
   const sector = ((Math.round(direction / 45) % 8) + 8) % 8;
   return RESIZE_CURSORS[sector % 4]!;

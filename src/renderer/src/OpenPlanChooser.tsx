@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { RecentFile } from '../../main/index.js';
 import { IconFile, IconFolder, IconPlus, IconSearch } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 
 interface Props {
   recent: RecentFile[];
@@ -70,15 +71,14 @@ export default function OpenPlanChooser({
         aria-modal="true"
         aria-labelledby="open-plan-chooser-title"
       >
-        <header className="sheet-title open-plan-chooser-title">
-          <div>
-            <h2 id="open-plan-chooser-title">Open another plan</h2>
-            <small>Start new, browse, or reopen a recent show</small>
-          </div>
-          <button type="button" className="ghost" onClick={onClose} aria-label="Close" title="Close (Esc)">
-            ×
-          </button>
-        </header>
+        <SheetHeader
+          eyebrow="Plans"
+          title="Open another plan"
+          subtitle="Start new, browse, or reopen a recent show"
+          titleId="open-plan-chooser-title"
+          mark={<IconFolder size={18} />}
+          onClose={onClose}
+        />
 
         <div className="sheet-body open-plan-chooser-body">
           <div className="open-plan-chooser-actions" role="group" aria-label="Plan actions">

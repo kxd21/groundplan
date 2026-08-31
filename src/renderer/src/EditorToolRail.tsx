@@ -47,6 +47,11 @@ export default function EditorToolRail({ workspaces, tools }: Props) {
         <span className="editor-rail-icon" aria-hidden>
           {item.icon}
         </span>
+        {compact && item.shortcut && (
+          <span className="editor-tool-shortcut" aria-hidden>
+            {item.shortcut}
+          </span>
+        )}
         {!compact && <span className="editor-rail-label">{item.label}</span>}
       </button>
     );
@@ -76,6 +81,7 @@ export default function EditorToolRail({ workspaces, tools }: Props) {
 
   return (
     <aside className="editor-tool-rail" aria-label="Plan editor">
+      <span className="editor-workspaces-label">Workspaces</span>
       <nav className="editor-workspace-actions" aria-label="Plan workspaces">
         {workspaces.map((item) => action(item))}
       </nav>

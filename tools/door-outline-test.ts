@@ -6,7 +6,7 @@ import { buildScene } from '../src/format/scene.js';
 import { loadBuffer } from '../src/format/index.js';
 import { importSymbol } from '../src/format/symbol.js';
 import { classify } from '../src/inventory/classify.js';
-import { doorOutline, doorSwingFromName } from '../src/format/synthesize.js';
+import { doorIcon, doorOutline, doorSwingFromName } from '../src/format/synthesize.js';
 
 const F = 120;
 let checks = 0;
@@ -31,6 +31,9 @@ check('double leaves', doorSwingFromName('Door - Double (Out)').leaves === 2);
 const outline = doorOutline(6 * F, 4 * F, doorSwingFromName('Door - Double (Out)'));
 check('door outline has jamb+leaves+arcs', outline.length >= 5, `got ${outline.length}`);
 
+const leftIcon = doorIcon(3 * F, 3.2 * F, doorSwingFromName('Door - Single (In) Left Swing'));
+check('left swing icon is not a lone box', leftIcon.paths.length >= 3, `paths=${leftIcon.paths.length}`);
+
 const blank = createBlankPlan();
 check('blank plan', !!blank.ok && !!blank.file, blank.reason);
 const doc = loadBuffer(blank.file!, 'New.rv4').document;
@@ -43,6 +46,14 @@ check('placeGear synthesizes door', !!placed.ok && placed.method === 'synthesize
 const scene = buildScene(doc);
 const doorPrims = scene.primitives.filter((p) => /door/i.test(p.owner || ''));
 check('synthesized door is not a lone box', doorPrims.length >= 3, `prims=${doorPrims.length}`);
+
+const leftPlaced = placeGear(doc, indexDocument(doc), 'Door - Single (In) Left Swing', 40 * F, 20 * F, {
+  width: 3 * F,
+  height: 3.2 * F,
+});
+check('left swing synthesizes', !!leftPlaced.ok && leftPlaced.method === 'synthesized');
+const leftPrims = buildScene(doc).primitives.filter((p) => /Left Swing/i.test(p.owner || ''));
+check('left swing has jamb+leaf+arc', leftPrims.length >= 3, `prims=${leftPrims.length}`);
 
 const source = loadBuffer(
   readFileSync('resources/starter-inventory/inventory-assets/card-party-symbols-5e44eafd4da0a4c2.rv4'),

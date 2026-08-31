@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   });
   check('empty unused inventory.json is seeded too', rescued.ok && rescued.seeded, rescued.reason ?? '');
 
-  // After a real seed, do not refill on the next launch.
+  // After a real seed, do not full-refill on the next launch.
   const second = await loadInventory(file);
   const before = second.items.length;
   const skipped = await seedStarterInventory({
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     inventory: second,
     appPath: process.cwd(),
   });
-  check('a library that already has items is left alone', skipped.ok && !skipped.seeded);
+  check('a library that already has items is left alone by seed', skipped.ok && !skipped.seeded);
   check('skipped seed did not change item count', second.items.length === before);
 
   // User cleared every row but the import ledger remains — still their library.
@@ -96,8 +96,46 @@ async function main(): Promise<void> {
     inventory: cleared,
     appPath: process.cwd(),
   });
-  check('cleared library with import history is not refilled', notRefilled.ok && !notRefilled.seeded);
+  check('cleared library with import history is not refilled by seed', notRefilled.ok && !notRefilled.seeded);
   check('cleared library stays empty', cleared.items.length === 0);
+
+  // Gear-only library (Windows upgrade path): no chairs → top-up seating shapes.
+  const { ensureStarterInventory, hasPlaceableSeatingFurniture } = await import(
+    '../src/inventory/seed.js'
+  );
+  const gearOnlyFile = inventoryPath(join(root, 'gear-only'));
+  mkdirSync(join(root, 'gear-only'), { recursive: true });
+  const gearOnly = emptyInventory();
+  gearOnly.items.push({
+    id: 'li_projector',
+    name: 'LCD Projector',
+    category: 'projector',
+    view: 'plan',
+    sizeSource: 'unknown',
+    timesSeen: 1,
+    legacyTimesSeen: 1,
+    provenanceIds: ['gear-job:demo'],
+    peakQuantity: 1,
+    addedAt: new Date().toISOString(),
+  });
+  gearOnly.imports = [
+    {
+      id: 'gear-job:demo',
+      type: 'gear-pdf',
+      firstImportedAt: new Date().toISOString(),
+      lastImportedAt: new Date().toISOString(),
+    },
+  ];
+  writeFileSync(gearOnlyFile, `${JSON.stringify(gearOnly, null, 2)}\n`, 'utf8');
+  check('gear-only library lacks seating furniture', !hasPlaceableSeatingFurniture(gearOnly));
+  const topped = await ensureStarterInventory({
+    inventoryFile: gearOnlyFile,
+    inventory: gearOnly,
+    appPath: process.cwd(),
+  });
+  check('gear-only library receives seating top-up', (topped.toppedUp ?? 0) > 0, String(topped.toppedUp));
+  check('top-up adds placeable seating furniture', hasPlaceableSeatingFurniture(gearOnly));
+  check('top-up keeps the projector row', gearOnly.items.some((item) => /projector/i.test(item.name)));
 
   const sample = loaded.items.find((item) => item.tracedIcon)!;
   const outline = outlineFromTracedPaths(sample.tracedIcon!.paths);

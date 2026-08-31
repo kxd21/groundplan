@@ -4,6 +4,9 @@
  * Click opens the Insert browser for that group (so you pick the real item).
  * Shift+click arms the first inventory match for a fast stamp when you already
  * know what you want.
+ *
+ * Tables/Chairs are single furniture pieces. Full-room layouts belong in the
+ * Seating planner — not here.
  */
 
 import { PALETTE_CATEGORIES, type InsertGroupId } from '../../inventory/insert-catalog.js';
@@ -36,12 +39,22 @@ function pickForGroup(group: InsertGroupId, items: InventoryRow[]): InventoryRow
   );
 }
 
+function furnitureHint(group: InsertGroupId): string {
+  if (group === 'tables' || group === 'chairs') {
+    return 'Single furniture. Full layouts use Seating.';
+  }
+  return '';
+}
+
 export default function ObjectPalette({ items, armedId, disabled, onArm, onBrowse }: Props) {
   return (
     <nav className="object-palette" aria-label="Insert objects">
       {PALETTE_CATEGORIES.map((cat) => {
         const match = pickForGroup(cat.id, items);
         const active = match != null && match.id === armedId;
+        const layoutHint = furnitureHint(cat.id);
+        const furnitureLabel =
+          cat.id === 'tables' || cat.id === 'chairs' ? `Furniture · ${cat.label}` : cat.label;
         return (
           <button
             key={cat.id}
@@ -50,13 +63,17 @@ export default function ObjectPalette({ items, armedId, disabled, onArm, onBrows
             disabled={disabled}
             aria-label={
               match
-                ? `${cat.label}: browse Insert. Shift+click to stamp ${match.name}.`
-                : `${cat.label}: browse catalog`
+                ? `${furnitureLabel}: browse Insert. Shift+click to stamp ${match.name}.${layoutHint ? ` ${layoutHint}` : ''}`
+                : `${furnitureLabel}: browse catalog.${layoutHint ? ` ${layoutHint}` : ''}`
             }
             title={
               match
-                ? `${cat.label}\nClick to browse Insert · Shift+click to stamp ${match.name}`
-                : `${cat.label}: nothing matched in inventory: click to browse Insert`
+                ? `${furnitureLabel}\nClick to browse Insert · Shift+click to stamp ${match.name}${
+                    layoutHint ? `\n${layoutHint}` : ''
+                  }`
+                : `${furnitureLabel}: nothing matched in inventory — click to browse Insert${
+                    layoutHint ? `\n${layoutHint}` : ''
+                  }`
             }
             onClick={(e) => {
               if (e.shiftKey && match) {

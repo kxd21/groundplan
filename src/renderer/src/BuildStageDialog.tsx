@@ -7,6 +7,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { DECK_SIZES, type StairEdge, type StageBuild } from '../../format/stage.js';
 import { formatLength, parseLength, type UnitSystem } from '../../format/units.js';
 import { UNITS_PER_FOOT, UNITS_PER_INCH } from '../../format/rv.js';
+import { IconStageDeck } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 
 const api = window.groundplan;
 
@@ -272,19 +274,18 @@ export default function BuildStageDialog({
           }
         }}
       >
-        <div className="sheet-title">
-          <div className="stage-sheet-heading">
-            <h2>{rebuild ? 'Edit stage' : 'Build a Stage'}</h2>
-            <p>
-              {rebuild
-                ? 'Changes replace the current stage · stairs stay linked'
-                : 'Stock decks tile automatically · place at the front of the room'}
-            </p>
-          </div>
-          <button type="button" className="btn-outline" onClick={onClose} disabled={busy}>
-            Close
-          </button>
-        </div>
+        <SheetHeader
+          eyebrow="Stage"
+          title={rebuild ? 'Edit stage' : 'Build a stage'}
+          subtitle={
+            rebuild
+              ? 'Changes replace the current stage · stairs stay linked'
+              : 'Stock decks tile automatically · place at the front of the room'
+          }
+          mark={<IconStageDeck size={18} />}
+          onClose={onClose}
+          closeDisabled={busy}
+        />
         <div className="sheet-body">
           <div className="stage-section">
             <span className="tool-label">Preset</span>

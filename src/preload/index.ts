@@ -796,6 +796,27 @@ const api = {
     category?: string | null,
   ): Promise<InventoryState> =>
     ipcRenderer.invoke('inventory:list', query, department, category ?? null),
+  inventoryHealth: (): Promise<{
+    total: number;
+    placeable: number;
+    missingOutline: number;
+    deadSymbolPaths: number;
+    elevations: number;
+    boxLikeOutlines: number;
+    seatingReady: boolean;
+    insertMatched: number;
+    insertTotal: number;
+    insertMissing: string[];
+    issues: string[];
+    ok: boolean;
+  }> => ipcRenderer.invoke('inventory:health'),
+  inventoryMergeStarter: (): Promise<{
+    ok: boolean;
+    reason?: string;
+    seeded?: boolean;
+    toppedUp?: number;
+    items?: number;
+  }> => ipcRenderer.invoke('inventory:merge-starter'),
   inventoryGetPhoto: (id: string): Promise<{ ok: boolean; reason?: string; photoDataUrl?: string | null }> =>
     ipcRenderer.invoke('inventory:get-photo', id),
   inventoryMapSymbols: (): Promise<{

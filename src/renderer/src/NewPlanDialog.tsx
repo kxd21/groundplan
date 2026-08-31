@@ -30,6 +30,7 @@ import { formatArea, formatLength, parseLength, type UnitSystem } from '../../fo
 import { LAYOUT_TYPES, type ShowBrief } from '../../format/show-brief.js';
 import { IconDrawEllipse, IconDrawPolygon, IconDrawRect, IconPlus, IconRuler } from './icons.js';
 import type { CustomRoomAngleLock, CustomRoomPrefs } from './custom-room.js';
+import SheetHeader from './SheetHeader.js';
 
 const api = window.groundplan;
 
@@ -617,22 +618,23 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         aria-labelledby="new-plan-title"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="new-plan-head">
-          <div>
-            <span className="new-plan-eyebrow">New plan</span>
-            <h2 id="new-plan-title">
-              {step === 'start' ? 'What is the show?' : step === 'room' ? 'Define the room' : 'Review and create'}
-            </h2>
-            <p>
-              {step === 'start'
-                ? 'Describe it once and the plan gets checked against it — or skip and start from a room.'
-                : step === 'room'
-                  ? 'Confirm the boundary and dimensions before anything is created.'
-                  : 'Name the file and choose whether to begin with a suggested layout.'}
-            </p>
-          </div>
-          <span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>
-        </div>
+        <SheetHeader
+          eyebrow="New plan"
+          title={
+            step === 'start' ? 'What is the show?' : step === 'room' ? 'Define the room' : 'Review and create'
+          }
+          subtitle={
+            step === 'start'
+              ? 'Describe it once and the plan gets checked against it — or skip and start from a room.'
+              : step === 'room'
+                ? 'Confirm the boundary and dimensions before anything is created.'
+                : 'Name the file and choose whether to begin with a suggested layout.'
+          }
+          titleId="new-plan-title"
+          mark={<IconPlus size={18} />}
+          onClose={onCancel}
+          trailing={<span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>}
+        />
 
         <ol className="new-plan-steps" aria-label="New plan progress">
           {([

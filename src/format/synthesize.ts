@@ -1031,6 +1031,53 @@ export function doorSwingFromName(description: string): DoorSwing {
   return { leaves, out, hand };
 }
 
+/** Samples a cubic Bézier into polyline points (for inventory thumbnails). */
+function sampleCubic(p0: Point, p1: Point, p2: Point, p3: Point, steps = 12): Point[] {
+  const out: Point[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const x = u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x;
+    const y = u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y;
+    out.push({ x, y });
+  }
+  return out;
+}
+
+/**
+ * Flat polyline icon for a door mark — used when a plan names a door but drew
+ * no geometry (e.g. Left Swing husk), so the palette and harvest stay faithful.
+ */
+export function doorIcon(
+  width: number,
+  height: number,
+  swing: DoorSwing = { leaves: 1, out: true, hand: 'R' },
+): { paths: Array<{ points: number[]; closed: boolean }>; width: number; height: number } {
+  const paths: Array<{ points: number[]; closed: boolean }> = [];
+  for (const run of doorOutline(width, height, swing)) {
+    let pts: Point[];
+    let closed = false;
+    if (Array.isArray(run)) {
+      pts = run;
+    } else if ('curve' in run) {
+      const [p0, p1, p2, p3] = run.curve;
+      pts = sampleCubic(p0, p1, p2, p3);
+    } else {
+      pts = run.rect;
+      closed = true;
+    }
+    if (pts.length < 2) continue;
+    paths.push({
+      points: pts.flatMap((p) => [
+        Math.round(p.x * 10) / 10,
+        Math.round(p.y * 10) / 10,
+      ]),
+      closed,
+    });
+  }
+  return { paths, width, height };
+}
+
 /** True when a node was built here rather than read from a file. */
 export function isSynthesized(node: RVNode): boolean {
   return node.headerOverride != null && node.trailerOverride != null && node.span.tagAt === 0;

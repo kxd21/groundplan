@@ -68,6 +68,15 @@ export interface Settings {
     fineNudgeStep: number;
     /** Confirm before deleting more than this many objects at once. */
     bulkDeleteWarning: number;
+    /**
+     * What an unmodified scroll wheel / two-finger swipe does on the plan.
+     *
+     * `pan` matches trackpads (default). `zoom` matches most CAD tools and
+     * conventional mice — hold Alt to pan when zoom is primary.
+     */
+    wheelPrimary: 'pan' | 'zoom';
+    /** When true, scrolling up zooms out (natural / inverted zoom). */
+    wheelInvertZoom: boolean;
   };
 
   catalog: {
@@ -106,6 +115,8 @@ export const DEFAULT_SETTINGS: Settings = {
     nudgeStep: 10,
     fineNudgeStep: 1,
     bulkDeleteWarning: 25,
+    wheelPrimary: 'pan',
+    wheelInvertZoom: false,
   },
   catalog: { policy: 'notify', smallUpdateLimitMb: 5, checkIntervalHours: 12 },
   app: { checkOnLaunch: true },

@@ -176,12 +176,23 @@ export async function importInventoryPack(
       sizeSource: item.sizeSource,
       notes: item.notes,
       symbolPath: item.symbolPath,
-      symbolAsset: item.symbolAsset,
+      symbolAsset: item.symbolAsset
+        ? {
+            ...item.symbolAsset,
+            // Drop foreign absolute paths; managed copy is what placement uses.
+            sourcePath:
+              item.symbolPath && existsSync(item.symbolPath)
+                ? item.symbolPath
+                : undefined,
+          }
+        : undefined,
       symbolName: item.symbolName,
       mappedBy: item.mappedBy,
       mapReason: item.mapReason,
       tracedIcon: item.tracedIcon,
       photoDataUrl: item.photoDataUrl,
+      category: item.category,
+      view: item.view,
     })),
     new Date(),
     {

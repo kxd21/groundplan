@@ -396,7 +396,7 @@ function outlineForDescription(description: string, width: number, height: numbe
   if (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description)) {
     return quarterCircleOutline(width, height);
   }
-  if (/\bdoors?\b|\bopening\b/i.test(description) && !/\bbarn\s*doors?\b/i.test(description)) {
+  if (prefersDoorSynthesis(description)) {
     return doorOutline(width, height, doorSwingFromName(description));
   }
   return boxOutline(width, height);
@@ -407,8 +407,17 @@ function needsSpecialOutline(description: string): boolean {
   return (
     isRoundFootprint(description) ||
     (/\b(curved|quarter)\b/i.test(description) && /\b(riser|deck|stage)\b/i.test(description)) ||
-    (/\bdoors?\b|\bopening\b/i.test(description) && !/\bbarn\s*doors?\b/i.test(description))
+    prefersDoorSynthesis(description)
   );
+}
+
+/**
+ * Doors should synthesize (jamb + leaf + swing) when a symbol import fails,
+ * rather than stamping a harvested box husk as the silhouette.
+ */
+export function prefersDoorSynthesis(description: string, category?: string): boolean {
+  if (category === 'door') return true;
+  return /\bdoors?\b|\bopening\b/i.test(description) && !/\bbarn\s*doors?\b/i.test(description);
 }
 
 /**

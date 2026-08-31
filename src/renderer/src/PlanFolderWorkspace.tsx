@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { PlanFolderState } from '../../main/index.js';
 import { IconFile, IconFolder, IconPlus, IconSearch, IconStar, IconTrash } from './icons.js';
+import SheetHeader from './SheetHeader.js';
 
 const api = window.groundplan;
 type Folder = PlanFolderState['folders'][number];
@@ -270,11 +271,24 @@ export default function PlanFolderWorkspace({
   return (
     <div className="sheet-backdrop folder-workspace-backdrop" role="presentation" onClick={onClose}>
       <section className="sheet folder-workspace" role="dialog" aria-modal="true" aria-labelledby="folder-workspace-title" onClick={(event) => event.stopPropagation()}>
-        <header className="folder-workspace-header">
-          <span><small>Virtual filing: plans stay on disk where they are</small><strong id="folder-workspace-title">Folder Workspace</strong></span>
-          <div className="folder-workspace-search"><IconSearch size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search plans, folders, notes, or status…" /></div>
-          <button type="button" onClick={onClose} aria-label="Close Folder Workspace">×</button>
-        </header>
+        <SheetHeader
+          eyebrow="Virtual filing"
+          title="Folder Workspace"
+          subtitle="Plans stay on disk where they are · organize here"
+          titleId="folder-workspace-title"
+          mark={<IconFolder size={18} />}
+          onClose={onClose}
+          trailing={
+            <div className="folder-workspace-search">
+              <IconSearch size={14} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search plans, folders, notes, or status…"
+              />
+            </div>
+          }
+        />
 
         <div className="folder-workspace-body">
           <aside className="folder-workspace-tree">

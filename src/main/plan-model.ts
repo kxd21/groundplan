@@ -1689,7 +1689,12 @@ export function applySeating(
     doc,
     indexDocument(doc),
     solution,
-    { chair, table },
+    {
+      chair,
+      table,
+      chairWidth: plan.chairWidth,
+      chairDepth: plan.chairDepth,
+    },
     append ? [] : state.seatingIds,
   );
   if (!drawn.ok) return { ok: false, reason: drawn.reason, created: drawn.created };

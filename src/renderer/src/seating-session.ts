@@ -18,7 +18,7 @@ export type SeatingSessionSnapshot = {
   sectionCentre?: number;
   sectionWing?: number;
   stagger?: boolean;
-  stampMode?: 'fill' | 'stamp';
+  stampMode?: 'fill' | 'stamp' | 'piece';
   stampKind?: 'round' | 'theatre' | 'schoolroom';
   stampRows?: number;
   stampPerRow?: number;

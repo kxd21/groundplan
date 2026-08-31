@@ -9,20 +9,33 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { classify, type ItemView } from '../../inventory/classify.js';
+import { formatLength, type UnitSystem } from '../../format/units.js';
 import {
   ADD_CATEGORY_OPTIONS,
   addBucket,
   type AddCategoryId,
 } from './add-categories.js';
-import { IconSearch } from './icons.js';
+import { IconCheck, IconEdit, IconPlus, IconSearch } from './icons.js';
 
 export type PlanViewMode = 'top' | 'front' | 'side';
 
 export interface AddPanelItem {
   id?: string;
+  /** Insert-catalog fallback when this is a stock shape, not an inventory row. */
+  leafId?: string;
   name: string;
+  /** Actual stamped name; stock rows may have a friendlier browser label. */
+  placeName?: string;
   category?: string | null;
   view?: string | null;
+  width?: number;
+  height?: number;
+  symbolPath?: string;
+  tracedIcon?: {
+    paths: Array<{ points: number[]; closed: boolean }>;
+    width: number;
+    height: number;
+  };
 }
 
 interface Props {
@@ -34,7 +47,13 @@ interface Props {
   category: string;
   onCategory: (c: string) => void;
   onPlaceInventory: (id: string, name: string) => void;
-  onPlaceGear: (name: string) => void;
+  onPlaceStock: (leafId: string) => void;
+  armedInventoryId?: string | null;
+  armedStockName?: string | null;
+  onStopPlacement: () => void;
+  onCreateItem: () => void;
+  onManageInventory: () => void;
+  units: UnitSystem;
   editable: boolean;
 }
 
@@ -92,10 +111,62 @@ function itemBucket(item: AddPanelItem): AddCategoryId {
 function placeItem(
   item: AddPanelItem,
   onPlaceInventory: Props['onPlaceInventory'],
-  onPlaceGear: Props['onPlaceGear'],
+  onPlaceStock: Props['onPlaceStock'],
 ) {
   if (item.id) onPlaceInventory(item.id, item.name);
-  else onPlaceGear(item.name);
+  else if (item.leafId) onPlaceStock(item.leafId);
+}
+
+function itemLabel(item: AddPanelItem): string {
+  return item.category ? item.category.replace(/-/g, ' ') : itemBucket(item);
+}
+
+function itemSize(item: AddPanelItem, units: UnitSystem): string | null {
+  if (!item.width || !item.height) return null;
+  return `${formatLength(item.width, units)} × ${formatLength(item.height, units)}`;
+}
+
+/** Draw the outline that will be stamped; fall back to a quiet category tile. */
+function AssetPreview({ item }: { item: AddPanelItem }) {
+  const icon = item.tracedIcon;
+  if (icon?.paths.length && icon.width > 0 && icon.height > 0) {
+    return (
+      <svg
+        className="add-item-preview has-outline"
+        viewBox={`${-icon.width / 2} ${-icon.height / 2} ${icon.width} ${icon.height}`}
+        aria-hidden
+        focusable={false}
+      >
+        {icon.paths.map((path, index) => {
+          const points: string[] = [];
+          for (let i = 0; i < path.points.length; i += 2) {
+            points.push(`${path.points[i]},${path.points[i + 1]}`);
+          }
+          return path.closed ? (
+            <polygon key={index} points={points.join(' ')} />
+          ) : (
+            <polyline key={index} points={points.join(' ')} />
+          );
+        })}
+      </svg>
+    );
+  }
+
+  const bucket = itemBucket(item);
+  const glyph: Record<AddCategoryId, string> = {
+    all: '•',
+    room: 'R',
+    furniture: 'F',
+    stage: 'S',
+    production: 'AV',
+    annotations: 'T',
+    custom: '+',
+  };
+  return (
+    <span className={`add-item-preview is-${bucket}`} aria-hidden>
+      {glyph[bucket]}
+    </span>
+  );
 }
 
 /**
@@ -111,7 +182,13 @@ export function AddPanel({
   category,
   onCategory,
   onPlaceInventory,
-  onPlaceGear,
+  onPlaceStock,
+  armedInventoryId,
+  armedStockName,
+  onStopPlacement,
+  onCreateItem,
+  onManageInventory,
+  units,
   editable,
 }: Props) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -129,7 +206,10 @@ export function AddPanel({
     return viewItems.filter((item) => {
       if (bucket !== 'all' && itemBucket(item) !== bucket) return false;
       if (!needle) return true;
-      return item.name.toLowerCase().includes(needle);
+      return (
+        item.name.toLowerCase().includes(needle) ||
+        (item.category ?? '').toLowerCase().replace(/-/g, ' ').includes(needle)
+      );
     });
   }, [viewItems, query, category]);
 
@@ -148,8 +228,39 @@ export function AddPanel({
       });
   }, [recentNames, viewItems, planView]);
 
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<AddCategoryId, number>();
+    counts.set('all', viewItems.length);
+    for (const item of viewItems) {
+      const bucket = itemBucket(item);
+      counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+    }
+    return counts;
+  }, [viewItems]);
+
+  const armedItem = viewItems.find(
+    (item) =>
+      (item.id != null && item.id === armedInventoryId) ||
+      (item.leafId != null && item.placeName === armedStockName),
+  );
+
   return (
     <div className="add-panel">
+      {armedItem && (
+        <div className="add-placement-status" role="status">
+          <span className="add-placement-status-icon" aria-hidden>
+            <IconCheck size={13} />
+          </span>
+          <span className="add-placement-status-copy">
+            <strong>{armedItem.name}</strong>
+            <small>Ready · click the drawing to place · Esc stops</small>
+          </span>
+          <button type="button" onClick={onStopPlacement}>
+            Stop
+          </button>
+        </div>
+      )}
+
       <div className="search inventory-palette-search">
         <IconSearch size={13} />
         <input
@@ -173,7 +284,7 @@ export function AddPanel({
                 className="equipment-recent-chip"
                 disabled={!editable}
                 title={editable ? `Place ${item.name}` : 'Open an editable plan to place items'}
-                onClick={() => editable && placeItem(item, onPlaceInventory, onPlaceGear)}
+                onClick={() => editable && placeItem(item, onPlaceInventory, onPlaceStock)}
               >
                 {item.name}
               </button>
@@ -193,7 +304,8 @@ export function AddPanel({
               className={`equipment-recent-chip${activeCategory === opt.id ? ' is-armed' : ''}`}
               onClick={() => onCategory(opt.id)}
             >
-              {opt.label}
+              <span>{opt.label}</span>
+              <small className="num">{categoryCounts.get(opt.id) ?? 0}</small>
             </button>
           ))}
         </div>
@@ -201,25 +313,31 @@ export function AddPanel({
 
       <ul className="file-list palette">
         {shown.map((item) => {
-          const key = item.id ?? item.name;
+          const key = item.id ?? item.leafId ?? item.name;
+          const armed =
+            (item.id != null && item.id === armedInventoryId) ||
+            (item.leafId != null && item.placeName === armedStockName);
+          const size = itemSize(item, units);
           return (
-            <li key={key} className={`palette-row${draggingKey === key ? ' is-dragging' : ''}`}>
+            <li
+              key={key}
+              className={`palette-row add-item-row${armed ? ' is-armed' : ''}${draggingKey === key ? ' is-dragging' : ''}`}
+            >
               <button
                 type="button"
                 className="palette-place"
-                draggable={editable}
+                draggable={editable && Boolean(item.id)}
                 disabled={!editable}
                 title={
                   editable
                     ? `Drag ${item.name} onto the plan, or click to place it`
                     : 'Open an editable plan to place items'
                 }
-                onClick={() => editable && placeItem(item, onPlaceInventory, onPlaceGear)}
+                aria-pressed={armed}
+                onClick={() => editable && placeItem(item, onPlaceInventory, onPlaceStock)}
                 onDragStart={(e) => {
                   if (item.id) {
                     e.dataTransfer.setData('application/x-groundplan-item', item.id);
-                  } else {
-                    e.dataTransfer.setData('application/x-groundplan-gear', item.name);
                   }
                   e.dataTransfer.setData('application/x-groundplan-label', item.name);
                   e.dataTransfer.setData('text/plain', item.name);
@@ -228,7 +346,19 @@ export function AddPanel({
                 }}
                 onDragEnd={() => setDraggingKey(null)}
               >
-                <span className="fname">{item.name}</span>
+                <AssetPreview item={item} />
+                <span className="add-item-copy">
+                  <span className="fname">{item.name}</span>
+                  <span className="add-item-meta">
+                    <span>{itemLabel(item)}</span>
+                    {size && <span className="num">{size}</span>}
+                    {item.leafId && <span>Stock</span>}
+                    {!item.tracedIcon && !item.symbolPath && item.id && <span className="is-warning">No outline</span>}
+                  </span>
+                </span>
+                <span className="add-item-action" aria-hidden>
+                  {armed ? <IconCheck size={13} /> : 'Place'}
+                </span>
               </button>
             </li>
           );
@@ -250,6 +380,17 @@ export function AddPanel({
           <li className="empty">Nothing matches that search or category.</li>
         )}
       </ul>
+
+      <div className="add-panel-footer">
+        <button type="button" onClick={onCreateItem}>
+          <IconPlus size={13} />
+          New custom item
+        </button>
+        <button type="button" onClick={onManageInventory}>
+          <IconEdit size={13} />
+          Manage inventory
+        </button>
+      </div>
     </div>
   );
 }

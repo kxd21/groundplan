@@ -78,6 +78,7 @@ import {
   IconGrid,
   IconGroup,
   IconHand,
+  IconHelp,
   IconLayers,
   IconLock,
   IconMagnet,
@@ -113,7 +114,6 @@ import { countFurniture } from './furniture-counts.js';
 import ObjectPalette from './ObjectPalette.js';
 import PlanToolDock, { type PlanToolDockSide } from './PlanToolDock.js';
 import EditorToolRail from './EditorToolRail.js';
-import InsertPicker from './InsertPicker.js';
 import ShapeEditorWizard from './ShapeEditorWizard.js';
 import BuildStageDialog from './BuildStageDialog.js';
 import PointEditor, { type EditablePointPath } from './PointEditor.js';
@@ -121,6 +121,7 @@ import SpaceCalculator from './SpaceCalculator.js';
 import RoomRefineWorkspace from './RoomRefineWorkspace.js';
 import WallEditHud from './WallEditHud.js';
 import WallEditToolbar from './WallEditToolbar.js';
+import SheetHeader from './SheetHeader.js';
 import CreateDialog from './CreateDialog.js';
 import DockTitlebar from './DockTitlebar.js';
 import type { ShowBrief } from '../../format/show-brief.js';
@@ -131,7 +132,7 @@ import BackgroundImageDialog from './BackgroundImageDialog.js';
 import { scaleBackgroundToSegment } from './background-calibrate.js';
 import PlanFolderWorkspace from './PlanFolderWorkspace.js';
 import WelcomeHome from './WelcomeHome.js';
-import { flattenInsertLeaves, matchInsertItem, type InsertGroupId } from '../../inventory/insert-catalog.js';
+import { flattenInsertLeaves, matchInsertItem } from '../../inventory/insert-catalog.js';
 import { type PlanIdentityFields, type ShowKitInfo } from './ShowSetupPanel.js';
 import { suggestKit } from '../../format/kit-fit.js';
 import NewPlanDialog from './NewPlanDialog.js';
@@ -362,6 +363,8 @@ interface Selection {
   y: number;
   /** Absolute angle when the file stores one; null = rotate-by only. */
   angleDegrees: number | null;
+  /** Actual chairs currently associated with a selected table. */
+  chairsAround?: number;
   textStyle?: {
     family: string;
     size: number;
@@ -695,6 +698,8 @@ export function App() {
   const [planBackground, setPlanBackground] = useState<PlanBackground | null>(null);
   const [objectSnap, setObjectSnap] = useState(true);
   const [autoFitOnOpen, setAutoFitOnOpen] = useState(true);
+  const [wheelPrimary, setWheelPrimary] = useState<'pan' | 'zoom'>('pan');
+  const [wheelInvertZoom, setWheelInvertZoom] = useState(false);
   const [openPropertiesOnSelect, setOpenPropertiesOnSelect] = useState(true);
   const [showStackPeek, setShowStackPeek] = useState(true);
   const [showSightlineMarkers, setShowSightlineMarkers] = useState(false);
@@ -847,8 +852,6 @@ export function App() {
     },
     [showHoverTipFor, clearHoverTip],
   );
-  const [insertOpen, setInsertOpen] = useState(false);
-  const [insertGroup, setInsertGroup] = useState<InsertGroupId | null>(null);
   const [shapeWizardOpen, setShapeWizardOpen] = useState(false);
   const [shapeWizardSeed, setShapeWizardSeed] = useState<import('./ShapeEditorWizard.js').ShapeWizardSeed | null>(
     null,
@@ -1619,6 +1622,8 @@ export function App() {
             objectSnap?: boolean;
             paperSheet?: boolean;
             autoFitOnOpen?: boolean;
+            wheelPrimary?: 'pan' | 'zoom';
+            wheelInvertZoom?: boolean;
             openPropertiesOnSelect?: boolean;
             showStackPeek?: boolean;
             showSightlineMarkers?: boolean;
@@ -1641,6 +1646,8 @@ export function App() {
         setObjectSnap(s.drawing.objectSnap !== false);
         setPaper(s.drawing.paperSheet !== false);
         setAutoFitOnOpen(s.drawing.autoFitOnOpen !== false);
+        setWheelPrimary(s.drawing.wheelPrimary === 'zoom' ? 'zoom' : 'pan');
+        setWheelInvertZoom(s.drawing.wheelInvertZoom === true);
         setOpenPropertiesOnSelect(s.drawing.openPropertiesOnSelect !== false);
         setShowStackPeek(s.drawing.showStackPeek !== false);
         setShowSightlineMarkers(s.drawing.showSightlineMarkers === true);
@@ -2505,16 +2512,48 @@ export function App() {
 
   const inventoryRows = useMemo(
     () =>
-      (catalogInventory?.items ?? inventory?.items ?? []).map((item) => ({
-        id: item.id,
-        name: item.name,
-        category: item.category ?? null,
-        // Which drawing this row is. A plan picker wants the plan view; the
-        // front and side elevations are 39% of a stock catalogue.
-        view: item.view ?? null,
-      })),
+      (catalogInventory?.items ?? inventory?.items ?? [])
+        // Place / Insert are top-down only — elevations stay in the Inventory tab.
+        .filter((item) => (item.view ?? 'plan') === 'plan')
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          category: item.category ?? null,
+          view: item.view ?? null,
+        })),
     [catalogInventory?.items, inventory?.items],
   );
+
+  /**
+   * The Assets dock is the one place to add objects. Inventory rows come first;
+   * Insert's stock fallbacks fill only catalog shapes the company library does
+   * not already provide, so the user never has to choose between two browsers.
+   */
+  const addPanelItems = useMemo(() => {
+    const source = catalogInventory?.items ?? inventory?.items ?? [];
+    const owned = source.map((item) => ({
+      id: item.id,
+      name: item.name,
+      category: item.category ?? null,
+      view: item.view ?? null,
+      width: item.width,
+      height: item.height,
+      symbolPath: item.symbolPath,
+      tracedIcon: item.tracedIcon,
+    }));
+    const stock = flattenInsertLeaves()
+      .filter((leaf) => !matchInsertItem(leaf, inventoryRows))
+      .map((leaf) => ({
+        leafId: leaf.id,
+        name: leaf.label,
+        placeName:
+          leaf.stockName ?? leaf.keywords.find((keyword) => /\d/.test(keyword)) ?? leaf.keywords[0],
+        category: leaf.categories?.[0] ?? null,
+        view: 'plan' as const,
+      }))
+      .filter((item) => Boolean(item.placeName));
+    return [...owned, ...stock];
+  }, [catalogInventory?.items, inventory?.items, inventoryRows]);
 
   const [stageRebuildOrigin, setStageRebuildOrigin] = useState<{ x: number; y: number } | null>(
     null,
@@ -3259,9 +3298,9 @@ export function App() {
     });
   }, [doc, selectedIds]);
 
-  const applyTableSeats = useCallback(async () => {
+  const applyTableSeats = useCallback(async (requestedSeats?: number) => {
     if (!doc?.editable || !selectedTableIds.length) return;
-    const seats = Math.round(Number(tableSeatsDraft));
+    const seats = Math.round(Number(requestedSeats ?? tableSeatsDraft));
     if (!(seats >= 0 && seats <= 24)) {
       notify('Chairs per table must be 0–24');
       return;
@@ -3291,6 +3330,16 @@ export function App() {
     tableSeatsDraft,
     unitSystem,
   ]);
+
+  const nudgeTableSeats = useCallback(
+    (delta: number) => {
+      const current = Number(tableSeatsDraft);
+      const next = Math.max(0, Math.min(24, Math.round((Number.isFinite(current) ? current : 0) + delta)));
+      setTableSeatsDraft(String(next));
+      void applyTableSeats(next);
+    },
+    [applyTableSeats, tableSeatsDraft],
+  );
 
   const applyTableAutoNumber = useCallback(async () => {
     if (!doc?.editable || !selectedTableIds.length) return;
@@ -3756,6 +3805,26 @@ export function App() {
     };
   }, [selectedId, doc, unitSystem, textEditingId]);
 
+  // Banquet stamps deliberately select the linked table-and-chairs set. That
+  // is a multi-selection, so `selectedId` is null even though there is exactly
+  // one actionable table. Read that table directly instead of falling back to
+  // the global chair default shown by the old Properties workflow.
+  useEffect(() => {
+    if (selectedTableIds.length !== 1) return;
+    const tableId = selectedTableIds[0]!;
+    let live = true;
+    void api
+      .selectionInfo(tableId)
+      .then((info) => {
+        if (!live || typeof info?.chairsAround !== 'number') return;
+        if (!propertiesEditingRef.current) setTableSeatsDraft(String(info.chairsAround));
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [doc?.revision, selectedTableIds]);
+
   useEffect(() => {
     // Clicking an object asks to see its properties. A placement selecting
     // what it just created does not: the panel being placed from is the one
@@ -4018,11 +4087,6 @@ export function App() {
         if (settingsOpen) {
           e.preventDefault();
           setSettingsOpen(false);
-          return;
-        }
-        if (insertOpen) {
-          e.preventDefault();
-          setInsertOpen(false);
           return;
         }
         if (shapeWizardOpen) {
@@ -4342,7 +4406,6 @@ export function App() {
     closeNewItemEditor,
     settingsOpen,
     shortcutsOpen,
-    insertOpen,
     shapeWizardOpen,
     buildStageOpen,
     seatingOpen,
@@ -5357,8 +5420,8 @@ export function App() {
           return;
         case 'insert.open':
           setShellMode('place');
-          setInsertGroup(null);
-          setInsertOpen(true);
+          setEquipmentSource('inventory');
+          setAddCategory('all');
           return;
         case 'shape.wizard':
           setShapeWizardSeed(null);
@@ -5552,6 +5615,7 @@ export function App() {
             aria-modal="true"
             aria-labelledby="discard-prompt-title"
           >
+            <small>Unsaved work</small>
             <strong id="discard-prompt-title">Save changes to {discardPrompt.work}?</strong>
             <p>Save keeps your latest work. Discarding removes the unsaved edits for good.</p>
             <div className="discard-prompt-actions">
@@ -5669,22 +5733,6 @@ export function App() {
         />
       )}
 
-      <InsertPicker
-        open={insertOpen}
-        items={inventoryRows}
-        initialGroup={insertGroup}
-        onClose={() => setInsertOpen(false)}
-        onPick={(id, name) => {
-          armInventory(id, name);
-        }}
-        onPickLeaf={(leafId) => {
-          armInsertLeaf(leafId);
-        }}
-        onUnavailable={(label) => {
-          notify(`“${label}” is not in inventory and has no stock size: add it under Inventory first`);
-        }}
-      />
-
       <ShapeEditorWizard
         open={shapeWizardOpen}
         units={unitSystem}
@@ -5783,7 +5831,7 @@ export function App() {
                 <IconChair size={20} />
               </span>
               <span className="seating-window-title">
-                <small>Event layout workspace</small>
+                <small>Choose how to seat the room</small>
                 <strong id="seating-window-title">Seating planner</strong>
                 <span title={doc.name}>{doc.name.replace(/\.[^.]+$/, '')}</span>
               </span>
@@ -5807,6 +5855,7 @@ export function App() {
                 onDoc={setDoc}
                 onStatus={showStatus}
                 onError={notify}
+                inventoryVersion={inventoryVersion}
                 drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
                 onDrawRoomOutline={() => {
                   closeOverlay('seating');
@@ -5853,6 +5902,20 @@ export function App() {
                 layoutVariants={seatingLayoutVariants}
                 layoutVariantsBusy={kitsBusy}
                 onApplyLayoutVariant={(kitId) => void applySeatingLayoutVariant(kitId)}
+                onPlaceSingleFurniture={(prefer = 'chairs') => {
+                  closeOverlay('seating');
+                  setShellMode('place');
+                  setEquipmentSource('inventory');
+                  setAddCategory('furniture');
+                  setPaletteQuery(prefer === 'tables' ? 'table' : 'chair');
+                  showStatus(
+                    prefer === 'tables'
+                      ? 'Choose one table in Assets — Seating is for full layouts'
+                      : 'Choose one chair in Assets — Seating is for full layouts',
+                    4000,
+                  );
+                }}
+                onInventoryChanged={inventoryChanged}
                 onArmSeatingStamp={(request) => {
                   const useGrid =
                     request.kind === 'round' &&
@@ -5893,6 +5956,10 @@ export function App() {
                   });
                   if (refusal) notify(refusal);
                   else {
+                    // Placement happens on the canvas, so reveal it as soon as
+                    // the stamp tool is armed. Keeping the modal open made the
+                    // primary instruction impossible to follow.
+                    closeOverlay('seating');
                     showStatus(
                       useGrid
                         ? 'Click the plan to stamp the table grid · Esc ends'
@@ -5986,9 +6053,14 @@ export function App() {
             aria-labelledby="shortcuts-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="sheet-title" id="shortcuts-title">
-              Keyboard shortcuts
-            </div>
+            <SheetHeader
+              eyebrow="Reference"
+              title="Keyboard shortcuts"
+              subtitle="Commands available in the current workspace"
+              titleId="shortcuts-title"
+              mark={<IconHelp size={18} />}
+              onClose={() => setShortcutsOpen(false)}
+            />
             <div className="shortcuts-body">
               {shortcutCheatSheet(api.platform).map((group) => (
                 <section key={group.section}>
@@ -6009,8 +6081,8 @@ export function App() {
               ))}
             </div>
             <div className="sheet-actions">
-              <button type="button" onClick={() => setShortcutsOpen(false)}>
-                Close
+              <button type="button" className="btn-primary" onClick={() => setShortcutsOpen(false)}>
+                Done
               </button>
             </div>
           </div>
@@ -7209,6 +7281,89 @@ export function App() {
                   toggleMeasure();
                 },
               },
+              ...(
+                [
+                  ['line', 'Line', IconDrawLine],
+                  ['rect', 'Rectangle', IconDrawRect],
+                  ['ellipse', 'Ellipse', IconDrawEllipse],
+                ] as const
+              ).map(([shape, label, Icon]) => ({
+                id: shape,
+                label,
+                icon: <Icon size={16} />,
+                active: isPressed(tool, drawChoice(shape)),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
+                  if (refusal) notify(refusal);
+                },
+              })),
+              {
+                id: 'add-text',
+                label: 'Add text',
+                shortcut: 'T',
+                icon: <IconText size={16} />,
+                active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  setLastCommandId('tool.text');
+                  activateTextTool();
+                },
+              },
+              {
+                id: 'power-cable',
+                label: 'Power run',
+                icon: <IconCablePower size={16} />,
+                active: isPressed(tool, powerCableChoice),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
+                  if (refusal) notify(refusal);
+                  else showStatus('Click bends along the power run. Enter finishes', 4500);
+                },
+              },
+              {
+                id: 'signal-cable',
+                label: 'Signal run',
+                icon: <IconCableSignal size={16} />,
+                active: isPressed(tool, signalCableChoice),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
+                  if (refusal) notify(refusal);
+                  else showStatus('Click bends along the signal run. Enter finishes', 4500);
+                },
+              },
+              {
+                id: 'av-pair',
+                label: 'Projector + screen',
+                icon: <IconStar size={16} />,
+                active: isPressed(tool, avPairChoice),
+                disabled: !doc.editable,
+                onClick: () => {
+                  enterMode('canvas');
+                  const { refusal } = dispatchTool({ type: 'pick', choice: avPairChoice });
+                  if (refusal) notify(refusal);
+                  else showStatus('Click where the screen should sit; projector and throw follow', 5000);
+                },
+              },
+              {
+                id: 'dimension',
+                label: 'Dimension',
+                shortcut: 'D',
+                icon: <IconDimension size={16} />,
+                active: isPressed(tool, DIMENSION),
+                disabled: !canCreateDimension,
+                onClick: () => {
+                  enterMode('canvas');
+                  setLastCommandId('tool.dimension');
+                  toggleDimension();
+                },
+              },
             ]}
           />
         )}
@@ -7736,41 +7891,15 @@ export function App() {
                       the next click does nothing, so the note was 50px of the
                       rail teaching a rule that wasn't in force — every session,
                       long after the gesture was learned. */}
-                  {(armedInventoryId || armedGearDescription) && (
+                  {(armedInventoryId || armedGearDescription) && equipmentSource !== 'inventory' && (
                     <div className="equipment-gesture-hint" role="note">
                       <span><strong>Click</strong> to place &middot; <strong>drag</strong> a placed piece to adjust</span>
                       <span>Stays armed &middot; <kbd>Esc</kbd> ends</span>
                     </div>
                   )}
-                  {recentInventory.length > 0 && equipmentSource === 'inventory' ? (
-                    <div className="equipment-recent" aria-label="Recently placed inventory">
-                      <div className="section-title">
-                        <span>Recent</span>
-                      </div>
-                      <div className="equipment-recent-chips">
-                        {recentInventory.map((row) => (
-                          <button
-                            key={row.id}
-                            type="button"
-                            className={`equipment-recent-chip${armedInventoryId === row.id ? ' is-armed' : ''}`}
-                            disabled={!doc?.editable}
-                            title={`Place ${row.name}`}
-                            onClick={() => armInventory(row.id, row.name)}
-                          >
-                            {row.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
                   {equipmentSource === 'inventory' ? (
                     <AddPanel
-                      items={(inventory?.items ?? []).map((item) => ({
-                        id: item.id,
-                        name: item.name,
-                        category: item.category,
-                        view: item.view,
-                      }))}
+                      items={addPanelItems}
                       recentNames={recentInventory.map((row) => row.name)}
                       planView={planView}
                       query={paletteQuery}
@@ -7779,7 +7908,13 @@ export function App() {
                       onCategory={setAddCategory}
                       editable={!!doc?.editable}
                       onPlaceInventory={(id, name) => armInventory(id, name)}
-                      onPlaceGear={(name) => armGear(name)}
+                      onPlaceStock={armInsertLeaf}
+                      armedInventoryId={armedInventoryId}
+                      armedStockName={armedGearDescription}
+                      onStopPlacement={cancelPlacement}
+                      onCreateItem={() => void openNewItemDialog()}
+                      onManageInventory={() => setView('inventory')}
+                      units={unitSystem}
                     />
                   ) : equipmentSource === 'gear' ? (
                     <GearPalette
@@ -8044,8 +8179,28 @@ export function App() {
                   disabled={!doc.editable}
                   onArm={armInventory}
                   onBrowse={(group) => {
-                    setInsertGroup(group);
-                    setInsertOpen(true);
+                    setEquipmentSource('inventory');
+                    setAddCategory(
+                      group === 'tables' || group === 'chairs'
+                        ? 'furniture'
+                        : group === 'staging'
+                          ? 'stage'
+                          : group === 'screens' || group === 'projectors' || group === 'av'
+                            ? 'production'
+                            : group === 'drape'
+                              ? 'room'
+                              : 'all',
+                    );
+                    setPaletteQuery(
+                      group === 'tables'
+                        ? 'table'
+                        : group === 'chairs'
+                          ? 'chair'
+                          : group === 'staging'
+                            ? 'stage'
+                            : '',
+                    );
+                    setShellMode('place');
                   }}
                 />
               )}
@@ -8128,6 +8283,53 @@ export function App() {
                   </button>
                 </div>
               )}
+              {doc.editable && planView === 'top' && selectedTableIds.length === 1 && (
+                <div
+                  className="table-quick-hud"
+                  role="toolbar"
+                  aria-label="Selected table seating"
+                  data-table-id={selectedTableIds[0]}
+                >
+                  <span className="table-quick-hud-label">Table seating</span>
+                  <div className="table-quick-count" role="group" aria-label="Chairs around selected table">
+                    <button
+                      type="button"
+                      aria-label="Remove one chair"
+                      disabled={Number(tableSeatsDraft) <= 0}
+                      onClick={() => nudgeTableSeats(-1)}
+                    >
+                      −
+                    </button>
+                    <output aria-live="polite">{tableSeatsDraft || '0'} chairs</output>
+                    <button
+                      type="button"
+                      aria-label="Add one chair"
+                      disabled={Number(tableSeatsDraft) >= 24}
+                      onClick={() => nudgeTableSeats(1)}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <label className="table-quick-gap">
+                    <span>Gap</span>
+                    <input
+                      value={tableChairGapDraft}
+                      onChange={(event) => setTableChairGapDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') void applyTableSeats();
+                      }}
+                      aria-label="Chair gap around selected table"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn-solid"
+                    onClick={() => void applyTableSeats()}
+                  >
+                    Redistribute
+                  </button>
+                </div>
+              )}
               {planView !== 'top' && doc ? (
                 <ElevationCanvas
                   planView={planView}
@@ -8206,6 +8408,8 @@ export function App() {
               paper={paper}
               showGrid={showGrid}
               objectSnap={objectSnap}
+              wheelPrimary={wheelPrimary}
+              wheelInvertZoom={wheelInvertZoom}
               background={planBackground}
               sightlineMarkers={sightlineMarkers}
               fitToken={fitToken}
