@@ -198,6 +198,11 @@ Groundplan checks for updates on start and installs them in the background. Each
 update is signed, and one with a signature that does not verify is discarded
 rather than installed. **Help → Check for Updates** forces a check.
 
+On Windows this applies to the **Setup** install (Start-menu / Apps entry). The
+updater downloads the signed Setup `.exe` and runs it silently. The **Portable**
+`.exe` does not self-update — download a newer portable build, or use
+**Help → Install Update from USB…**.
+
 ### Updating with no internet
 
 Machines in back-of-house offices and convention centre basements often have no

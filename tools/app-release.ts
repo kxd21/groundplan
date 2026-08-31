@@ -6,10 +6,14 @@
  * copies check that manifest, verify the signature, and update themselves — no
  * reinstalling, and no Apple Developer ID.
  *
- *   npm run build && npx electron-builder --mac --win
- *   npx tsx tools/app-release.ts --version 1.0.2
+ *   npm run dist:mac && npm run dist:win
+ *   npx tsx tools/app-release.ts --version 1.3.2
+ *   gh release create app-v1.3.2 -R kxd21/groundplan-catalog \
+ *     --title "Groundplan 1.3.2" dist-app/app-manifest.json dist-app/*.zip \
+ *     release/Groundplan-Setup-1.3.2-win-x64.exe
  *
- * Then attach `dist-app/app-manifest.json` and the archives to the release.
+ * Windows is required: the Setup .exe is what Help → Check for Updates installs.
+ * Pass --allow-missing-windows only for an intentional Mac-only channel cut.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -94,15 +98,24 @@ const windowsInstaller = readdirSync(releaseDir)
 if (windowsInstaller) {
   const bytes = statSync(windowsInstaller).size;
   const fileName = windowsInstaller.split('/').pop()!;
+  // Keep the URL unescaped when the name is already URL-safe — matches how
+  // macOS packages are published and what Help → Check for Updates downloads.
   packages['win32-x64'] = {
-    url: `${baseUrl}/${encodeURIComponent(fileName)}`,
+    url: `${baseUrl}/${fileName}`,
     bytes,
     sha256: sha256(readFileSync(windowsInstaller)),
   };
   console.log(`  ${'win-x64'.padEnd(14)} ${(bytes / 1024 / 1024).toFixed(1)} MB  (${fileName})`);
   windowsArtifact = windowsInstaller;
+} else if (process.argv.includes('--allow-missing-windows')) {
+  console.log(`  ${'win-x64'.padEnd(14)} skipped (--allow-missing-windows)`);
 } else {
-  console.log(`  ${'win-x64'.padEnd(14)} no setup .exe for ${version} found in ${releaseDir}/`);
+  console.error(
+    `no Setup .exe for ${version} in ${releaseDir}/. Windows installs cannot update over the air without it.\n` +
+      `Build with: npm run dist:win\n` +
+      `Or pass --allow-missing-windows to publish Mac-only.`,
+  );
+  process.exit(1);
 }
 
 if (Object.keys(packages).length === 0) {
