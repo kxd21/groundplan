@@ -878,11 +878,35 @@ function expandGroupIds(ids: number[]): number[] {
   return [...out];
 }
 
+/**
+ * Among a flat `created` id list from place/clone, keep furniture roots only.
+ *
+ * `duplicateNode` / `placeGear` record every cloned descendant (RVShape →
+ * RVGeometry → segment). Linking those children into a bank turns one
+ * 10-top + table into a ~33-node star and semantic zoom labels "33 seats".
+ * Drop any id whose parent is also in the same batch.
+ */
+function rootIdsAmong(ids: Iterable<number>): number[] {
+  const s = session;
+  if (!s) return [];
+  const candidates: number[] = [];
+  for (const id of ids) {
+    if (s.index.byId.has(id)) candidates.push(id);
+  }
+  const inBatch = new Set(candidates);
+  return candidates.filter((id) => {
+    const node = s.index.byId.get(id);
+    if (!node) return false;
+    const parent = s.index.parentOf.get(node);
+    return !parent || !inBatch.has(parent.id);
+  });
+}
+
 /** Persist a bank/section as one selectable unit without touching the .rv4. */
 function groupCreatedIds(ids: number[] | undefined): void {
   const s = session;
   if (!s || !ids || ids.length < 2) return;
-  const members = ids.filter((id) => s.index.byId.has(id));
+  const members = rootIdsAmong(ids);
   if (members.length < 2) return;
   const hub = [...members].sort((a, b) => a - b)[0]!;
   for (const id of members) {
@@ -3601,9 +3625,12 @@ app.whenReady().then(async () => {
         }
       }
       if (!hasGroup) continue;
-      const members = expandGroupIds([id]).filter((member) => s.index.byId.has(member));
+      // Collapse clone-subtree children so older sidecars that linked every
+      // created id still report ~11 furniture pieces per banquet bank.
+      const expanded = expandGroupIds([id]);
+      const members = rootIdsAmong(expanded);
       if (members.length < 2) continue;
-      for (const member of members) visited.add(member);
+      for (const member of expanded) visited.add(member);
       const hub = [...members].sort((a, b) => a - b)[0]!;
       groups.push({ hubId: hub, memberIds: members });
     }
@@ -5385,6 +5412,10 @@ app.whenReady().then(async () => {
       if (!validated.ok) return { ok: false, reason: validated.reason };
 
       return applyEdit((s) => {
+        const beforeIds =
+          options?.replaceExistingSeating || options?.replaceExistingGear
+            ? new Set(s.index.byId.keys())
+            : null;
         const result = applyFullLayoutRecipe(s, layout, {
           inventory,
           replaceExistingSeating: Boolean(options?.replaceExistingSeating),
@@ -5398,6 +5429,15 @@ app.whenReady().then(async () => {
           units: unitSystem(),
         });
         if (!result.ok) return { ok: false, reason: result.reason };
+        // Drop sidecar links to objects the replace pass deleted so banks do
+        // not accumulate dead endpoints across applies.
+        if (beforeIds) {
+          const removed: number[] = [];
+          for (const id of beforeIds) {
+            if (!s.index.byId.has(id)) removed.push(id);
+          }
+          if (removed.length) pruneObjectLinks(removed);
+        }
         // Each seating block becomes one selectable bank (sidecar links only).
         for (const block of result.seating ?? []) {
           if (block.ok) groupCreatedIds(block.created);
