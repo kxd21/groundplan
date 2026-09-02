@@ -33,6 +33,14 @@ import {
   type HandleId,
   type TransformFrame,
 } from './transform-handles.js';
+import {
+  bankMemberIdSet,
+  bankOverlaysFromGroups,
+  semanticLodForScale,
+  type BankOverlay,
+  type ObjectGroupRef,
+  type SemanticLod,
+} from './semantic-zoom.js';
 
 const UNITS_PER_FOOT = 120;
 const UNITS_PER_INCH = 10;
@@ -120,6 +128,11 @@ interface Props {
   placeOnLabel?: string | null;
   /** Linked stack set for the current selection (parent + children). */
   stackSet?: Array<{ id: number; name: string; elevation: number; kind: string }> | null;
+  /**
+   * Furniture `group` banks from the sidecar — used at far zoom to draw one
+   * footprint per bank instead of every chair.
+   */
+  objectGroups?: ObjectGroupRef[];
   /** Fired once a drag ends, with the total movement in logical units. */
   onMoveSelection: (dx: number, dy: number) => void;
   /**
@@ -452,6 +465,7 @@ export function PlanCanvas({
   placeOnParentId = null,
   placeOnLabel = null,
   stackSet = null,
+  objectGroups = [],
   onMoveSelection,
   transformTarget = null,
   onResizeTo,
@@ -680,6 +694,12 @@ export function PlanCanvas({
     }
     return result;
   }, [prepared, visibleLayers]);
+
+  const bankMembers = useMemo(() => bankMemberIdSet(objectGroups), [objectGroups]);
+  const bankOverlays = useMemo(
+    () => bankOverlaysFromGroups(objectGroups, objectBounds),
+    [objectGroups, objectBounds],
+  );
 
   /**
    * The transform frame for the one selected object, or null.
@@ -996,6 +1016,9 @@ export function PlanCanvas({
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
+    const lod: SemanticLod = semanticLodForScale(scale);
+    const collapseBanks = lod === 'blocks' && bankMembers.size > 0;
+
     for (const item of prepared) {
       const p = item.primitive;
       if (!visibleLayers.has(p.discipline)) continue;
@@ -1008,6 +1031,11 @@ export function PlanCanvas({
         item.maxY + oy < viewport.minY - viewportPad ||
         item.minY + oy > viewport.maxY + viewportPad
       ) {
+        continue;
+      }
+
+      // Far out only: bank members become one labelled footprint — skip chairs.
+      if (collapseBanks && p.layer === 'furniture' && bankMembers.has(p.selectId)) {
         continue;
       }
 
@@ -1105,6 +1133,10 @@ export function PlanCanvas({
           break;
         }
       }
+    }
+
+    if (collapseBanks && bankOverlays.length) {
+      drawBankBlocks(ctx, bankOverlays, view, selectionSet, hover, nudge, paper);
     }
 
     // One editable object in select mode gets the real transform frame; every
@@ -1322,7 +1354,7 @@ export function PlanCanvas({
       drawMeasurement(ctx, readout.from, readout.to, view, paper, units);
     }
 
-    if (sightlineMarkers.length) {
+    if (sightlineMarkers.length && lod === 'full') {
       for (const marker of sightlineMarkers) {
         const sx = marker.x * view.scale + view.offsetX;
         const sy = screenY(view, marker.y);
@@ -1346,6 +1378,8 @@ export function PlanCanvas({
     scene,
     prepared,
     objectBounds,
+    bankMembers,
+    bankOverlays,
     view,
     size,
     visibleLayers,
@@ -2194,43 +2228,14 @@ export function PlanCanvas({
       )}
       {showStackPeek && peekCardItems.length >= 2 && peekCardPos && (
         <div
-          className="stack-hover-card"
-          role="dialog"
-          aria-label="Stacked items under pointer"
+          className="stack-hover-card is-compact"
+          role="status"
+          aria-label={`${peekCardItems.length} objects under cursor`}
           style={{ left: peekCardPos.x, top: peekCardPos.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <div className="stack-hover-card-header">
-            <strong>{peekCardItems.length} stacked</strong>
-          </div>
-          <ul className="stack-hover-card-list">
-            {peekCardItems.map((item, index) => {
-              const accent = STACK_PEEK_ACCENTS[index % STACK_PEEK_ACCENTS.length];
-              const elev =
-                item.elevation != null && item.elevation > 0
-                  ? formatLength(item.elevation, units)
-                  : 'floor';
-              return (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className={selection.includes(item.id) ? 'is-on' : undefined}
-                    style={{ ['--stack-accent' as string]: accent }}
-                    onClick={() => {
-                      onSelect([item.id]);
-                      onStackCycle?.(`${index + 1} of ${peekCardItems.length} · ${item.name}`);
-                    }}
-                  >
-                    <span className="stack-hover-accent" aria-hidden />
-                    <span className="stack-hover-body">
-                      <strong className="stack-hover-name">{item.name}</strong>
-                      <span className="stack-hover-meta">{elev}</span>
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <strong>{peekCardItems.length} under cursor</strong>
+          <span>Alt-click cycles · pick in Inspector</span>
         </div>
       )}
       <div className="zoom-cluster">
@@ -2649,6 +2654,67 @@ function drawTransformFrame(
 }
 
 /** An honest bounds highlight, for anything the transform frame does not cover. */
+/**
+ * Far zoom: one labelled block per seating/furniture bank.
+ */
+function drawBankBlocks(
+  ctx: CanvasRenderingContext2D,
+  banks: BankOverlay[],
+  view: View,
+  selectionSet: Set<number>,
+  hover: number | null,
+  nudge: { dx: number; dy: number } | null,
+  paper: boolean,
+): void {
+  for (const bank of banks) {
+    const selected = bank.memberIds.some((id) => selectionSet.has(id));
+    const hovered = !selected && hover != null && bank.memberIds.includes(hover);
+    const dx = selected && nudge ? nudge.dx : 0;
+    const dy = selected && nudge ? nudge.dy : 0;
+    const left = (bank.minX + dx) * view.scale + view.offsetX;
+    const right = (bank.maxX + dx) * view.scale + view.offsetX;
+    const top = screenY(view, bank.maxY + dy);
+    const bottom = screenY(view, bank.minY + dy);
+    const w = Math.max(2, right - left);
+    const h = Math.max(2, bottom - top);
+    ctx.save();
+    ctx.fillStyle = selected
+      ? paper
+        ? 'rgba(77, 148, 255, 0.22)'
+        : 'rgba(77, 148, 255, 0.28)'
+      : hovered
+        ? paper
+          ? 'rgba(120, 160, 210, 0.2)'
+          : 'rgba(140, 180, 230, 0.22)'
+        : paper
+          ? 'rgba(70, 90, 120, 0.16)'
+          : 'rgba(150, 175, 205, 0.2)';
+    ctx.fillRect(left, top, w, h);
+    ctx.strokeStyle = selected ? '#4d94ff' : hovered ? '#8bb9ff' : paper ? 'rgba(50, 70, 100, 0.55)' : 'rgba(170, 195, 225, 0.55)';
+    ctx.lineWidth = selected ? 2 : 1.2;
+    ctx.strokeRect(left + 0.5, top + 0.5, w - 1, h - 1);
+
+    const shortSide = Math.min(w, h);
+    if (shortSide >= 22) {
+      const label =
+        bank.count >= 8 ? `${bank.count.toLocaleString()} seats` : `${bank.count.toLocaleString()}`;
+      const fontPx = Math.max(9, Math.min(14, shortSide * 0.28));
+      ctx.font = `600 ${fontPx}px -apple-system, "Segoe UI", system-ui, sans-serif`;
+      ctx.fillStyle = selected
+        ? paper
+          ? '#0b4f9c'
+          : '#cfe3ff'
+        : paper
+          ? 'rgba(30, 45, 70, 0.88)'
+          : 'rgba(220, 230, 245, 0.9)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, left + w / 2, top + h / 2);
+    }
+    ctx.restore();
+  }
+}
+
 function drawSelectionFrame(
   ctx: CanvasRenderingContext2D,
   b: { minX: number; minY: number; maxX: number; maxY: number },
@@ -2818,8 +2884,6 @@ function drawStackSetOverlay(
   });
   ctx.restore();
 }
-
-const STACK_PEEK_ACCENTS = ['#7c5cfc', '#4a9eff', '#e8b84a', '#4fb879'];
 
 function roundRect(
   ctx: CanvasRenderingContext2D,

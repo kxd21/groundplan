@@ -8973,6 +8973,10 @@ a,
   font-size: 10.5px;
 }
 
+.app[data-theme='dark'] .inspector-context .link-btn {
+  color: #6da7ff;
+}
+
 .inspector-empty {
   display: grid;
   gap: 14px;
@@ -10079,6 +10083,9 @@ a,
 .toolbar.is-plan-toolbar .ribbon-panel {
   height: 76px;
   padding-bottom: 38px;
+  /* Secondary strip: quieter than the titlebar so brand/modes stay primary. */
+  background: #f3f5f7;
+  border-top: 1px solid rgba(28, 42, 58, 0.06);
 }
 
 .toolbar.is-plan-toolbar .ribbon-panel > .seg {
@@ -10164,8 +10171,11 @@ a,
 }
 
 .toolbar.is-plan-toolbar .ribbon-quickbar {
+  /* Contextual strip — reads as “about the selection,” not peer chrome. */
   height: 38px;
   padding-inline: 6px;
+  background: #eef3f8;
+  border-top: 1px solid rgba(28, 42, 58, 0.08);
 }
 
 .toolbar.is-plan-toolbar .ribbon-quickbar .icon-btn {
@@ -17251,6 +17261,7 @@ a,
 
 .body.is-plan-dock {
   --dock-w: 340px;
+  --left-dock-w: 280px;
   grid-template-columns: 72px minmax(0, 1fr) var(--dock-w);
 }
 
@@ -17258,35 +17269,66 @@ a,
   grid-template-columns: 72px minmax(0, 1fr);
 }
 
+.body.is-plan-dock.is-left-open {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) var(--dock-w);
+}
+
+.body.is-plan-dock.is-left-open.is-dock-closed {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr);
+}
+
 .body.is-plan-dock > .editor-tool-rail {
   grid-column: 1;
   grid-row: 1;
 }
 
-/* Explicit placement, because the rail is the first DOM child and the
-   inspector the last: without this they would claim columns in source order
-   and the canvas would sit between them again. */
 .body.is-plan-dock > .stage {
   grid-column: 2;
   grid-row: 1;
 }
 
-.body.is-plan-dock > .rail,
-.body.is-plan-dock > .inspector,
-.body.is-plan-dock > .create-setup-pane,
-.body.is-plan-dock > .plan-tool-dock {
+.body.is-plan-dock.is-left-open > .stage {
   grid-column: 3;
-  grid-row: 1;
 }
 
-/* The rail's divider belongs on the side it is actually docked to. */
 .body.is-plan-dock > .rail {
+  grid-column: 2;
+  grid-row: 1;
   border-right: 0;
   border-left: 1px solid var(--line);
 }
 
-/* Permanent editor activity rail. Domain surfaces are labelled; direct
-   pointer tools stay compact, with native tooltips and shortcuts. */
+.body.is-plan-dock > .inspector,
+.body.is-plan-dock > .create-setup-pane,
+.body.is-plan-dock > .room-refine-workspace,
+.body.is-plan-dock > .plan-tool-dock.is-docked {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.body.is-plan-dock.is-left-open > .inspector,
+.body.is-plan-dock.is-left-open > .create-setup-pane,
+.body.is-plan-dock.is-left-open > .room-refine-workspace,
+.body.is-plan-dock.is-left-open > .plan-tool-dock.is-docked {
+  grid-column: 4;
+}
+
+/* Room editing remains a contextual right surface; the canvas and tool rail
+   stay in their normal columns. These selectors beat the older refine grids. */
+.body.is-plan-dock.is-refine-open,
+.body.is-plan-dock.is-refine-open.is-rail-hidden,
+.body.is-plan-dock.is-refine-open.is-inspector-hidden,
+.body.is-plan-dock.is-refine-open.is-rail-hidden.is-inspector-hidden {
+  grid-template-columns: 72px minmax(0, 1fr) var(--dock-w);
+}
+
+.body.is-plan-dock.is-refine-open.is-left-open,
+.body.is-plan-dock.is-refine-open.is-left-open.is-inspector-hidden {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) var(--dock-w);
+}
+
+/* Permanent editor activity rail — domain surfaces only. Drawing tools open
+   from the Draw workspace into PlanToolDock so nav and tools do not compete. */
 .editor-tool-rail {
   position: relative;
   z-index: 4;
@@ -17371,7 +17413,7 @@ a,
 }
 
 .editor-workspace-action.is-active {
-  color: var(--accent-fill);
+  color: var(--ink);
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
 }
 
@@ -17968,13 +18010,29 @@ a,
   grid-template-columns: 72px minmax(0, 1fr) minmax(350px, 390px);
 }
 
+.body.is-plan-dock.is-calculator-open.is-left-open {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) var(--dock-w) minmax(350px, 390px);
+}
+
+.body.is-plan-dock.is-calculator-open.is-left-open.is-dock-closed {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) minmax(350px, 390px);
+}
+
 .body.is-plan-dock.is-calculator-open > .space-calculator {
   grid-column: 4;
   grid-row: 1;
 }
 
+.body.is-plan-dock.is-calculator-open.is-left-open > .space-calculator {
+  grid-column: 5;
+}
+
 .body.is-plan-dock.is-calculator-open.is-dock-closed > .space-calculator {
   grid-column: 3;
+}
+
+.body.is-plan-dock.is-calculator-open.is-left-open.is-dock-closed > .space-calculator {
+  grid-column: 4;
 }
 
 /* ── Dock panels must survive the dock's width ──────────────────────────────
@@ -19393,4 +19451,271 @@ a,
   color: var(--ink-3);
   font-size: 9.5px;
   line-height: 1.35;
+}
+
+/* ── Inspector plan / insert surfaces (Phase 2–3) ─────────────────────────
+ * Show Setup and Insert live inside the Inspector. They must not look like a
+ * second dock or a modal sheet floating over the plan. */
+
+.inspector-setup-host {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.inspector-setup-host > .create-dialog-sheet.is-embedded {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.inspector-setup-host .create-dialog-guidance {
+  display: grid;
+  gap: 4px;
+  margin: 0 10px 10px;
+  padding: 10px 11px;
+  background: var(--surface-2, #f4f7fa);
+  border: 1px solid var(--line, #e0e6ec);
+  border-radius: var(--radius);
+}
+
+.inspector-setup-host .create-dialog-guidance strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.inspector-setup-host .create-dialog-guidance span {
+  color: var(--ink-2, #526174);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.inspector-setup-host .create-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 10px 16px;
+}
+
+.insert-tray {
+  margin: 0 10px 12px;
+}
+
+.insert-tray-armed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 11px;
+  background: color-mix(in srgb, var(--accent, #0b6ecb) 8%, #fff);
+  border: 1px solid color-mix(in srgb, var(--accent, #0b6ecb) 22%, #e0e6ec);
+  border-radius: var(--radius);
+}
+
+.insert-tray-armed > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.insert-tray-armed strong {
+  font-size: 12.5px;
+}
+
+.insert-tray-armed small {
+  color: var(--ink-2, #526174);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insert-tray-routes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 12px;
+}
+
+.insert-tray-routes > button {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-height: 52px;
+  padding: 8px 6px;
+  color: var(--ink-2, #526174);
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #e0e6ec);
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.insert-tray-routes > button.is-on {
+  color: var(--accent, #0b6ecb);
+  background: color-mix(in srgb, var(--accent, #0b6ecb) 8%, #fff);
+  border-color: color-mix(in srgb, var(--accent, #0b6ecb) 28%, #e0e6ec);
+}
+
+.insert-tray-routes > button:disabled {
+  opacity: 0.45;
+}
+
+.insert-tray-list {
+  max-height: min(420px, 48vh);
+  overflow: auto;
+}
+
+.insert-tray-action-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px 11px;
+  background: var(--surface-2, #f4f7fa);
+  border: 1px solid var(--line, #e0e6ec);
+  border-radius: var(--radius);
+}
+
+.insert-tray-action-card > p {
+  margin: 0;
+  color: var(--ink-2, #526174);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.body.is-plan-dock > .inspector .inspector-tabs {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* ── Compact New Plan (Phase 4) ─────────────────────────────────────────── */
+
+.new-plan-sheet.is-compact {
+  width: min(560px, calc(100vw - 32px));
+  height: auto;
+  max-height: min(820px, calc(100vh - 32px));
+}
+
+.new-plan-start-step.is-compact {
+  display: grid;
+  gap: 14px;
+  padding: 4px 0 8px;
+}
+
+.new-plan-start-step.is-compact .new-plan-quick-start {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.new-plan-compact-alt {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.new-plan-compact-alt > button {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  min-height: 58px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.new-plan-compact-alt > button strong {
+  font-size: 13px;
+}
+
+.new-plan-compact-alt > button small {
+  color: var(--ink-2, #526174);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.new-plan-guest-row.is-compact {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.new-plan-brief.is-compact .new-plan-brief-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* ── Selection as a major state (Phase 5) ───────────────────────────────── */
+
+.selection-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 12px 12px;
+  background: color-mix(in srgb, var(--accent, #0b6ecb) 8%, #fff);
+  border: 1px solid color-mix(in srgb, var(--accent, #0b6ecb) 22%, #e0e6ec);
+  border-radius: var(--radius);
+}
+
+.selection-hero-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.selection-hero-copy small {
+  color: var(--accent, #0b6ecb);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.selection-hero-copy strong {
+  font-size: 15px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-hero-copy span {
+  color: var(--ink-2, #526174);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.selection-hero-actions {
+  display: grid;
+  gap: 4px;
+  flex: none;
+  justify-items: end;
+}
+
+.stack-hover-card.is-compact {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  max-width: 200px;
+  padding: 8px 10px;
+  pointer-events: none;
+}
+
+.stack-hover-card.is-compact strong {
+  font-size: 12px;
+}
+
+.stack-hover-card.is-compact span {
+  color: var(--ink-2, #526174);
+  font-size: 11px;
+}
+
+.app[data-theme='dark'] .selection-hero {
+  background: color-mix(in srgb, var(--accent, #4a9eff) 14%, #1a1f26);
+  border-color: color-mix(in srgb, var(--accent, #4a9eff) 28%, #2a3340);
 }

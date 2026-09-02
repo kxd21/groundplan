@@ -111,6 +111,7 @@ import ObjectPalette from './ObjectPalette.js';
 import PlanToolDock, { type PlanToolDockSide } from './PlanToolDock.js';
 import EditorToolRail from './EditorToolRail.js';
 import InsertPicker from './InsertPicker.js';
+import InsertTray from './InsertTray.js';
 import ShapeEditorWizard from './ShapeEditorWizard.js';
 import BuildStageDialog from './BuildStageDialog.js';
 import PointEditor, { type EditablePointPath } from './PointEditor.js';
@@ -171,7 +172,9 @@ const api = window.groundplan;
 type LayerGroupId = 'structure' | 'content' | 'markup';
 type SelectionScope =
   | { kind: 'layer'; id: string }
-  | { kind: 'group'; id: LayerGroupId };
+  | { kind: 'group'; id: LayerGroupId }
+  /** Furniture group / seating bank selected as one unit. */
+  | { kind: 'object-group'; hubId: number };
 
 interface LayerListItem {
   selectId: number;
@@ -393,7 +396,7 @@ type PlanFolderState = Awaited<ReturnType<GroundplanApi['planFoldersList']>>;
 type Workspace = 'plan' | 'gear' | 'inventory';
 type PlanRailSource = 'recent' | 'collections' | 'folder' | 'equipment';
 type EquipmentSource = 'inventory' | 'gear' | 'plan';
-type InspectorTab = 'properties' | 'room' | 'layers';
+type InspectorTab = 'plan' | 'properties' | 'room' | 'layers';
 
 function placeMethodStatus(method?: string, name?: string): string {
   const item = name ? ` ${name}` : '';
@@ -573,12 +576,14 @@ export function App() {
   const {
     railOpen,
     inspectorOpen,
+    inspectorVisible,
     toolDockOpen,
     createDialogOpen,
     refineRoomOpen,
     seatingOpen,
     calculatorOpen,
     wallEditLive,
+    drawDockFloat,
   } = panels;
   const planRailSource = panels.railSource as PlanRailSource;
   const roomWorkspaceFocus = workspace.roomFocus;
@@ -664,6 +669,10 @@ export function App() {
     nodeId: number | null;
   } | null>(null);
   const [selectionScope, setSelectionScope] = useState<SelectionScope | null>(null);
+  /** Furniture group banks for semantic-zoom block footprints on the canvas. */
+  const [objectGroups, setObjectGroups] = useState<Array<{ hubId: number; memberIds: number[] }>>(
+    [],
+  );
   /** The details panel describes one object; with a group, that is the first. */
   const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -845,6 +854,8 @@ export function App() {
     [showHoverTipFor, clearHoverTip],
   );
   const [insertOpen, setInsertOpen] = useState(false);
+  /** Inspector Insert tray without requiring a modal catalog sheet. */
+  const [insertTrayOpen, setInsertTrayOpen] = useState(false);
   const [insertGroup, setInsertGroup] = useState<InsertGroupId | null>(null);
   const [shapeWizardOpen, setShapeWizardOpen] = useState(false);
   const [buildStageOpen, setBuildStageOpen] = useState(false);
@@ -953,6 +964,7 @@ export function App() {
   const [view, setView] = useState<Workspace>('plan');
   const [equipmentSource, setEquipmentSource] = useState<EquipmentSource>('inventory');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('layers');
+  const [setupEmbedHost, setSetupEmbedHost] = useState<HTMLElement | null>(null);
   const [wallEdit, setWallEdit] = useState<import('./wall-edit.js').WallEditSession | null>(null);
   const [wallPickIndex, setWallPickIndex] = useState<number | null>(null);
   const [wallEditGesture, setWallEditGesture] = useState<'push' | 'curve' | 'length'>('push');
@@ -1082,7 +1094,7 @@ export function App() {
     // exclusive room workspace is excluded for the same kind of reason: it is a
     // task you finish, not a place you sit.
     if (!doc?.path) return;
-    if (workspace.mode === 'browse' || workspace.mode === 'room-layout') return;
+    if (workspace.left === 'files' || workspace.interaction === 'room-edit') return;
     modeByPlan.current.set(doc.path, workspace.mode);
   }, [doc?.path, workspace.mode]);
 
@@ -1375,6 +1387,8 @@ export function App() {
     setView('plan');
     setInspectorTab('layers');
     setSelectedIds([]);
+    setSelectionScope(null);
+    setObjectGroups([]);
     setSelection(null);
     setTextEditingId(null);
     setTextEditingOriginal(null);
@@ -1708,16 +1722,17 @@ export function App() {
     }, duration);
   }, []);
 
-  /** Exclusive shell modes: Browse | Place | Inspect | Setup | Draw */
+  /** Compatibility commands now address independent surfaces around the canvas. */
   const setShellMode = useCallback(
     (mode: ShellMode | 'none') => {
       if (view !== 'plan' || !doc) return;
       setCreateMenuOpen(false);
-      // One dispatch. Five branches each setting six booleans by hand is how a
-      // panel got left behind; the reducer decides what closes and what stays.
-      const next = mode === 'none' ? 'canvas' : (mode as WorkspaceMode);
-      dispatchWorkspace({ type: 'enter', mode: next });
-      if (next === 'setup') {
+      if (mode === 'none') {
+        dispatchWorkspace({ type: 'focus-plan' });
+        return;
+      }
+      dispatchWorkspace({ type: 'enter', mode });
+      if (mode === 'setup') {
         void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
         void api.listBankPresets().then(setBankPresets).catch(() => undefined);
       }
@@ -1725,16 +1740,42 @@ export function App() {
     [view, doc],
   );
 
-  // The mode is stored, not inferred. `deriveShellMode` used to reconstruct it
-  // from five booleans that `setShellMode` had just written, so the same fact
-  // lived in two places and could disagree.
-  const shellMode: ShellMode | 'none' = workspace.mode === 'canvas' || workspace.mode === 'room-layout'
-    ? 'none'
-    : workspace.mode;
+  const shellMode: ShellMode | 'none' = workspace.setupOpen
+    ? 'setup'
+    : workspace.left === 'assets'
+      ? 'place'
+      : workspace.left === 'files'
+        ? 'browse'
+        : workspace.drawDockOpen && !workspace.inspectorOpen
+          ? 'draw'
+          : workspace.inspectorOpen
+            ? 'inspect'
+            : 'none';
+
+  const seatingArmed =
+    tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating';
+  const stampArmed = tool.tool.kind === 'stamp';
+  /** Contextual Inspector surface: insert / object / plan — canvas always stays. */
+  const inspectorSurface: 'insert' | 'object' | 'plan' =
+    stampArmed || insertTrayOpen
+      ? 'insert'
+      : selectedIds.length > 0
+        ? 'object'
+        : 'plan';
+
+  // Show Setup opens the Inspector on the plan surface; selection transforms it
+  // into the object editor without a second dock.
+  useEffect(() => {
+    if (workspace.setupOpen && inspectorSurface === 'plan') {
+      setInspectorTab('plan');
+    }
+  }, [workspace.setupOpen, inspectorSurface]);
 
   const openCreateDialog = useCallback(() => {
     setWallPickIndex(null);
     setCreateMenuOpen(false);
+    setSelectedIds([]);
+    setInspectorTab('plan');
     dispatchWorkspace({ type: 'enter', mode: 'setup' });
     void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
     void api.listBankPresets().then(setBankPresets).catch(() => undefined);
@@ -2336,6 +2377,7 @@ export function App() {
   const finishPlacement = useCallback(() => {
     const hadSelection = selectedIds.length > 0;
     setArmedInventoryId(null);
+    setInsertTrayOpen(false);
     dispatchTool({ type: 'pick', choice: SELECT });
     if (hadSelection) {
       enterMode('inspect');
@@ -3138,6 +3180,8 @@ export function App() {
       if (reply.reason) notify(reply.reason);
       return;
     }
+    const groups = await api.listObjectGroups();
+    setObjectGroups(Array.isArray(groups) ? groups : []);
     showStatus(reply.text ?? 'Grouped');
   }, [doc?.editable, notify, selectedIds, showStatus]);
 
@@ -3148,6 +3192,9 @@ export function App() {
       if (reply.reason) notify(reply.reason);
       return;
     }
+    setSelectionScope(null);
+    const groups = await api.listObjectGroups();
+    setObjectGroups(Array.isArray(groups) ? groups : []);
     showStatus(reply.text ?? 'Ungrouped');
   }, [doc?.editable, notify, selectedIds, showStatus]);
 
@@ -3565,8 +3612,16 @@ export function App() {
     // whatever was being typed into it.
     if (openPropertiesOnSelect && opensProperties(selectedIds.length, tool)) {
       setInspectorTab('properties');
+      setInsertTrayOpen(false);
+      // Open the Inspector without a mode hop that replaces the sheet. Setup
+      // plan content yields to the object editor while the canvas stays put.
+      if (!workspace.inspectorOpen) {
+        dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+      } else if (workspace.setupOpen) {
+        dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+      }
     }
-  }, [openPropertiesOnSelect, selectedIds, tool]);
+  }, [openPropertiesOnSelect, selectedIds, tool, workspace.inspectorOpen, workspace.setupOpen]);
 
   useEffect(() => {
     if (
@@ -3827,6 +3882,11 @@ export function App() {
           setInsertOpen(false);
           return;
         }
+        if (insertTrayOpen && tool.tool.kind !== 'stamp') {
+          e.preventDefault();
+          setInsertTrayOpen(false);
+          return;
+        }
         if (shapeWizardOpen) {
           e.preventDefault();
           setShapeWizardOpen(false);
@@ -3847,7 +3907,7 @@ export function App() {
           if (workspace.overlays.includes('wall-edit') && workspace.overlays.length === 1) {
             setWallPickIndex(null);
           }
-          if (workspace.mode === 'room-layout') setWallPickIndex(null);
+          if (workspace.interaction === 'room-edit') setWallPickIndex(null);
           dispatchWorkspace({ type: 'escape' });
           return;
         }
@@ -4119,6 +4179,7 @@ export function App() {
     settingsOpen,
     shortcutsOpen,
     insertOpen,
+    insertTrayOpen,
     shapeWizardOpen,
     buildStageOpen,
     seatingOpen,
@@ -4420,6 +4481,17 @@ export function App() {
 
   const selectionScopeMeta = useMemo(() => {
     if (!selectionScope) return null;
+    if (selectionScope.kind === 'object-group') {
+      return {
+        label: 'Grouped objects',
+        description: 'Moves and rotates as one · click again to edit a single piece',
+        tint: '#2f6fed',
+        layers: [] as typeof LAYERS,
+        allVisible: true,
+        someVisible: true,
+        objectGroup: true as const,
+      };
+    }
     const layers = selectionScope.kind === 'layer'
       ? LAYERS.filter((layer) => layer.id === selectionScope.id)
       : LAYERS.filter((layer) => layer.group === selectionScope.id);
@@ -4434,11 +4506,21 @@ export function App() {
       layers,
       allVisible: layers.every((candidate) => visible.has(candidate.id)),
       someVisible: layers.some((candidate) => visible.has(candidate.id)),
+      objectGroup: false as const,
     };
   }, [selectionScope, visible]);
 
   useEffect(() => {
     if (!selectionScope || !doc) return;
+    if (selectionScope.kind === 'object-group') {
+      // Membership is owned by object links; keep scope while the hub stays selected.
+      if (!selectedIds.includes(selectionScope.hubId) && selectedIds.length > 0) {
+        // Hub may not be the click target after expand — any member is fine.
+        return;
+      }
+      if (selectedIds.length <= 1) setSelectionScope(null);
+      return;
+    }
     const layerIds = new Set(
       selectionScope.kind === 'layer'
         ? [selectionScope.id]
@@ -4575,6 +4657,21 @@ export function App() {
     () => countFurniture(doc?.scene.inventory ?? []),
     [doc?.scene.inventory],
   );
+
+  // Banks live in the links sidecar; refresh when the plan or seating mass changes.
+  useEffect(() => {
+    if (!doc?.path) {
+      setObjectGroups([]);
+      return;
+    }
+    let cancelled = false;
+    void api.listObjectGroups().then((groups) => {
+      if (!cancelled) setObjectGroups(Array.isArray(groups) ? groups : []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc?.path, furnitureCounts.chairs, furnitureCounts.tables]);
 
   /**
    * What the Setup checklist reports, READ OFF THE DRAWING.
@@ -4877,19 +4974,12 @@ export function App() {
   const welcomeMode = view === 'plan' && !doc;
 
   /**
-   * The Plan workspace's single dock.
-   *
-   * Only Plan collapses to one column. Gear and Inventory are real
-   * master-detail screens — a list on the left, the selected record on the
-   * right — and folding those into one panel would cost the relationship the
-   * layout is there to show.
-   *
-   * `dockOpen` is deliberately an OR over the four panel booleans rather than
-   * a fifth piece of state: they are already derived from one mode, so any
-   * separate flag could only ever disagree with them.
+   * The tool rail, canvas, and contextual inspector stay mounted together.
+   * Files/Assets occupy an independent left dock instead of replacing the
+   * inspector. Setup and room-edit still borrow the right slot until Phase 2.
    */
-  const planDock = view === 'plan' && !welcomeMode && !refineRoomOpen;
-  const dockOpen = planDock && (railOpen || inspectorOpen || createDialogOpen || toolDockOpen);
+  const planDock = view === 'plan' && !welcomeMode;
+  const rightDockOpen = planDock && (inspectorVisible || refineRoomOpen);
   /**
    * Whether the contextual second row has anything to say.
    *
@@ -4997,22 +5087,28 @@ export function App() {
           setView('inventory');
           return;
         case 'mode.browse':
-          setShellMode('browse');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'browse' });
           return;
         case 'mode.place':
-          setShellMode('place');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'place' });
           return;
         case 'mode.inspect':
-          setShellMode('inspect');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' });
           return;
         case 'mode.setup':
-          setShellMode('setup');
+          setSelectedIds([]);
+          setInspectorTab('plan');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' });
+          if (!workspace.setupOpen) {
+            void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
+            void api.listBankPresets().then(setBankPresets).catch(() => undefined);
+          }
           return;
         case 'mode.draw':
-          setShellMode('draw');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'draw' });
           return;
         case 'mode.none':
-          setShellMode('none');
+          dispatchWorkspace({ type: 'focus-plan' });
           return;
         case 'view.fit':
           setFitToken((t) => t + 1);
@@ -5063,9 +5159,14 @@ export function App() {
           setBuildStageOpen(true);
           return;
         case 'insert.open':
-          setShellMode('place');
+          dispatchWorkspace({ type: 'enter', mode: 'place' });
           setInsertGroup(null);
-          setInsertOpen(true);
+          setInsertOpen(false);
+          setInsertTrayOpen(true);
+          if (!workspace.inspectorOpen) {
+            dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+          }
+          showStatus('Insert · configure in the Inspector, then click the plan', 2800);
           return;
         case 'shape.wizard':
           setShapeWizardOpen(true);
@@ -5165,7 +5266,7 @@ export function App() {
       exportDxf,
       exportSvg,
       view,
-      setShellMode,
+      workspace.setupOpen,
       toggleGrid,
       showStackPeek,
       showSightlineMarkers,
@@ -5548,11 +5649,23 @@ export function App() {
             if (change.appearance) setAppearance(change.appearance);
             if (change.density) setDensity(change.density);
             if (change.showTooltips != null) setShowTooltips(change.showTooltips);
-            // Settings toggles a panel by asking for its mode, so a preference
-            // cannot put the workspace into a shape the mode strip can't reach.
-            if (change.railOpen != null) enterMode(change.railOpen ? 'place' : 'canvas');
-            if (change.inspectorOpen != null) enterMode(change.inspectorOpen ? 'inspect' : 'canvas');
-            if (change.toolDockOpen != null) enterMode(change.toolDockOpen ? 'draw' : 'canvas');
+            if (change.railOpen != null) {
+              if (change.railOpen) dispatchWorkspace({ type: 'enter', mode: 'place' });
+              else if (workspace.left !== 'none') {
+                dispatchWorkspace({
+                  type: 'toggle-mode',
+                  mode: workspace.left === 'files' ? 'browse' : 'place',
+                });
+              }
+            }
+            if (change.inspectorOpen != null) {
+              if (change.inspectorOpen) dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+              else if (workspace.inspectorOpen) dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' });
+            }
+            if (change.toolDockOpen != null) {
+              if (change.toolDockOpen) dispatchWorkspace({ type: 'enter', mode: 'draw' });
+              else if (workspace.drawDockOpen) dispatchWorkspace({ type: 'toggle-mode', mode: 'draw' });
+            }
             if (change.toolDockCompact != null) setToolDockCompact(change.toolDockCompact);
             if (change.toolDockSide) setToolDockSide(change.toolDockSide);
           }}
@@ -6641,15 +6754,15 @@ export function App() {
 
       <div
         className={`body${
-          railOpen && !welcomeMode && !refineRoomOpen ? '' : ' is-rail-hidden'
+          railOpen && !welcomeMode ? '' : ' is-rail-hidden'
         }${
-          inspectorOpen && !welcomeMode && !refineRoomOpen && !createDialogOpen ? '' : ' is-inspector-hidden'
-        }${createDialogOpen && doc && !welcomeMode ? ' is-create-open' : ''}${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}${
+          inspectorVisible && !welcomeMode ? '' : ' is-inspector-hidden'
+        }${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}${
           refineRoomOpen ? ' is-refine-open' : ''
-        }${planDock ? ' is-plan-dock' : ''}${planDock && !dockOpen ? ' is-dock-closed' : ''}`}
+        }${planDock ? ' is-plan-dock' : ''}${planDock && railOpen ? ' is-left-open' : ''}${planDock && !rightDockOpen ? ' is-dock-closed' : ''}`}
         style={planDock ? ({ '--dock-w': `${Math.round(dockWidth)}px` } as CSSProperties) : undefined}
       >
-        {planDock && dockOpen && (
+        {planDock && rightDockOpen && (
           <button
             ref={dockResizeRef}
             type="button"
@@ -6678,24 +6791,28 @@ export function App() {
                 id: 'files',
                 label: 'Files',
                 icon: <IconFolder size={17} />,
-                active: workspace.mode === 'browse',
-                onClick: () => runCommand(workspace.mode === 'browse' ? 'mode.none' : 'mode.browse'),
+                active: workspace.left === 'files',
+                onClick: () => runCommand('mode.browse'),
               },
               {
                 id: 'assets',
                 label: 'Assets',
                 icon: <IconPlus size={17} />,
-                active: workspace.mode === 'place',
+                active: workspace.left === 'assets',
                 disabled: !doc.editable,
-                onClick: () => runCommand(workspace.mode === 'place' ? 'mode.none' : 'mode.place'),
+                onClick: () => runCommand('mode.place'),
               },
               {
                 id: 'room-workspace',
                 label: 'Room',
                 icon: <IconRoomOutline size={17} />,
-                active: workspace.mode === 'room-layout' || wallsEditArmed,
+                active: workspace.interaction === 'room-edit' || wallsEditArmed,
                 disabled: !doc.editable,
                 onClick: () => {
+                  if (workspace.interaction === 'room-edit') {
+                    dispatchWorkspace({ type: 'toggle-mode', mode: 'room-layout' });
+                    return;
+                  }
                   if (doc.hasRoom) openRoomEditWorkspace('room');
                   else {
                     enterMode('canvas');
@@ -6726,19 +6843,31 @@ export function App() {
                 id: 'layouts',
                 label: 'Show Setup',
                 icon: <IconGrid size={17} />,
-                active: workspace.mode === 'setup',
+                active: workspace.setupOpen || (inspectorVisible && inspectorTab === 'plan' && inspectorSurface === 'plan'),
                 // Reachable without a room: the brief is what you write BEFORE
                 // there is anything to draw, and gating it behind a room is
                 // what made the headcount a throwaway value in New Plan.
                 disabled: false,
-                onClick: () => runCommand(workspace.mode === 'setup' ? 'mode.none' : 'mode.setup'),
+                onClick: () => runCommand('mode.setup'),
               },
               {
                 id: 'properties',
                 label: 'Properties',
                 icon: <IconSidebarRight size={17} />,
-                active: workspace.mode === 'inspect',
-                onClick: () => runCommand(workspace.mode === 'inspect' ? 'mode.none' : 'mode.inspect'),
+                active: inspectorVisible && inspectorTab !== 'plan',
+                onClick: () => {
+                  if (inspectorSurface === 'object') setInspectorTab('properties');
+                  else if (inspectorTab === 'plan') setInspectorTab('layers');
+                  runCommand('mode.inspect');
+                },
+              },
+              {
+                id: 'draw',
+                label: 'Draw',
+                icon: <IconEdit size={17} />,
+                active: toolDockOpen,
+                disabled: !doc,
+                onClick: () => runCommand('mode.draw'),
               },
               {
                 id: 'calculator',
@@ -6748,135 +6877,23 @@ export function App() {
                 onClick: () => calculatorOpen ? closeOverlay('calculator') : openOverlay('calculator'),
               },
             ]}
-            tools={[
-              {
-                id: 'select',
-                label: 'Select / move',
-                shortcut: 'Esc',
-                icon: <IconPointer size={16} />,
-                active: isPressed(tool, SELECT),
-                onClick: () => {
-                  enterMode('canvas');
-                  setLastCommandId('tool.select');
-                  dispatchTool({ type: 'pick', choice: SELECT });
-                },
-              },
-              {
-                id: 'direct-select',
-                label: 'Edit points',
-                shortcut: 'A',
-                icon: <IconDirectSelect size={16} />,
-                active: isPressed(tool, DIRECT_SELECT),
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
-                  if (refusal) notify(refusal);
-                },
-              },
-              {
-                id: 'hand',
-                label: 'Pan canvas',
-                shortcut: 'H',
-                icon: <IconHand size={16} />,
-                active: isPressed(tool, HAND),
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: HAND });
-                  if (refusal) notify(refusal);
-                },
-              },
-              ...(
-                [
-                  ['line', 'Line', IconDrawLine],
-                  ['rect', 'Rectangle', IconDrawRect],
-                  ['ellipse', 'Ellipse', IconDrawEllipse],
-                ] as const
-              ).map(([shape, label, Icon]) => ({
-                id: shape,
-                label,
-                icon: <Icon size={16} />,
-                active: isPressed(tool, drawChoice(shape)),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
-                  if (refusal) notify(refusal);
-                },
-              })),
-              {
-                id: 'add-text',
-                label: 'Text',
-                shortcut: 'T',
-                icon: <IconText size={16} />,
-                active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  activateTextTool();
-                },
-              },
-              {
-                id: 'power-cable',
-                label: 'Power run',
-                icon: <IconCablePower size={16} />,
-                active: isPressed(tool, powerCableChoice),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
-                  if (refusal) notify(refusal);
-                  else showStatus('Click bends along the power run. Enter finishes', 4500);
-                },
-              },
-              {
-                id: 'signal-cable',
-                label: 'Signal run',
-                icon: <IconCableSignal size={16} />,
-                active: isPressed(tool, signalCableChoice),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
-                  if (refusal) notify(refusal);
-                  else showStatus('Click bends along the signal run. Enter finishes', 4500);
-                },
-              },
-              {
-                id: 'measure',
-                label: 'Measure',
-                shortcut: 'M',
-                icon: <IconRuler size={16} />,
-                active: isPressed(tool, MEASURE),
-                onClick: () => {
-                  enterMode('canvas');
-                  toggleMeasure();
-                },
-              },
-              {
-                id: 'dimension',
-                label: 'Dimension',
-                shortcut: 'D',
-                icon: <IconDimension size={16} />,
-                active: isPressed(tool, DIMENSION),
-                disabled: !canCreateDimension,
-                onClick: () => {
-                  enterMode('canvas');
-                  toggleDimension();
-                },
-              },
-            ]}
           />
         )}
-        <aside className="rail" aria-hidden={!railOpen || refineRoomOpen}>
+        <aside className="rail" aria-hidden={!railOpen}>
           {planDock && (
             <DockTitlebar
-              title={workspace.mode === 'place' ? 'Assets' : 'Files'}
+              title={workspace.left === 'assets' ? 'Assets' : 'Files'}
               sub={
-                workspace.mode === 'place'
+                workspace.left === 'assets'
                   ? 'Stamp inventory and gear onto the plan'
                   : 'Recent plans, collections, and folders'
               }
-              onClose={() => enterMode('canvas')}
+              onClose={() =>
+                dispatchWorkspace({
+                  type: 'toggle-mode',
+                  mode: workspace.left === 'assets' ? 'place' : 'browse',
+                })
+              }
             />
           )}
           <div className="dock-body">
@@ -7795,6 +7812,7 @@ export function App() {
               sightlineMarkers={sightlineMarkers}
               fitToken={fitToken}
               selection={selectedIds}
+              objectGroups={objectGroups}
               onSelect={(ids) => {
                 if (
                   textEditingId != null &&
@@ -7802,14 +7820,52 @@ export function App() {
                 ) {
                   void commitTextEditing(true);
                 }
-                setSelectionScope(null);
-                setSelectedIds(ids);
+                // Empty click clears.
+                if (!ids.length) {
+                  setSelectionScope(null);
+                  setSelectedIds([]);
+                  return;
+                }
+                // Multi from marquee / shift: keep as-is.
                 if (ids.length > 1) {
+                  setSelectionScope(null);
+                  setSelectedIds(ids);
                   showStatus(
                     `${ids.length.toLocaleString()} selected · Align, nudge, or drag together`,
                     2800,
                   );
+                  return;
                 }
+                const hitId = ids[0]!;
+                // Second click on a member of an already-selected bank → drill into that piece.
+                if (
+                  selectionScope?.kind === 'object-group' &&
+                  selectedIds.includes(hitId) &&
+                  selectedIds.length > 1
+                ) {
+                  setSelectionScope(null);
+                  setSelectedIds([hitId]);
+                  showStatus('Editing one piece · click empty space, then the bank again to reselect it', 3200);
+                  return;
+                }
+                void (async () => {
+                  try {
+                    const expanded = await api.expandObjectGroup([hitId]);
+                    if (expanded.length > 1) {
+                      setSelectionScope({ kind: 'object-group', hubId: hitId });
+                      setSelectedIds(expanded);
+                      showStatus(
+                        `Bank · ${expanded.length.toLocaleString()} pieces · click again to edit one`,
+                        3200,
+                      );
+                      return;
+                    }
+                  } catch {
+                    /* fall through to single select */
+                  }
+                  setSelectionScope(null);
+                  setSelectedIds([hitId]);
+                })();
               }}
               onStackCandidates={(items) => {
                 setStackCandidates(items);
@@ -8485,8 +8541,15 @@ export function App() {
 
       {doc && (
         <CreateDialog
-          open={createDialogOpen}
-          docked
+          open={
+            inspectorVisible &&
+            !welcomeMode &&
+            inspectorSurface === 'plan' &&
+            (inspectorTab === 'plan' || workspace.setupOpen)
+          }
+          docked={false}
+          embedded
+          embedHost={setupEmbedHost}
           editable={!!doc.editable}
           hasRoom={Boolean(doc.hasRoom)}
           drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
@@ -8513,10 +8576,8 @@ export function App() {
           seatSpacingFt={seatSpacingFt}
           seatRowSpacingFt={seatRowSpacingFt}
           seatRowLengths={seatRowLengths}
-          seatingArmed={
-            tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
-          }
-          onClose={() => enterMode('canvas')}
+          seatingArmed={seatingArmed}
+          onClose={() => dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' })}
           onOpenRoom={openRoomPanel}
           onDrawRoomOutline={() => {
             setAwaitingRoomOutline(true);
@@ -8544,8 +8605,10 @@ export function App() {
             setBuildStageOpen(true);
           }}
           onInsert={() => {
-            setShellMode('place');
-            showStatus('Place · stamp from inventory or gear', 2800);
+            setInsertTrayOpen(true);
+            setInspectorTab('properties');
+            dispatchWorkspace({ type: 'enter', mode: 'place' });
+            showStatus('Insert · configure in the Inspector, then click the plan', 2800);
           }}
           onRepeat={() => {
             if (selectedIds.length !== 1) {
@@ -8859,7 +8922,7 @@ export function App() {
 
         {toolDockOpen && doc && (
               <PlanToolDock
-                docked
+                docked={!drawDockFloat}
                 compact={toolDockCompact}
                 groupLabels={['Navigate', 'Build the show', 'Draw', 'Systems', 'Room', 'Measure & annotate']}
                 foreground={colorDraft}
@@ -8873,7 +8936,7 @@ export function App() {
                 onOrder={setToolDockOrder}
                 onHidden={setToolDockHidden}
                 onToggleCompact={() => setToolDockCompact((compact) => !compact)}
-                onClose={() => enterMode('canvas')}
+                onClose={() => dispatchWorkspace({ type: 'toggle-mode', mode: 'draw' })}
                 onForeground={() => {
                   enterMode('inspect');
                   setInspectorTab('properties');
@@ -8990,7 +9053,7 @@ export function App() {
                     {
                       id: 'power-cable',
                       label: 'Power run',
-                      icon: <IconDrawLine />,
+                      icon: <IconCablePower />,
                       active: isPressed(tool, powerCableChoice),
                       disabled: !doc.editable,
                       onClick: () => {
@@ -9002,7 +9065,7 @@ export function App() {
                     {
                       id: 'signal-cable',
                       label: 'Signal run',
-                      icon: <IconDrawPolygon />,
+                      icon: <IconCableSignal />,
                       active: isPressed(tool, signalCableChoice),
                       disabled: !doc.editable,
                       onClick: () => {
@@ -9073,7 +9136,7 @@ export function App() {
                       id: 'dimension',
                       label: 'Dimension',
                       shortcut: 'D',
-                      icon: <IconRuler />,
+                      icon: <IconDimension />,
                       active: isPressed(tool, DIMENSION),
                       disabled: !canCreateDimension,
                       onClick: () => {
@@ -9096,14 +9159,30 @@ export function App() {
         <aside
           ref={inspectorRef}
           className="inspector"
-          aria-hidden={!(inspectorOpen && !welcomeMode)}
+          aria-hidden={!inspectorVisible || welcomeMode}
           aria-label="Properties and layers inspector"
-          tabIndex={inspectorOpen && !welcomeMode ? 0 : -1}
+          tabIndex={inspectorVisible && !welcomeMode ? 0 : -1}
         >
           {planDock && (
             <DockTitlebar
-              title="Inspect"
-              sub="Layers and properties"
+              title={
+                inspectorSurface === 'insert'
+                  ? 'Insert'
+                  : inspectorSurface === 'object'
+                    ? 'Inspect'
+                    : inspectorTab === 'plan' || workspace.setupOpen
+                      ? 'Show Setup'
+                      : 'Inspect'
+              }
+              sub={
+                inspectorSurface === 'insert'
+                  ? 'Configure, then place on the plan'
+                  : inspectorSurface === 'object'
+                    ? 'Selected object'
+                    : inspectorTab === 'plan' || workspace.setupOpen
+                      ? 'Brief, layout, and readiness'
+                      : 'Layers and properties'
+              }
               trailing={
                 doc ? (
                   <span className={`inspector-access${doc.editable ? '' : ' is-readonly'}`}>
@@ -9111,7 +9190,7 @@ export function App() {
                   </span>
                 ) : null
               }
-              onClose={() => enterMode('canvas')}
+              onClose={() => dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' })}
             />
           )}
           <div className="dock-body">
@@ -9243,21 +9322,41 @@ export function App() {
                     carried moved to the titlebar's trailing slot. */}
                 <nav className="inspector-tabs" aria-label="Plan inspector">
                   {([
+                    { id: 'plan', label: 'Plan', icon: <IconGrid size={14} /> },
                     { id: 'layers', label: 'Layers', icon: <IconLayers size={14} /> },
                     { id: 'properties', label: 'Properties', icon: <IconEdit size={14} /> },
                     { id: 'room', label: 'Room', icon: <IconDrawRect size={14} /> },
                   ] as const).map(({ id, label, icon }) => (
                     <button
                       key={id}
-                      className={inspectorTab === id ? 'active' : ''}
+                      className={
+                        inspectorSurface === 'insert' && id === 'properties'
+                          ? 'active'
+                          : inspectorTab === id && inspectorSurface !== 'insert'
+                            ? 'active'
+                            : ''
+                      }
                       onClick={() => {
+                        if (id === 'plan') {
+                          setSelectedIds([]);
+                          setInspectorTab('plan');
+                          dispatchWorkspace({ type: 'enter', mode: 'setup' });
+                          return;
+                        }
                         if (id === 'room') {
                           setInspectorTab('room');
                           return;
                         }
                         setInspectorTab(id);
+                        if (workspace.setupOpen) {
+                          dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+                        }
                       }}
-                      aria-current={inspectorTab === id ? 'page' : undefined}
+                      aria-current={
+                        (inspectorSurface === 'insert' ? id === 'properties' : inspectorTab === id)
+                          ? 'page'
+                          : undefined
+                      }
                     >
                       <span className="inspector-tab-icon" aria-hidden>
                         {icon}
@@ -9335,7 +9434,50 @@ export function App() {
                 </div>
               </div>
 
-              {inspectorTab === 'properties' && (
+              {inspectorSurface === 'insert' && (
+                <InsertTray
+                  items={inventoryRows}
+                  initialGroup={insertGroup}
+                  focus={seatingArmed ? 'seating' : 'catalog'}
+                  armedLabel={
+                    tool.tool.kind === 'stamp'
+                      ? tool.tool.stamp.what === 'inventory'
+                        ? tool.tool.stamp.name
+                        : tool.tool.stamp.what === 'seating' || tool.tool.stamp.what === 'gear'
+                          ? tool.tool.stamp.description
+                          : tool.tool.stamp.what === 'label'
+                            ? tool.tool.stamp.text
+                            : 'Ready to place'
+                      : null
+                  }
+                  editable={!!doc.editable}
+                  hasRoom={Boolean(doc.hasRoom)}
+                  onPick={(id, name) => armInventory(id, name)}
+                  onPickLeaf={(leafId) => armInsertLeaf(leafId)}
+                  onUnavailable={(label) => {
+                    notify(`“${label}” is not in inventory and has no stock size: add it under Inventory first`);
+                  }}
+                  onBuildStage={() => setBuildStageOpen(true)}
+                  onSeatingFill={() => openOverlay('seating')}
+                  onSeatingStamp={() => {
+                    setSelectedIds([]);
+                    setInspectorTab('plan');
+                    dispatchWorkspace({ type: 'enter', mode: 'setup' });
+                    showStatus('Configure the bank under Stamp a seating bank, then Place on the plan', 4200);
+                  }}
+                  onDonePlacing={finishPlacement}
+                />
+              )}
+
+              {inspectorSurface === 'plan' && (inspectorTab === 'plan' || workspace.setupOpen) && (
+                <div
+                  id="inspector-setup-host"
+                  className="inspector-setup-host"
+                  ref={setSetupEmbedHost}
+                />
+              )}
+
+              {inspectorSurface !== 'insert' && inspectorTab === 'properties' && (
                 <>
               <div
                 className={`section selected-item-section${selectedIds.length ? ' has-selection' : ''}`}
@@ -9354,6 +9496,59 @@ export function App() {
                     <span className="section-count">{selectedIds.length}</span>
                   )}
                 </div>
+
+                {selectedIds.length > 0 && (
+                  <div className="selection-hero" role="status">
+                    <div className="selection-hero-copy">
+                      <small>
+                        {selectionScope?.kind === 'object-group'
+                          ? 'Seating / object bank'
+                          : selectedIds.length > 1
+                            ? 'Multiple objects'
+                            : selection
+                              ? selection.cls.replace(/^RV/, '')
+                              : 'Selected'}
+                      </small>
+                      <strong>
+                        {selectionScope?.kind === 'object-group'
+                          ? `${selectedIds.length.toLocaleString()} pieces`
+                          : selectedIds.length > 1
+                            ? `${selectedIds.length.toLocaleString()} selected`
+                            : selection?.name ?? selection?.cls.replace(/^RV/, '') ?? 'Item'}
+                      </strong>
+                      <span>
+                        {selectionScope?.kind === 'object-group'
+                          ? 'Drag or rotate together · click again to edit one piece'
+                          : selectedIds.length > 1
+                            ? 'Align, nudge, or drag together'
+                            : selection
+                              ? `${formatLength(selection.widthUnits, unitSystem)} × ${formatLength(selection.heightUnits, unitSystem)}${
+                                  selection.angleDegrees != null ? ` · ${selection.angleDegrees}°` : ''
+                                }`
+                              : 'Inspect and edit below'}
+                      </span>
+                    </div>
+                    <div className="selection-hero-actions">
+                      {selectionScope?.kind === 'object-group' && (
+                        <button
+                          type="button"
+                          className="link-btn"
+                          onClick={() => {
+                            const keep = selectedIds[0];
+                            if (keep == null) return;
+                            setSelectionScope(null);
+                            setSelectedIds([keep]);
+                          }}
+                        >
+                          Edit one
+                        </button>
+                      )}
+                      <button type="button" className="link-btn" onClick={() => setSelectedIds([])}>
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {stackCandidates.length >= 2 && (
                   <div className="tool-group stack-pick-group stack-coach">
@@ -9581,7 +9776,7 @@ export function App() {
                   </div>
                 )}
 
-                {selectionScopeMeta && selectedIds.length > 0 && (
+                {selectionScopeMeta && selectedIds.length > 0 && selectionScope?.kind !== 'object-group' && (
                   <div className="layer-selection-scope-block">
                     <div
                       className="layer-selection-scope"
@@ -9616,6 +9811,51 @@ export function App() {
                   </div>
                 )}
 
+                {selectionScope?.kind === 'object-group' && selectedIds.length > 1 && (
+                  <div className="tool-group stack-pick-group stack-coach">
+                    <span className="tool-label">Pieces in this bank</span>
+                    <p className="hint">Click a piece below to edit it alone. Clear selection, then click the bank again to reselect all.</p>
+                    <ol className="stack-pick-list stack-pick-ordered stack-hover-style-list">
+                      {selectedIds.slice(0, 24).map((id, index) => {
+                        const prim = doc.scene.primitives.find((p) => p.selectId === id);
+                        const name = prim?.owner ?? prim?.cls?.replace(/^RV/, '') ?? `Item ${id}`;
+                        const accent = ['#2f6fed', '#4a9eff', '#e8b84a', '#4fb879'][index % 4];
+                        return (
+                          <li key={id}>
+                            <button
+                              type="button"
+                              style={{ ['--stack-accent' as string]: accent }}
+                              onClick={() => {
+                                setSelectionScope(null);
+                                setSelectedIds([id]);
+                              }}
+                            >
+                              <span className="stack-hover-accent" aria-hidden />
+                              <span className="stack-hover-body">
+                                <span className="stack-hover-label">Piece {index + 1}</span>
+                                <strong className="stack-hover-name">{name}</strong>
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                    {selectedIds.length > 24 && (
+                      <p className="hint">{selectedIds.length - 24} more not listed</p>
+                    )}
+                    <div className="text-action-row">
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={!doc.editable}
+                        onClick={() => void ungroupPlanSelection()}
+                      >
+                        Ungroup bank
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {selectedIds.length === 0 ? (
                   <div className="selected-item-empty">
                     <span className="selected-item-empty-icon" aria-hidden>
@@ -9634,7 +9874,7 @@ export function App() {
                       </span>
                     </div>
                   </div>
-                ) : selectedIds.length > 1 ? (
+                ) : selectedIds.length > 1 && selectionScope?.kind !== 'object-group' ? (
                   <>
                     <div className="selection-multi-banner" role="status">
                       <strong>{selectedIds.length.toLocaleString()} objects</strong>
@@ -10917,6 +11157,19 @@ export function App() {
                     <dd className="num">{formatBytes(doc.byteLength)}</dd>
                   </div>
                 </dl>
+                <p className="hint">
+                  Show brief, kits, and readiness live on the Plan tab — the sheet stays on screen.
+                </p>
+                <button
+                  type="button"
+                  className="btn-outline show-setup-wide-action"
+                  onClick={() => {
+                    setInspectorTab('plan');
+                    dispatchWorkspace({ type: 'enter', mode: 'setup' });
+                  }}
+                >
+                  Open Plan / Show Setup
+                </button>
 
                 {(doc.repaired || doc.warnings > 0 || !doc.editable) && (
                   <div className="notice" style={{ marginTop: 12 }}>
@@ -10937,7 +11190,7 @@ export function App() {
                 </>
               )}
 
-              {inspectorTab === 'room' && (
+              {inspectorSurface !== 'insert' && inspectorTab === 'room' && (
                 <div className="section room-inspect-gate">
                   <div className="section-title">
                     <span>Room</span>
@@ -10985,7 +11238,7 @@ export function App() {
                 </div>
               )}
 
-              {inspectorTab === 'layers' && (
+              {inspectorSurface !== 'insert' && inspectorTab === 'layers' && (
                 <>
               <div className="section background-layer-section">
                 <BackgroundLayerPanel

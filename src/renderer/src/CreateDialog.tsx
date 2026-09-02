@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 
 import DockTitlebar from './DockTitlebar.js';
 import ShowSetupPanel, { type ShowKitInfo } from './ShowSetupPanel.js';
@@ -34,6 +35,13 @@ interface Props {
   open: boolean;
   /** Side panel that leaves the canvas clickable (stamp seating without closing). */
   docked?: boolean;
+  /**
+   * Render only the sheet body for embedding in the Inspector plan surface.
+   * Title chrome belongs to the Inspector; Setup is not a second dock.
+   */
+  embedded?: boolean;
+  /** Portal target inside the Inspector when `embedded` is set. */
+  embedHost?: HTMLElement | null;
   editable: boolean;
   hasRoom: boolean;
   drawingRoomOutline: boolean;
@@ -151,12 +159,15 @@ interface Props {
 }
 
 /**
- * Create / show-setup workspace. Docked mode sits beside the plan so the user
- * can stamp seating and still change block settings without reopening.
+ * Create / show-setup workspace. Embedded mode lives inside the Inspector plan
+ * surface so Setup never replaces the sheet. Docked mode remains for legacy
+ * callers that still mount a separate pane.
  */
 export default function CreateDialog({
   open,
   docked = true,
+  embedded = false,
+  embedHost = null,
   editable,
   hasRoom,
   drawingRoomOutline,
@@ -323,13 +334,18 @@ export default function CreateDialog({
 
   const sheet = (
       <div
-        className={`sheet create-dialog-sheet${docked ? ' is-docked' : ''}`}
-        role="dialog"
-        aria-modal={docked ? undefined : 'true'}
+        className={`sheet create-dialog-sheet${docked || embedded ? ' is-docked' : ''}${embedded ? ' is-embedded' : ''}`}
+        role={embedded ? 'region' : 'dialog'}
+        aria-modal={docked || embedded ? undefined : 'true'}
         aria-labelledby="create-dialog-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        {docked ? (
+        {embedded ? (
+          <p className="create-dialog-guidance" id="create-dialog-title">
+            <strong>{headline}</strong>
+            <span>{guidance}</span>
+          </p>
+        ) : docked ? (
           <DockTitlebar title="Show Setup" sub={headline} onClose={onClose} closeLabel="Close Show Setup" />
         ) : (
           <header className="create-dialog-head">
@@ -343,7 +359,7 @@ export default function CreateDialog({
             </button>
           </header>
         )}
-        {docked && <p className="create-dialog-guidance" id="create-dialog-title">{guidance}</p>}
+        {docked && !embedded && <p className="create-dialog-guidance" id="create-dialog-title">{guidance}</p>}
 
         <div className="create-dialog-body">
           <ShowSetupPanel
@@ -804,6 +820,11 @@ export default function CreateDialog({
         </div>
       </div>
   );
+
+  if (embedded) {
+    if (!embedHost) return null;
+    return createPortal(sheet, embedHost);
+  }
 
   if (docked) {
     return (

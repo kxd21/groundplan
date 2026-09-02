@@ -46,29 +46,22 @@ const run = (state: WorkspaceState, ...actions: WorkspaceAction[]) =>
 const enter = (mode: WorkspaceMode) => run(INITIAL_WORKSPACE, { type: 'enter', mode });
 
 // ---------------------------------------------------------------------------
-// One mode owns the screen
+// Canvas with independent surrounding surfaces
 // ---------------------------------------------------------------------------
 
-// The bug this whole module exists to kill: two exclusive panels open together
-// because one entry point forgot to close the other. It is now unrepresentable,
-// and this walks every pair to say so.
-let overlapping: string | null = null;
-for (const mode of ALL_MODES) {
-  const panels = panelsFor(enter(mode));
-  const exclusive = [
-    panels.railOpen && 'rail',
-    panels.inspectorOpen && 'inspector',
-    panels.toolDockOpen && 'toolDock',
-    panels.createDialogOpen && 'createDialog',
-    panels.refineRoomOpen && 'refineRoom',
-  ].filter(Boolean);
-  if (exclusive.length > 1) overlapping = `${mode}: ${exclusive.join('+')}`;
-}
-check('no mode opens two exclusive panels', overlapping === null, overlapping);
+check('default workspace opens the inspector beside the canvas', (() => {
+  const p = panelsFor(INITIAL_WORKSPACE);
+  return p.inspectorOpen && p.inspectorVisible && !p.railOpen;
+})());
 
-check('canvas opens nothing', (() => {
-  const p = panelsFor(enter('canvas'));
-  return !p.railOpen && !p.inspectorOpen && !p.toolDockOpen && !p.createDialogOpen && !p.refineRoomOpen && p.fullCanvas;
+check('place keeps the inspector visible', (() => {
+  const p = panelsFor(enter('place'));
+  return p.railOpen && p.railSource === 'equipment' && p.inspectorVisible;
+})());
+
+check('focus plan hides every surrounding surface', (() => {
+  const p = panelsFor(run(enter('place'), { type: 'focus-plan' }));
+  return !p.railOpen && !p.inspectorOpen && !p.toolDockOpen && !p.createDialogOpen && p.fullCanvas;
 })());
 
 check('place shows the equipment rail', (() => {
@@ -100,9 +93,9 @@ check('every mode has a status line', ALL_MODES.every((m) => workspaceStatus(ent
 // Toggling
 // ---------------------------------------------------------------------------
 
-check('toggling the current mode returns to the canvas', (() => {
+check('toggling draw closes only the draw surface', (() => {
   const state = run(INITIAL_WORKSPACE, { type: 'enter', mode: 'draw' }, { type: 'toggle-mode', mode: 'draw' });
-  return state.mode === 'canvas';
+  return !state.drawDockOpen && state.inspectorOpen;
 })());
 
 check('toggling a different mode enters it', (() => {
@@ -110,9 +103,10 @@ check('toggling a different mode enters it', (() => {
   return state.mode === 'place';
 })());
 
-check('entering the mode you are in is a no-op reference', (() => {
+check('entering place twice remains stable', (() => {
   const before = enter('place');
-  return workspaceReducer(before, { type: 'enter', mode: 'place' }) === before;
+  const after = workspaceReducer(before, { type: 'enter', mode: 'place' });
+  return after.left === 'assets' && after.inspectorOpen;
 })());
 
 // ---------------------------------------------------------------------------
@@ -136,11 +130,17 @@ check('wall edit survives a move to inspect', (() => {
   return panelsFor(state).wallEditLive;
 })());
 
-check('wall edit does not survive the setup dialog', (() => {
+check('wall edit survives the setup surface', (() => {
   const state = run(INITIAL_WORKSPACE,
     { type: 'open-overlay', overlay: 'wall-edit' },
     { type: 'enter', mode: 'setup' });
-  return !panelsFor(state).wallEditLive;
+  const p = panelsFor(state);
+  return p.wallEditLive && p.createDialogOpen && p.inspectorVisible;
+})());
+
+check('setup keeps the inspector visible beside the canvas', (() => {
+  const p = panelsFor(enter('setup'));
+  return p.createDialogOpen && p.inspectorVisible && p.inspectorOpen;
 })());
 
 check('the room workspace lights the wall handles without the overlay', (() => {
@@ -148,13 +148,11 @@ check('the room workspace lights the wall handles without the overlay', (() => {
   return p.wallEditLive && p.refineRoomOpen;
 })());
 
-// An overlay opened where it does not belong must not hide behind the dialog
-// that is covering it; it takes the workspace back to the canvas instead.
-check('an incompatible overlay clears the mode rather than opening invisibly', (() => {
+check('seating can open without closing setup', (() => {
   const state = run(INITIAL_WORKSPACE,
     { type: 'enter', mode: 'setup' },
     { type: 'open-overlay', overlay: 'seating' });
-  return state.mode === 'canvas' && panelsFor(state).seatingOpen;
+  return state.setupOpen && panelsFor(state).seatingOpen;
 })());
 
 check('opening an overlay twice does not stack it', (() => {
@@ -186,13 +184,13 @@ check('escape closes the newest overlay first', (() => {
   return !panelsFor(state).calculatorOpen && panelsFor(state).wallEditLive;
 })());
 
-check('escape then unwinds the mode', (() => {
+check('escape then unwinds draw but keeps the inspector', (() => {
   const state = run(INITIAL_WORKSPACE,
     { type: 'enter', mode: 'draw' },
     { type: 'open-overlay', overlay: 'calculator' },
     { type: 'escape' },
     { type: 'escape' });
-  return state.mode === 'canvas' && state.overlays.length === 0;
+  return !state.drawDockOpen && state.inspectorOpen && state.overlays.length === 0;
 })());
 
 check('escape on a bare canvas is a no-op reference', (() => {
@@ -206,18 +204,16 @@ check('escapeConsumed agrees with what escape does', ALL_MODES.every((mode) => {
   return escapeConsumed(state) === (after !== state);
 }));
 
-// Escape must always terminate at the canvas, from any reachable state — the
-// old cascade had paths that left a panel open with nothing left to press.
+// Escape terminates with the persistent inspector; Focus Plan hides it.
 let stuck: string | null = null;
 for (const mode of ALL_MODES) {
   for (const overlay of OVERLAYS) {
     let state = run(INITIAL_WORKSPACE, { type: 'enter', mode }, { type: 'open-overlay', overlay });
     for (let i = 0; i < 8 && escapeConsumed(state); i++) state = workspaceReducer(state, { type: 'escape' });
-    const panels = panelsFor(state);
-    if (!panels.fullCanvas) stuck = `${mode}+${overlay} → ${JSON.stringify(state)}`;
+    if (escapeConsumed(state)) stuck = `${mode}+${overlay} → ${JSON.stringify(state)}`;
   }
 }
-check('escape always reaches the bare canvas', stuck === null, stuck);
+check('escape always reaches the persistent canvas state', stuck === null, stuck);
 
 // ---------------------------------------------------------------------------
 // The room workspace's return path
@@ -274,19 +270,13 @@ for (let step = 0; step < 4000 && !violation; step++) {
   const action = actions[seed % actions.length]!;
   walk = workspaceReducer(walk, action);
   const panels = panelsFor(walk);
-  const exclusive = [
-    panels.railOpen,
-    panels.inspectorOpen,
-    panels.toolDockOpen,
-    panels.createDialogOpen,
-    panels.refineRoomOpen,
-  ].filter(Boolean).length;
-  if (exclusive > 1) violation = `two exclusive panels after ${action.type}: ${JSON.stringify(walk)}`;
-  else if (new Set(walk.overlays).size !== walk.overlays.length) violation = `duplicate overlay: ${JSON.stringify(walk)}`;
+  if (new Set(walk.overlays).size !== walk.overlays.length) violation = `duplicate overlay: ${JSON.stringify(walk)}`;
   else if (walk.overlays.some((o) => !overlayAllowedIn(o, walk.mode)))
     violation = `overlay survived an incompatible mode: ${JSON.stringify(walk)}`;
-  else if (walk.mode === 'room-layout' && walk.returnTo === 'room-layout')
-    violation = `room workspace would return to itself: ${JSON.stringify(walk)}`;
+  else if (panels.createDialogOpen && !panels.inspectorVisible && !panels.refineRoomOpen)
+    violation = `setup without a visible inspector: ${JSON.stringify(walk)}`;
+  else if (panels.refineRoomOpen && panels.inspectorVisible)
+    violation = `room edit and inspector visible in the same right slot: ${JSON.stringify(walk)}`;
 }
 check('invariants hold across a 4000-step random walk', violation === null, violation);
 
@@ -296,13 +286,13 @@ check('invariants hold across a 4000-step random walk', violation === null, viol
 
 // The default that made a passive intent destructive. Opening a finished show
 // file must not arm a stamp tool over it — the first click has to select.
-check('a plan with content opens on the bare canvas',
-  landingModeFor({ hasRoom: true, hasContent: true }) === 'canvas');
+check('a plan with content opens with the inspector',
+  landingModeFor({ hasRoom: true, hasContent: true }) === 'inspect');
 
 // ...but the opposite rule is just as wrong: an empty sheet with no panel is a
 // dead end, so a plan that cannot be read yet lands where the work is.
-check('a room with nothing in it opens ready to place',
-  landingModeFor({ hasRoom: true, hasContent: false }) === 'place');
+check('an empty room opens with the inspector, not an armed stamp',
+  landingModeFor({ hasRoom: true, hasContent: false }) === 'inspect');
 check('a plan with no room opens in setup',
   landingModeFor({ hasRoom: false, hasContent: false }) === 'setup');
 
@@ -332,7 +322,7 @@ const withContent = { hasRoom: true, hasContent: true };
 const bare = { hasRoom: false, hasContent: false };
 
 check('nothing but facts falls through to the derived answer',
-  resolveLanding({ facts: withContent }) === 'canvas');
+  resolveLanding({ facts: withContent }) === 'inspect');
 
 check('a remembered mode beats the derived one',
   resolveLanding({ remembered: 'inspect', facts: withContent }) === 'inspect');

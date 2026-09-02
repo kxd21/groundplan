@@ -103,7 +103,7 @@ export const COMMAND_LIST: CommandListEntry[] = [
   { id: 'mode.inspect', title: 'Properties', section: 'Workspace', shortcut: '⌘⇧B' },
   { id: 'mode.setup', title: 'Show Setup', section: 'Workspace' },
   { id: 'mode.draw', title: 'All canvas tools', section: 'Workspace' },
-  { id: 'mode.none', title: 'Hide side panels', section: 'Mode' },
+  { id: 'mode.none', title: 'Focus plan', section: 'Mode' },
   { id: 'view.fit', title: 'Zoom to fit', section: 'View', shortcut: '0' },
   { id: 'view.grid', title: 'Toggle grid', section: 'View', shortcut: 'G' },
   { id: 'view.stack', title: 'Toggle stack markers', section: 'View' },

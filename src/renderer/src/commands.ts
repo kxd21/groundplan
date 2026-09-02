@@ -162,8 +162,8 @@ export const COMMAND_CATALOG: CommandDef[] = [
   },
   {
     id: 'mode.none',
-    title: 'Hide side panels',
-    subtitle: 'Full canvas',
+    title: 'Focus plan',
+    subtitle: 'Hide side panels; keep the drawing',
     section: 'Mode',
     when: (c) => c.workspace === 'plan' && c.hasDoc,
   },

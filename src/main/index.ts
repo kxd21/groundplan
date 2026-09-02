@@ -861,6 +861,60 @@ function expandLinkedIds(ids: number[]): number[] {
   return [...out];
 }
 
+/** Only follow furniture `group` links — not stage↔stairs or stack-on. */
+function expandGroupIds(ids: number[]): number[] {
+  const out = new Set(ids);
+  const queue = [...ids];
+  while (queue.length) {
+    const id = queue.pop()!;
+    for (const partner of objectLinks.get(id) ?? []) {
+      if (out.has(partner)) continue;
+      const kind = objectLinkKinds.get(objectLinkPairKey(id, partner));
+      if (kind !== 'group') continue;
+      out.add(partner);
+      queue.push(partner);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Among a flat `created` id list from place/clone, keep furniture roots only.
+ *
+ * `duplicateNode` / `placeGear` record every cloned descendant (RVShape →
+ * RVGeometry → segment). Linking those children into a bank turns one
+ * 10-top + table into a ~33-node star and semantic zoom labels "33 seats".
+ * Drop any id whose parent is also in the same batch.
+ */
+function rootIdsAmong(ids: Iterable<number>): number[] {
+  const s = session;
+  if (!s) return [];
+  const candidates: number[] = [];
+  for (const id of ids) {
+    if (s.index.byId.has(id)) candidates.push(id);
+  }
+  const inBatch = new Set(candidates);
+  return candidates.filter((id) => {
+    const node = s.index.byId.get(id);
+    if (!node) return false;
+    const parent = s.index.parentOf.get(node);
+    return !parent || !inBatch.has(parent.id);
+  });
+}
+
+/** Persist a bank/section as one selectable unit without touching the .rv4. */
+function groupCreatedIds(ids: number[] | undefined): void {
+  const s = session;
+  if (!s || !ids || ids.length < 2) return;
+  const members = rootIdsAmong(ids);
+  if (members.length < 2) return;
+  const hub = [...members].sort((a, b) => a - b)[0]!;
+  for (const id of members) {
+    if (id === hub) continue;
+    linkObjects(hub, id, 'group');
+  }
+}
+
 function clearObjectLinks(): void {
   objectLinks.clear();
   objectLinkKinds.clear();
@@ -3547,6 +3601,43 @@ app.whenReady().then(async () => {
     return { ok: true, text: `Grouped ${members.length} items` };
   });
 
+  handle('edit:expand-group', (_event, ids: number[]) => {
+    const s = session;
+    if (!s) return [] as number[];
+    const requested = (Array.isArray(ids) ? ids : []).filter((id) => Number.isFinite(id) && s.index.byId.has(id));
+    if (!requested.length) return [] as number[];
+    // Roots only — older sidecars may still link clone-subtree children.
+    return rootIdsAmong(expandGroupIds(requested));
+  });
+
+  /** All furniture `group` banks — for semantic-zoom block footprints. */
+  handle('edit:list-object-groups', () => {
+    const s = session;
+    if (!s) return [] as Array<{ hubId: number; memberIds: number[] }>;
+    const visited = new Set<number>();
+    const groups: Array<{ hubId: number; memberIds: number[] }> = [];
+    for (const id of objectLinks.keys()) {
+      if (visited.has(id) || !s.index.byId.has(id)) continue;
+      let hasGroup = false;
+      for (const partner of objectLinks.get(id) ?? []) {
+        if (objectLinkKinds.get(objectLinkPairKey(id, partner)) === 'group') {
+          hasGroup = true;
+          break;
+        }
+      }
+      if (!hasGroup) continue;
+      // Collapse clone-subtree children so older sidecars that linked every
+      // created id still report ~11 furniture pieces per banquet bank.
+      const expanded = expandGroupIds([id]);
+      const members = rootIdsAmong(expanded);
+      if (members.length < 2) continue;
+      for (const member of expanded) visited.add(member);
+      const hub = [...members].sort((a, b) => a - b)[0]!;
+      groups.push({ hubId: hub, memberIds: members });
+    }
+    return groups;
+  });
+
   handle('edit:ungroup', (_event, ids: number[]) => {
     const s = session;
     if (!s) return { ok: false, reason: 'open a plan first' };
@@ -4948,9 +5039,11 @@ app.whenReady().then(async () => {
       }
 
       const seedSet = new Set(seeds);
+      const created = result.created?.filter((id) => !seedSet.has(id));
+      groupCreatedIds(created);
       return {
         ...result,
-        created: result.created?.filter((id) => !seedSet.has(id)),
+        created,
       };
     });
   });
@@ -5276,9 +5369,11 @@ app.whenReady().then(async () => {
     null,
   );
 
-  handle('plan:seating-apply', (_event, request: SeatingRequestView, chair: string, table?: string) =>
-    applyEdit((s) => applySeatingModel(s, request, chair, table)),
-  );
+  handle('plan:seating-apply', (_event, request: SeatingRequestView, chair: string, table?: string) => {
+    const reply = applyEdit((s) => applySeatingModel(s, request, chair, table));
+    if (reply.ok) groupCreatedIds((reply as { created?: number[] }).created);
+    return reply;
+  });
 
   handle('plan:list-layout-kits', () => listLayoutKits(app.getPath('userData')));
 
@@ -5318,6 +5413,10 @@ app.whenReady().then(async () => {
       if (!validated.ok) return { ok: false, reason: validated.reason };
 
       return applyEdit((s) => {
+        const beforeIds =
+          options?.replaceExistingSeating || options?.replaceExistingGear
+            ? new Set(s.index.byId.keys())
+            : null;
         const result = applyFullLayoutRecipe(s, layout, {
           inventory,
           replaceExistingSeating: Boolean(options?.replaceExistingSeating),
@@ -5331,6 +5430,19 @@ app.whenReady().then(async () => {
           units: unitSystem(),
         });
         if (!result.ok) return { ok: false, reason: result.reason };
+        // Drop sidecar links to objects the replace pass deleted so banks do
+        // not accumulate dead endpoints across applies.
+        if (beforeIds) {
+          const removed: number[] = [];
+          for (const id of beforeIds) {
+            if (!s.index.byId.has(id)) removed.push(id);
+          }
+          if (removed.length) pruneObjectLinks(removed);
+        }
+        // Each seating block becomes one selectable bank (sidecar links only).
+        for (const block of result.seating ?? []) {
+          if (block.ok) groupCreatedIds(block.created);
+        }
         return {
           ok: true,
           text: result.status,

@@ -169,32 +169,29 @@ record('intake:new plan opens', await waitFor(`!!document.querySelector('.new-pl
  * name — and none of them should corrupt the plan or throw.
  */
 await setInput('#new-plan-show-name', `${SHOW} — “Café” 🎪`);
-await setInput('#new-plan-show-client', 'Ünïcödé Röbotics <script>alert(1)</script>');
 await setInput('#new-plan-show-venue', 'Javits Center — Hall 1E');
 await setInput('#new-plan-guests', '-40');
 await sleep(300);
 const negative = await ev(`(() => {
-  const b = [...document.querySelectorAll('.new-plan-guest-row button')].find((e) => /Use recommendation/i.test(e.textContent || ''));
+  const b = [...document.querySelectorAll('.new-plan-guest-row button')].find((e) => /Create /i.test(e.textContent || ''));
   return { disabled: !!b?.disabled, value: document.querySelector('#new-plan-guests')?.value };
 })()`);
 record('intake:a negative headcount cannot be applied', negative?.disabled === true, JSON.stringify(negative));
 if (!negative?.disabled) {
-  note('high', 'A negative headcount is accepted', 'The recommendation button stayed live for -40 people.', JSON.stringify(negative));
+  note('high', 'A negative headcount is accepted', 'The create-from-attendance button stayed live for -40 people.', JSON.stringify(negative));
 }
 
 await setInput('#new-plan-guests', String(TARGET));
 await setSelect('#new-plan-show-layout', `[...el.options].find((o) => /General session/i.test(o.text))`);
 await sleep(300);
-await ev(`(() => { const b=[...document.querySelectorAll('.new-plan-guest-row button')].find((e)=>/Use recommendation/i.test(e.textContent||'')); if(b&&!b.disabled) b.click(); return true; })()`);
-await sleep(400);
-
-// Rapid double-advance: the wizard must not skip a step or create twice.
-for (let i = 0; i < 3; i++) {
-  await ev(`(() => { const b=document.querySelector('.new-plan-foot .primary'); if(b&&!b.disabled){ b.click(); b.click(); } return true; })()`);
-  await sleep(1000);
-}
+// Open client field so unicode client survives the brief.
+await ev(`(() => { const b=[...document.querySelectorAll('.new-plan-advanced-toggle')].find((e)=>/Add client/i.test(e.textContent||'')); if(b) b.click(); return true; })()`);
+await sleep(200);
+await setInput('#new-plan-show-client', 'Ünïcödé Röbotics <script>alert(1)</script>');
+// Create from attendance — one click, not a three-step advance.
+await ev(`(() => { const b=[...document.querySelectorAll('.new-plan-guest-row button')].find((e)=>/Create /i.test(e.textContent||'')); if(b&&!b.disabled){ b.click(); b.click(); } return true; })()`);
 const created = await waitFor(`!document.querySelector('.new-plan-sheet') && !!document.querySelector('canvas')`, 30000);
-record('intake:double-clicking through the wizard still creates one plan', created, await title());
+record('intake:double-clicking create still creates one plan', created, await title());
 await sleep(3500);
 record('intake:file written', fs.existsSync(SAVE_PATH), SAVE_PATH);
 

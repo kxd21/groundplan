@@ -112,26 +112,23 @@ if (!hasNew) {
 record('create:new-plan-sheet', hasNew);
 
 if (hasNew) {
-  // Venue / event / date are not in this dialog. They are show identity, and
-  // they live in Setup > Show details, where section F now sets them. The
-  // dialog also lost its "Continue to room" step when it stopped being a
-  // wizard.
-  for (const [sel, val, label] of [
-    ['#new-plan-name', 'Card Party South Florida', 'create:name'],
-  ]) {
-    const focused = await ev(`!!document.querySelector(${JSON.stringify(sel)})`);
-    if (!focused) {
-      record(label, false, 'missing');
-      continue;
-    }
-    await setInput(sel, val);
-    record(label, true, val);
-  }
+  // Compact New Plan: Customize → exact size → empty room create.
+  await ev(`(() => { const b=[...document.querySelectorAll('button')].find((e)=>/Customize room/i.test(e.textContent||'')); if(b) b.click(); return true; })()`);
+  await sleep(400);
   await setInput('#new-plan-width', "245'");
   record('create:width', true, "245'");
   await setInput('#new-plan-depth', `130' 7"`);
   record('create:depth', true, `130' 7"`);
   await shot(path.join(AUDIT, 'ui-stress-02-new-plan.png'));
+  await click({ match: '/^Review plan$/i' }, 'create:Review plan');
+  await sleep(300);
+  if (await ev('!!document.querySelector("#new-plan-name")')) {
+    await setInput('#new-plan-name', 'Card Party South Florida');
+    record('create:name', true, 'Card Party South Florida');
+  } else {
+    record('create:name', false, 'missing');
+  }
+  await click({ match: '/^Empty room/i', root: '.new-plan-review' }, null);
   await click({ match: '/Create plan/i' }, 'create:Create plan');
 
   let opened = false;
