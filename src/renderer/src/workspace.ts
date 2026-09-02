@@ -14,10 +14,10 @@
  * on while Place is open" meant touching twelve call sites, and missing one is
  * invisible until a user finds it.
  *
- * Here the mode is a single value, overlays are a separate small set, and every
- * panel is DERIVED. There is one place that decides what closes what: the
- * compatibility table below. React state is a reducer over this, so the rules
- * are testable without rendering anything.
+ * Phase 1 keeps the compatibility `mode` for commands while moving visible
+ * surfaces into independent layers. The canvas is always present; a left
+ * browser/insert rail, the inspector, drawing tools, and room editing wrap it
+ * without replacing one another.
  */
 
 export type WorkspaceMode =
@@ -44,6 +44,8 @@ export type WorkspaceMode =
  * resize workspace is a mode because it takes the canvas over.
  */
 export type Overlay = 'wall-edit' | 'seating' | 'calculator';
+export type LeftPanel = 'none' | 'files' | 'assets';
+export type Interaction = 'idle' | 'insert' | 'drawing' | 'room-edit';
 
 export const OVERLAYS: readonly Overlay[] = ['wall-edit', 'seating', 'calculator'];
 
@@ -51,7 +53,13 @@ export const OVERLAYS: readonly Overlay[] = ['wall-edit', 'seating', 'calculator
 export type BrowseSource = 'recent' | 'collections' | 'folder';
 
 export interface WorkspaceState {
+  /** Compatibility projection for command/menu callers during migration. */
   mode: WorkspaceMode;
+  left: LeftPanel;
+  inspectorOpen: boolean;
+  setupOpen: boolean;
+  drawDockOpen: boolean;
+  interaction: Interaction;
   /**
    * Open overlays, oldest first. Order is not decoration: Escape closes the
    * most recently opened one, which is the only unwinding a user can predict.
@@ -59,22 +67,18 @@ export interface WorkspaceState {
   overlays: readonly Overlay[];
   browseSource: BrowseSource;
   roomFocus: 'walls' | 'room';
-  /**
-   * Where to land when the room workspace closes.
-   *
-   * This replaces a pair of functions that stashed `railOpen`/`inspectorOpen`
-   * into a ref on the way in and put them back on the way out — a hand-rolled
-   * undo for panel state that leaked whenever an exit path forgot to call it.
-   */
-  returnTo: WorkspaceMode;
 }
 
 export const INITIAL_WORKSPACE: WorkspaceState = {
-  mode: 'canvas',
+  mode: 'inspect',
+  left: 'none',
+  inspectorOpen: true,
+  setupOpen: false,
+  drawDockOpen: false,
+  interaction: 'idle',
   overlays: [],
   browseSource: 'recent',
   roomFocus: 'room',
-  returnTo: 'canvas',
 };
 
 /**
@@ -84,25 +88,14 @@ export const INITIAL_WORKSPACE: WorkspaceState = {
  * replaces roughly forty scattered `setSeatingOpen(false)` calls, and it is the
  * only place to look when asking "why did that close?".
  */
-const OVERLAY_MODES: Record<Overlay, readonly WorkspaceMode[]> = {
-  // Wall edit deliberately survives Place and Inspect: nudging a wall while the
-  // inventory rail is open is the common case, not an exotic one.
-  'wall-edit': ['browse', 'place', 'inspect', 'canvas'],
-  // Seating is a focused task. It does not belong over the setup dialog or the
-  // drawing shelf, both of which own the same screen space.
-  seating: ['place', 'inspect', 'canvas'],
-  // The calculator is a read-only scratchpad, so it can sit over anything that
-  // still shows the plan.
-  calculator: ['browse', 'place', 'inspect', 'draw', 'canvas'],
-};
-
-export function overlayAllowedIn(overlay: Overlay, mode: WorkspaceMode): boolean {
-  return OVERLAY_MODES[overlay].includes(mode);
+export function overlayAllowedIn(_overlay: Overlay, _mode: WorkspaceMode): boolean {
+  return true;
 }
 
 export type WorkspaceAction =
   | { type: 'enter'; mode: WorkspaceMode }
   | { type: 'toggle-mode'; mode: WorkspaceMode }
+  | { type: 'focus-plan' }
   | { type: 'open-overlay'; overlay: Overlay }
   | { type: 'close-overlay'; overlay: Overlay }
   | { type: 'toggle-overlay'; overlay: Overlay }
@@ -111,23 +104,35 @@ export type WorkspaceAction =
   | { type: 'escape' }
   | { type: 'reset' };
 
-/** Drops overlays the target mode will not host. */
-function keepOverlays(overlays: readonly Overlay[], mode: WorkspaceMode): readonly Overlay[] {
-  const kept = overlays.filter((overlay) => overlayAllowedIn(overlay, mode));
-  return kept.length === overlays.length ? overlays : kept;
-}
-
 function enter(state: WorkspaceState, mode: WorkspaceMode): WorkspaceState {
-  if (mode === state.mode) return state;
-  return {
-    ...state,
-    mode,
-    overlays: keepOverlays(state.overlays, mode),
-    // Only remember a return target on the way INTO the exclusive workspace,
-    // and never remember the workspace itself, or closing it would reopen it.
-    returnTo: mode === 'room-layout' && state.mode !== 'room-layout' ? state.mode : state.returnTo,
-    roomFocus: mode === 'room-layout' ? 'room' : state.roomFocus,
-  };
+  switch (mode) {
+    case 'browse':
+      return { ...state, mode, left: 'files', setupOpen: false };
+    case 'place':
+      return { ...state, mode, left: 'assets', setupOpen: false, interaction: 'insert' };
+    case 'inspect':
+      return {
+        ...state,
+        mode,
+        inspectorOpen: true,
+        setupOpen: false,
+        interaction: state.interaction === 'room-edit' ? 'idle' : state.interaction,
+      };
+    case 'setup':
+      return { ...state, mode, setupOpen: true, drawDockOpen: false };
+    case 'draw':
+      return { ...state, mode, drawDockOpen: true, setupOpen: false, interaction: 'drawing' };
+    case 'room-layout':
+      return { ...state, mode, interaction: 'room-edit', setupOpen: false, roomFocus: 'room' };
+    case 'canvas':
+      return {
+        ...state,
+        mode,
+        setupOpen: false,
+        drawDockOpen: false,
+        interaction: state.interaction === 'room-edit' ? 'idle' : state.interaction,
+      };
+  }
 }
 
 export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction): WorkspaceState {
@@ -136,17 +141,57 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
       return enter(state, action.mode);
 
     case 'toggle-mode':
-      // Pressing the mode you are already in returns to the bare canvas, which
-      // is what every toolbar toggle in the app already implies.
-      return enter(state, state.mode === action.mode ? 'canvas' : action.mode);
+      switch (action.mode) {
+        case 'browse':
+          return { ...state, mode: 'browse', left: state.left === 'files' ? 'none' : 'files', setupOpen: false };
+        case 'place':
+          return {
+            ...state,
+            mode: 'place',
+            left: state.left === 'assets' ? 'none' : 'assets',
+            setupOpen: false,
+            interaction: state.left === 'assets' ? 'idle' : 'insert',
+          };
+        case 'inspect':
+          if (state.setupOpen || state.interaction === 'room-edit') return enter(state, 'inspect');
+          return { ...state, mode: 'inspect', inspectorOpen: !state.inspectorOpen };
+        case 'setup':
+          return { ...state, mode: 'setup', setupOpen: !state.setupOpen, drawDockOpen: false };
+        case 'draw':
+          return {
+            ...state,
+            mode: 'draw',
+            drawDockOpen: !state.drawDockOpen,
+            setupOpen: false,
+            interaction: state.drawDockOpen ? 'idle' : 'drawing',
+          };
+        case 'room-layout':
+          return {
+            ...state,
+            mode: 'room-layout',
+            interaction: state.interaction === 'room-edit' ? 'idle' : 'room-edit',
+            setupOpen: false,
+            roomFocus: 'room',
+          };
+        case 'canvas':
+          return workspaceReducer(state, { type: 'focus-plan' });
+      }
+
+    case 'focus-plan':
+      return {
+        ...state,
+        mode: 'canvas',
+        left: 'none',
+        inspectorOpen: false,
+        setupOpen: false,
+        drawDockOpen: false,
+        interaction: 'idle',
+        overlays: [],
+      };
 
     case 'open-overlay': {
       if (state.overlays.includes(action.overlay)) return state;
-      // An overlay that does not fit the current mode takes the workspace back
-      // to the canvas rather than opening invisibly behind a dialog.
-      const mode = overlayAllowedIn(action.overlay, state.mode) ? state.mode : 'canvas';
-      const base = enter(state, mode);
-      return { ...base, overlays: [...base.overlays, action.overlay] };
+      return { ...state, overlays: [...state.overlays, action.overlay] };
     }
 
     case 'close-overlay': {
@@ -167,15 +212,20 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
       return { ...state, roomFocus: action.focus };
 
     case 'escape': {
-      // One ordered unwinding, so Escape is predictable from anywhere:
-      // newest overlay, then the exclusive workspace, then the mode itself.
+      // Inspector is persistent. Focus Plan, not Escape, hides it.
       if (state.overlays.length) {
         return { ...state, overlays: state.overlays.slice(0, -1) };
       }
-      if (state.mode === 'room-layout') {
-        return { ...state, mode: state.returnTo, returnTo: 'canvas' };
+      if (state.setupOpen) return { ...state, setupOpen: false, mode: 'inspect' };
+      if (state.drawDockOpen) {
+        return { ...state, drawDockOpen: false, interaction: 'idle', mode: 'inspect' };
       }
-      if (state.mode !== 'canvas') return { ...state, mode: 'canvas' };
+      if (state.interaction === 'room-edit') {
+        return { ...state, interaction: 'idle', mode: state.left === 'assets' ? 'place' : 'inspect' };
+      }
+      if (state.left !== 'none') {
+        return { ...state, left: 'none', interaction: 'idle', mode: state.inspectorOpen ? 'inspect' : 'canvas' };
+      }
       return state;
     }
 
@@ -189,7 +239,13 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
 
 /** True when Escape would change the workspace, so callers know who owns the key. */
 export function escapeConsumed(state: WorkspaceState): boolean {
-  return state.overlays.length > 0 || state.mode !== 'canvas';
+  return (
+    state.overlays.length > 0 ||
+    state.setupOpen ||
+    state.drawDockOpen ||
+    state.interaction === 'room-edit' ||
+    state.left !== 'none'
+  );
 }
 
 export interface WorkspacePanels {
@@ -205,6 +261,8 @@ export interface WorkspacePanels {
   wallEditLive: boolean;
   /** The exclusive workspace is the only mode that hides the plan chrome. */
   fullCanvas: boolean;
+  inspectorVisible: boolean;
+  drawDockFloat: boolean;
 }
 
 /**
@@ -215,18 +273,28 @@ export interface WorkspacePanels {
  * that forgot about it, because no code path sets one.
  */
 export function panelsFor(state: WorkspaceState): WorkspacePanels {
-  const { mode, overlays } = state;
+  const { overlays } = state;
+  const refineRoomOpen = state.interaction === 'room-edit';
+  const createDialogOpen = state.setupOpen;
+  const inspectorVisible = state.inspectorOpen && !createDialogOpen && !refineRoomOpen;
   return {
-    railOpen: mode === 'browse' || mode === 'place',
-    railSource: mode === 'place' ? 'equipment' : state.browseSource,
-    inspectorOpen: mode === 'inspect',
-    toolDockOpen: mode === 'draw',
-    createDialogOpen: mode === 'setup',
-    refineRoomOpen: mode === 'room-layout',
+    railOpen: state.left !== 'none',
+    railSource: state.left === 'assets' ? 'equipment' : state.browseSource,
+    inspectorOpen: state.inspectorOpen,
+    inspectorVisible,
+    toolDockOpen: state.drawDockOpen,
+    createDialogOpen,
+    refineRoomOpen,
     seatingOpen: overlays.includes('seating'),
     calculatorOpen: overlays.includes('calculator'),
-    wallEditLive: mode === 'room-layout' || overlays.includes('wall-edit'),
-    fullCanvas: mode === 'canvas' && overlays.length === 0,
+    wallEditLive: refineRoomOpen || overlays.includes('wall-edit'),
+    fullCanvas:
+      state.left === 'none' &&
+      !createDialogOpen &&
+      !state.drawDockOpen &&
+      !refineRoomOpen &&
+      overlays.length === 0,
+    drawDockFloat: state.drawDockOpen && (inspectorVisible || createDialogOpen || refineRoomOpen),
   };
 }
 
@@ -304,8 +372,7 @@ export function isContentLayer(layer: string): boolean {
  */
 export function landingModeFor(facts: LandingFacts): WorkspaceMode {
   if (!facts.hasRoom) return 'setup';
-  if (!facts.hasContent) return 'place';
-  return 'canvas';
+  return 'inspect';
 }
 
 export interface LandingRequest {

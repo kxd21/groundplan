@@ -573,12 +573,14 @@ export function App() {
   const {
     railOpen,
     inspectorOpen,
+    inspectorVisible,
     toolDockOpen,
     createDialogOpen,
     refineRoomOpen,
     seatingOpen,
     calculatorOpen,
     wallEditLive,
+    drawDockFloat,
   } = panels;
   const planRailSource = panels.railSource as PlanRailSource;
   const roomWorkspaceFocus = workspace.roomFocus;
@@ -1082,7 +1084,7 @@ export function App() {
     // exclusive room workspace is excluded for the same kind of reason: it is a
     // task you finish, not a place you sit.
     if (!doc?.path) return;
-    if (workspace.mode === 'browse' || workspace.mode === 'room-layout') return;
+    if (workspace.left === 'files' || workspace.interaction === 'room-edit') return;
     modeByPlan.current.set(doc.path, workspace.mode);
   }, [doc?.path, workspace.mode]);
 
@@ -1708,16 +1710,17 @@ export function App() {
     }, duration);
   }, []);
 
-  /** Exclusive shell modes: Browse | Place | Inspect | Setup | Draw */
+  /** Compatibility commands now address independent surfaces around the canvas. */
   const setShellMode = useCallback(
     (mode: ShellMode | 'none') => {
       if (view !== 'plan' || !doc) return;
       setCreateMenuOpen(false);
-      // One dispatch. Five branches each setting six booleans by hand is how a
-      // panel got left behind; the reducer decides what closes and what stays.
-      const next = mode === 'none' ? 'canvas' : (mode as WorkspaceMode);
-      dispatchWorkspace({ type: 'enter', mode: next });
-      if (next === 'setup') {
+      if (mode === 'none') {
+        dispatchWorkspace({ type: 'focus-plan' });
+        return;
+      }
+      dispatchWorkspace({ type: 'enter', mode });
+      if (mode === 'setup') {
         void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
         void api.listBankPresets().then(setBankPresets).catch(() => undefined);
       }
@@ -1725,12 +1728,17 @@ export function App() {
     [view, doc],
   );
 
-  // The mode is stored, not inferred. `deriveShellMode` used to reconstruct it
-  // from five booleans that `setShellMode` had just written, so the same fact
-  // lived in two places and could disagree.
-  const shellMode: ShellMode | 'none' = workspace.mode === 'canvas' || workspace.mode === 'room-layout'
-    ? 'none'
-    : workspace.mode;
+  const shellMode: ShellMode | 'none' = workspace.setupOpen
+    ? 'setup'
+    : workspace.left === 'assets'
+      ? 'place'
+      : workspace.left === 'files'
+        ? 'browse'
+        : workspace.drawDockOpen && !workspace.inspectorOpen
+          ? 'draw'
+          : workspace.inspectorOpen
+            ? 'inspect'
+            : 'none';
 
   const openCreateDialog = useCallback(() => {
     setWallPickIndex(null);
@@ -3565,6 +3573,7 @@ export function App() {
     // whatever was being typed into it.
     if (openPropertiesOnSelect && opensProperties(selectedIds.length, tool)) {
       setInspectorTab('properties');
+      dispatchWorkspace({ type: 'enter', mode: 'inspect' });
     }
   }, [openPropertiesOnSelect, selectedIds, tool]);
 
@@ -3847,7 +3856,7 @@ export function App() {
           if (workspace.overlays.includes('wall-edit') && workspace.overlays.length === 1) {
             setWallPickIndex(null);
           }
-          if (workspace.mode === 'room-layout') setWallPickIndex(null);
+          if (workspace.interaction === 'room-edit') setWallPickIndex(null);
           dispatchWorkspace({ type: 'escape' });
           return;
         }
@@ -4877,19 +4886,12 @@ export function App() {
   const welcomeMode = view === 'plan' && !doc;
 
   /**
-   * The Plan workspace's single dock.
-   *
-   * Only Plan collapses to one column. Gear and Inventory are real
-   * master-detail screens — a list on the left, the selected record on the
-   * right — and folding those into one panel would cost the relationship the
-   * layout is there to show.
-   *
-   * `dockOpen` is deliberately an OR over the four panel booleans rather than
-   * a fifth piece of state: they are already derived from one mode, so any
-   * separate flag could only ever disagree with them.
+   * The tool rail, canvas, and contextual inspector stay mounted together.
+   * Files/Assets occupy an independent left dock instead of replacing the
+   * inspector. Setup and room-edit still borrow the right slot until Phase 2.
    */
-  const planDock = view === 'plan' && !welcomeMode && !refineRoomOpen;
-  const dockOpen = planDock && (railOpen || inspectorOpen || createDialogOpen || toolDockOpen);
+  const planDock = view === 'plan' && !welcomeMode;
+  const rightDockOpen = planDock && (inspectorVisible || createDialogOpen || refineRoomOpen);
   /**
    * Whether the contextual second row has anything to say.
    *
@@ -5548,11 +5550,23 @@ export function App() {
             if (change.appearance) setAppearance(change.appearance);
             if (change.density) setDensity(change.density);
             if (change.showTooltips != null) setShowTooltips(change.showTooltips);
-            // Settings toggles a panel by asking for its mode, so a preference
-            // cannot put the workspace into a shape the mode strip can't reach.
-            if (change.railOpen != null) enterMode(change.railOpen ? 'place' : 'canvas');
-            if (change.inspectorOpen != null) enterMode(change.inspectorOpen ? 'inspect' : 'canvas');
-            if (change.toolDockOpen != null) enterMode(change.toolDockOpen ? 'draw' : 'canvas');
+            if (change.railOpen != null) {
+              if (change.railOpen) dispatchWorkspace({ type: 'enter', mode: 'place' });
+              else if (workspace.left !== 'none') {
+                dispatchWorkspace({
+                  type: 'toggle-mode',
+                  mode: workspace.left === 'files' ? 'browse' : 'place',
+                });
+              }
+            }
+            if (change.inspectorOpen != null) {
+              if (change.inspectorOpen) dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+              else if (workspace.inspectorOpen) dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' });
+            }
+            if (change.toolDockOpen != null) {
+              if (change.toolDockOpen) dispatchWorkspace({ type: 'enter', mode: 'draw' });
+              else if (workspace.drawDockOpen) dispatchWorkspace({ type: 'toggle-mode', mode: 'draw' });
+            }
             if (change.toolDockCompact != null) setToolDockCompact(change.toolDockCompact);
             if (change.toolDockSide) setToolDockSide(change.toolDockSide);
           }}
@@ -6641,15 +6655,15 @@ export function App() {
 
       <div
         className={`body${
-          railOpen && !welcomeMode && !refineRoomOpen ? '' : ' is-rail-hidden'
+          railOpen && !welcomeMode ? '' : ' is-rail-hidden'
         }${
-          inspectorOpen && !welcomeMode && !refineRoomOpen && !createDialogOpen ? '' : ' is-inspector-hidden'
+          inspectorVisible && !welcomeMode ? '' : ' is-inspector-hidden'
         }${createDialogOpen && doc && !welcomeMode ? ' is-create-open' : ''}${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}${
           refineRoomOpen ? ' is-refine-open' : ''
-        }${planDock ? ' is-plan-dock' : ''}${planDock && !dockOpen ? ' is-dock-closed' : ''}`}
+        }${planDock ? ' is-plan-dock' : ''}${planDock && railOpen ? ' is-left-open' : ''}${planDock && !rightDockOpen ? ' is-dock-closed' : ''}`}
         style={planDock ? ({ '--dock-w': `${Math.round(dockWidth)}px` } as CSSProperties) : undefined}
       >
-        {planDock && dockOpen && (
+        {planDock && rightDockOpen && (
           <button
             ref={dockResizeRef}
             type="button"
@@ -6678,24 +6692,28 @@ export function App() {
                 id: 'files',
                 label: 'Files',
                 icon: <IconFolder size={17} />,
-                active: workspace.mode === 'browse',
-                onClick: () => runCommand(workspace.mode === 'browse' ? 'mode.none' : 'mode.browse'),
+                active: workspace.left === 'files',
+                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'browse' }),
               },
               {
                 id: 'assets',
                 label: 'Assets',
                 icon: <IconPlus size={17} />,
-                active: workspace.mode === 'place',
+                active: workspace.left === 'assets',
                 disabled: !doc.editable,
-                onClick: () => runCommand(workspace.mode === 'place' ? 'mode.none' : 'mode.place'),
+                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'place' }),
               },
               {
                 id: 'room-workspace',
                 label: 'Room',
                 icon: <IconRoomOutline size={17} />,
-                active: workspace.mode === 'room-layout' || wallsEditArmed,
+                active: workspace.interaction === 'room-edit' || wallsEditArmed,
                 disabled: !doc.editable,
                 onClick: () => {
+                  if (workspace.interaction === 'room-edit') {
+                    dispatchWorkspace({ type: 'toggle-mode', mode: 'room-layout' });
+                    return;
+                  }
                   if (doc.hasRoom) openRoomEditWorkspace('room');
                   else {
                     enterMode('canvas');
@@ -6726,19 +6744,19 @@ export function App() {
                 id: 'layouts',
                 label: 'Show Setup',
                 icon: <IconGrid size={17} />,
-                active: workspace.mode === 'setup',
+                active: workspace.setupOpen,
                 // Reachable without a room: the brief is what you write BEFORE
                 // there is anything to draw, and gating it behind a room is
                 // what made the headcount a throwaway value in New Plan.
                 disabled: false,
-                onClick: () => runCommand(workspace.mode === 'setup' ? 'mode.none' : 'mode.setup'),
+                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' }),
               },
               {
                 id: 'properties',
                 label: 'Properties',
                 icon: <IconSidebarRight size={17} />,
-                active: workspace.mode === 'inspect',
-                onClick: () => runCommand(workspace.mode === 'inspect' ? 'mode.none' : 'mode.inspect'),
+                active: inspectorVisible,
+                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' }),
               },
               {
                 id: 'calculator',
@@ -6867,16 +6885,21 @@ export function App() {
             ]}
           />
         )}
-        <aside className="rail" aria-hidden={!railOpen || refineRoomOpen}>
+        <aside className="rail" aria-hidden={!railOpen}>
           {planDock && (
             <DockTitlebar
-              title={workspace.mode === 'place' ? 'Assets' : 'Files'}
+              title={workspace.left === 'assets' ? 'Assets' : 'Files'}
               sub={
-                workspace.mode === 'place'
+                workspace.left === 'assets'
                   ? 'Stamp inventory and gear onto the plan'
                   : 'Recent plans, collections, and folders'
               }
-              onClose={() => enterMode('canvas')}
+              onClose={() =>
+                dispatchWorkspace({
+                  type: 'toggle-mode',
+                  mode: workspace.left === 'assets' ? 'place' : 'browse',
+                })
+              }
             />
           )}
           <div className="dock-body">
@@ -8516,7 +8539,7 @@ export function App() {
           seatingArmed={
             tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
           }
-          onClose={() => enterMode('canvas')}
+          onClose={() => dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' })}
           onOpenRoom={openRoomPanel}
           onDrawRoomOutline={() => {
             setAwaitingRoomOutline(true);
@@ -8859,7 +8882,7 @@ export function App() {
 
         {toolDockOpen && doc && (
               <PlanToolDock
-                docked
+                docked={!drawDockFloat}
                 compact={toolDockCompact}
                 groupLabels={['Navigate', 'Build the show', 'Draw', 'Systems', 'Room', 'Measure & annotate']}
                 foreground={colorDraft}
@@ -8873,7 +8896,7 @@ export function App() {
                 onOrder={setToolDockOrder}
                 onHidden={setToolDockHidden}
                 onToggleCompact={() => setToolDockCompact((compact) => !compact)}
-                onClose={() => enterMode('canvas')}
+                onClose={() => dispatchWorkspace({ type: 'toggle-mode', mode: 'draw' })}
                 onForeground={() => {
                   enterMode('inspect');
                   setInspectorTab('properties');
@@ -9096,9 +9119,9 @@ export function App() {
         <aside
           ref={inspectorRef}
           className="inspector"
-          aria-hidden={!(inspectorOpen && !welcomeMode)}
+          aria-hidden={!inspectorVisible || welcomeMode}
           aria-label="Properties and layers inspector"
-          tabIndex={inspectorOpen && !welcomeMode ? 0 : -1}
+          tabIndex={inspectorVisible && !welcomeMode ? 0 : -1}
         >
           {planDock && (
             <DockTitlebar
@@ -9111,7 +9134,7 @@ export function App() {
                   </span>
                 ) : null
               }
-              onClose={() => enterMode('canvas')}
+              onClose={() => dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' })}
             />
           )}
           <div className="dock-body">

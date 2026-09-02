@@ -17251,6 +17251,7 @@ a,
 
 .body.is-plan-dock {
   --dock-w: 340px;
+  --left-dock-w: 280px;
   grid-template-columns: 72px minmax(0, 1fr) var(--dock-w);
 }
 
@@ -17258,31 +17259,62 @@ a,
   grid-template-columns: 72px minmax(0, 1fr);
 }
 
+.body.is-plan-dock.is-left-open {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) var(--dock-w);
+}
+
+.body.is-plan-dock.is-left-open.is-dock-closed {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr);
+}
+
 .body.is-plan-dock > .editor-tool-rail {
   grid-column: 1;
   grid-row: 1;
 }
 
-/* Explicit placement, because the rail is the first DOM child and the
-   inspector the last: without this they would claim columns in source order
-   and the canvas would sit between them again. */
 .body.is-plan-dock > .stage {
   grid-column: 2;
   grid-row: 1;
 }
 
-.body.is-plan-dock > .rail,
+.body.is-plan-dock.is-left-open > .stage {
+  grid-column: 3;
+}
+
+.body.is-plan-dock > .rail {
+  grid-column: 2;
+  grid-row: 1;
+  border-right: 0;
+  border-left: 1px solid var(--line);
+}
+
 .body.is-plan-dock > .inspector,
 .body.is-plan-dock > .create-setup-pane,
-.body.is-plan-dock > .plan-tool-dock {
+.body.is-plan-dock > .room-refine-workspace,
+.body.is-plan-dock > .plan-tool-dock.is-docked {
   grid-column: 3;
   grid-row: 1;
 }
 
-/* The rail's divider belongs on the side it is actually docked to. */
-.body.is-plan-dock > .rail {
-  border-right: 0;
-  border-left: 1px solid var(--line);
+.body.is-plan-dock.is-left-open > .inspector,
+.body.is-plan-dock.is-left-open > .create-setup-pane,
+.body.is-plan-dock.is-left-open > .room-refine-workspace,
+.body.is-plan-dock.is-left-open > .plan-tool-dock.is-docked {
+  grid-column: 4;
+}
+
+/* Room editing remains a contextual right surface; the canvas and tool rail
+   stay in their normal columns. These selectors beat the older refine grids. */
+.body.is-plan-dock.is-refine-open,
+.body.is-plan-dock.is-refine-open.is-rail-hidden,
+.body.is-plan-dock.is-refine-open.is-inspector-hidden,
+.body.is-plan-dock.is-refine-open.is-rail-hidden.is-inspector-hidden {
+  grid-template-columns: 72px minmax(0, 1fr) var(--dock-w);
+}
+
+.body.is-plan-dock.is-refine-open.is-left-open,
+.body.is-plan-dock.is-refine-open.is-left-open.is-inspector-hidden {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) var(--dock-w);
 }
 
 /* Permanent editor activity rail. Domain surfaces are labelled; direct
@@ -17968,13 +18000,29 @@ a,
   grid-template-columns: 72px minmax(0, 1fr) minmax(350px, 390px);
 }
 
+.body.is-plan-dock.is-calculator-open.is-left-open {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) var(--dock-w) minmax(350px, 390px);
+}
+
+.body.is-plan-dock.is-calculator-open.is-left-open.is-dock-closed {
+  grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) minmax(350px, 390px);
+}
+
 .body.is-plan-dock.is-calculator-open > .space-calculator {
   grid-column: 4;
   grid-row: 1;
 }
 
+.body.is-plan-dock.is-calculator-open.is-left-open > .space-calculator {
+  grid-column: 5;
+}
+
 .body.is-plan-dock.is-calculator-open.is-dock-closed > .space-calculator {
   grid-column: 3;
+}
+
+.body.is-plan-dock.is-calculator-open.is-left-open.is-dock-closed > .space-calculator {
+  grid-column: 4;
 }
 
 /* ── Dock panels must survive the dock's width ──────────────────────────────
