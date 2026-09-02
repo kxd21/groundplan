@@ -3606,7 +3606,8 @@ app.whenReady().then(async () => {
     if (!s) return [] as number[];
     const requested = (Array.isArray(ids) ? ids : []).filter((id) => Number.isFinite(id) && s.index.byId.has(id));
     if (!requested.length) return [] as number[];
-    return expandGroupIds(requested).filter((id) => s.index.byId.has(id));
+    // Roots only — older sidecars may still link clone-subtree children.
+    return rootIdsAmong(expandGroupIds(requested));
   });
 
   /** All furniture `group` banks — for semantic-zoom block footprints. */

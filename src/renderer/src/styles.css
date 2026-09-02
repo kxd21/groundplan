@@ -10083,6 +10083,9 @@ a,
 .toolbar.is-plan-toolbar .ribbon-panel {
   height: 76px;
   padding-bottom: 38px;
+  /* Secondary strip: quieter than the titlebar so brand/modes stay primary. */
+  background: #f3f5f7;
+  border-top: 1px solid rgba(28, 42, 58, 0.06);
 }
 
 .toolbar.is-plan-toolbar .ribbon-panel > .seg {
@@ -10168,8 +10171,11 @@ a,
 }
 
 .toolbar.is-plan-toolbar .ribbon-quickbar {
+  /* Contextual strip — reads as “about the selection,” not peer chrome. */
   height: 38px;
   padding-inline: 6px;
+  background: #eef3f8;
+  border-top: 1px solid rgba(28, 42, 58, 0.08);
 }
 
 .toolbar.is-plan-toolbar .ribbon-quickbar .icon-btn {
@@ -17321,8 +17327,8 @@ a,
   grid-template-columns: 72px var(--left-dock-w) minmax(0, 1fr) var(--dock-w);
 }
 
-/* Permanent editor activity rail. Domain surfaces are labelled; direct
-   pointer tools stay compact, with native tooltips and shortcuts. */
+/* Permanent editor activity rail — domain surfaces only. Drawing tools open
+   from the Draw workspace into PlanToolDock so nav and tools do not compete. */
 .editor-tool-rail {
   position: relative;
   z-index: 4;

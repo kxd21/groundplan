@@ -12,17 +12,21 @@ export interface EditorRailAction {
 
 interface Props {
   workspaces: EditorRailAction[];
-  tools: EditorRailAction[];
+  /**
+   * Optional compact draw tools. Prefer the PlanToolDock (Draw workspace)
+   * instead of inlining them here — the rail is for domain surfaces.
+   */
+  tools?: EditorRailAction[];
 }
 
 /**
- * The plan editor's permanent activity + tool rail.
+ * The plan editor's permanent activity rail.
  *
- * Workspace buttons open real domain surfaces (assets, room, stage, seating,
- * layouts, properties). The compact grid below maps one-for-one to the pointer
- * state machine: picking a button changes what the next canvas gesture does.
+ * Workspace buttons open real domain surfaces (files, assets, room, stage,
+ * seating, setup, properties, draw dock). Drawing tools live in PlanToolDock
+ * so nav and pointer tools are not fighting for the same column.
  */
-export default function EditorToolRail({ workspaces, tools }: Props) {
+export default function EditorToolRail({ workspaces, tools = [] }: Props) {
   const action = (item: EditorRailAction, compact = false) => {
     const tip = `${item.label}${item.shortcut ? ` (${item.shortcut})` : ''}`;
     return (
@@ -38,7 +42,9 @@ export default function EditorToolRail({ workspaces, tools }: Props) {
         title={tip}
         data-tooltip={tip}
       >
-        <span className="editor-rail-icon" aria-hidden>{item.icon}</span>
+        <span className="editor-rail-icon" aria-hidden>
+          {item.icon}
+        </span>
         {!compact && <span className="editor-rail-label">{item.label}</span>}
       </button>
     );
@@ -49,11 +55,15 @@ export default function EditorToolRail({ workspaces, tools }: Props) {
       <nav className="editor-workspace-actions" aria-label="Plan workspaces">
         {workspaces.map((item) => action(item))}
       </nav>
-      <div className="editor-rail-divider" />
-      <span className="editor-tools-label">Tools</span>
-      <div className="editor-tool-actions" role="toolbar" aria-label="Canvas tools">
-        {tools.map((item) => action(item, true))}
-      </div>
+      {tools.length > 0 && (
+        <>
+          <div className="editor-rail-divider" />
+          <span className="editor-tools-label">Tools</span>
+          <div className="editor-tool-actions" role="toolbar" aria-label="Canvas tools">
+            {tools.map((item) => action(item, true))}
+          </div>
+        </>
+      )}
     </aside>
   );
 }

@@ -6862,128 +6862,19 @@ export function App() {
                 },
               },
               {
+                id: 'draw',
+                label: 'Draw',
+                icon: <IconEdit size={17} />,
+                active: toolDockOpen,
+                disabled: !doc,
+                onClick: () => runCommand('mode.draw'),
+              },
+              {
                 id: 'calculator',
                 label: 'Calculate',
                 icon: <IconCalculator size={17} />,
                 active: calculatorOpen,
                 onClick: () => calculatorOpen ? closeOverlay('calculator') : openOverlay('calculator'),
-              },
-            ]}
-            tools={[
-              {
-                id: 'select',
-                label: 'Select / move',
-                shortcut: 'Esc',
-                icon: <IconPointer size={16} />,
-                active: isPressed(tool, SELECT),
-                onClick: () => {
-                  enterMode('canvas');
-                  setLastCommandId('tool.select');
-                  dispatchTool({ type: 'pick', choice: SELECT });
-                },
-              },
-              {
-                id: 'direct-select',
-                label: 'Edit points',
-                shortcut: 'A',
-                icon: <IconDirectSelect size={16} />,
-                active: isPressed(tool, DIRECT_SELECT),
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'pick', choice: DIRECT_SELECT });
-                  if (refusal) notify(refusal);
-                },
-              },
-              {
-                id: 'hand',
-                label: 'Pan canvas',
-                shortcut: 'H',
-                icon: <IconHand size={16} />,
-                active: isPressed(tool, HAND),
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: HAND });
-                  if (refusal) notify(refusal);
-                },
-              },
-              ...(
-                [
-                  ['line', 'Line', IconDrawLine],
-                  ['rect', 'Rectangle', IconDrawRect],
-                  ['ellipse', 'Ellipse', IconDrawEllipse],
-                ] as const
-              ).map(([shape, label, Icon]) => ({
-                id: shape,
-                label,
-                icon: <Icon size={16} />,
-                active: isPressed(tool, drawChoice(shape)),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: drawChoice(shape) });
-                  if (refusal) notify(refusal);
-                },
-              })),
-              {
-                id: 'add-text',
-                label: 'Text',
-                shortcut: 'T',
-                icon: <IconText size={16} />,
-                active: isPressed(tool, labelChoice(annotationDraft.trim() || 'Text')),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  activateTextTool();
-                },
-              },
-              {
-                id: 'power-cable',
-                label: 'Power run',
-                icon: <IconCablePower size={16} />,
-                active: isPressed(tool, powerCableChoice),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: powerCableChoice });
-                  if (refusal) notify(refusal);
-                  else showStatus('Click bends along the power run. Enter finishes', 4500);
-                },
-              },
-              {
-                id: 'signal-cable',
-                label: 'Signal run',
-                icon: <IconCableSignal size={16} />,
-                active: isPressed(tool, signalCableChoice),
-                disabled: !doc.editable,
-                onClick: () => {
-                  enterMode('canvas');
-                  const { refusal } = dispatchTool({ type: 'toggle', choice: signalCableChoice });
-                  if (refusal) notify(refusal);
-                  else showStatus('Click bends along the signal run. Enter finishes', 4500);
-                },
-              },
-              {
-                id: 'measure',
-                label: 'Measure',
-                shortcut: 'M',
-                icon: <IconRuler size={16} />,
-                active: isPressed(tool, MEASURE),
-                onClick: () => {
-                  enterMode('canvas');
-                  toggleMeasure();
-                },
-              },
-              {
-                id: 'dimension',
-                label: 'Dimension',
-                shortcut: 'D',
-                icon: <IconDimension size={16} />,
-                active: isPressed(tool, DIMENSION),
-                disabled: !canCreateDimension,
-                onClick: () => {
-                  enterMode('canvas');
-                  toggleDimension();
-                },
               },
             ]}
           />
@@ -9162,7 +9053,7 @@ export function App() {
                     {
                       id: 'power-cable',
                       label: 'Power run',
-                      icon: <IconDrawLine />,
+                      icon: <IconCablePower />,
                       active: isPressed(tool, powerCableChoice),
                       disabled: !doc.editable,
                       onClick: () => {
@@ -9174,7 +9065,7 @@ export function App() {
                     {
                       id: 'signal-cable',
                       label: 'Signal run',
-                      icon: <IconDrawPolygon />,
+                      icon: <IconCableSignal />,
                       active: isPressed(tool, signalCableChoice),
                       disabled: !doc.editable,
                       onClick: () => {
@@ -9245,7 +9136,7 @@ export function App() {
                       id: 'dimension',
                       label: 'Dimension',
                       shortcut: 'D',
-                      icon: <IconRuler />,
+                      icon: <IconDimension />,
                       active: isPressed(tool, DIMENSION),
                       disabled: !canCreateDimension,
                       onClick: () => {
