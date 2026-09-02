@@ -1018,8 +1018,6 @@ export function PlanCanvas({
 
     const lod: SemanticLod = semanticLodForScale(scale);
     const collapseBanks = lod === 'blocks' && bankMembers.size > 0;
-    const simplifiedFurniture = lod !== 'full';
-    const simplifiedDrawn = simplifiedFurniture ? new Set<number>() : null;
 
     for (const item of prepared) {
       const p = item.primitive;
@@ -1036,33 +1034,8 @@ export function PlanCanvas({
         continue;
       }
 
-      // Far out: bank members are represented by one block each — skip chairs.
+      // Far out only: bank members become one labelled footprint — skip chairs.
       if (collapseBanks && p.layer === 'furniture' && bankMembers.has(p.selectId)) {
-        continue;
-      }
-
-      // Mid/far: furniture as a single filled footprint per object (cheap).
-      if (
-        simplifiedFurniture &&
-        p.layer === 'furniture' &&
-        p.type !== 'text' &&
-        p.type !== 'dimension'
-      ) {
-        if (simplifiedDrawn!.has(p.selectId)) continue;
-        simplifiedDrawn!.add(p.selectId);
-        const b = objectBounds.get(p.selectId);
-        if (!b) continue;
-        const isHovered = !isSelected && hover != null && p.selectId === hover;
-        drawSimplifiedFootprint(
-          ctx,
-          b,
-          ox,
-          oy,
-          view,
-          isSelected ? '#4d94ff' : isHovered ? '#8bb9ff' : paper ? item.paperColor : item.darkColor,
-          item.style.fill && !isSelected && !isHovered ? item.style.fill : null,
-          paper,
-        );
         continue;
       }
 
@@ -2682,42 +2655,8 @@ function drawTransformFrame(
 
 /** An honest bounds highlight, for anything the transform frame does not cover. */
 /**
- * Mid/far zoom furniture: one axis-aligned footprint instead of full paths.
- * Cheap enough to keep hundreds of chairs readable as massing without path cost.
+ * Far zoom: one labelled block per seating/furniture bank.
  */
-function drawSimplifiedFootprint(
-  ctx: CanvasRenderingContext2D,
-  b: Bounds,
-  ox: number,
-  oy: number,
-  view: View,
-  stroke: string,
-  fill: string | null,
-  paper: boolean,
-): void {
-  const left = (b.minX + ox) * view.scale + view.offsetX;
-  const right = (b.maxX + ox) * view.scale + view.offsetX;
-  const top = screenY(view, b.maxY + oy);
-  const bottom = screenY(view, b.minY + oy);
-  const w = Math.max(1, right - left);
-  const h = Math.max(1, bottom - top);
-  ctx.save();
-  if (fill) {
-    ctx.fillStyle = fill;
-    ctx.globalAlpha = 0.55;
-    ctx.fillRect(left, top, w, h);
-    ctx.globalAlpha = 1;
-  } else {
-    ctx.fillStyle = paper ? 'rgba(60, 72, 88, 0.14)' : 'rgba(180, 200, 220, 0.18)';
-    ctx.fillRect(left, top, w, h);
-  }
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = Math.max(0.8, Math.min(1.4, view.scale * 40));
-  ctx.strokeRect(left + 0.5, top + 0.5, w - 1, h - 1);
-  ctx.restore();
-}
-
-/** Far zoom: one labelled block per seating/furniture bank. */
 function drawBankBlocks(
   ctx: CanvasRenderingContext2D,
   banks: BankOverlay[],

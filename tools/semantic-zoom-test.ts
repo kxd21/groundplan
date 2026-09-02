@@ -6,7 +6,6 @@
 
 import {
   SEMANTIC_BLOCKS_BELOW,
-  SEMANTIC_SIMPLIFIED_BELOW,
   bankMemberIdSet,
   bankOverlaysFromGroups,
   semanticLodForScale,
@@ -26,14 +25,9 @@ const check = (name: string, ok: boolean, detail?: unknown) => {
 
 check('far out is blocks', semanticLodForScale(0.05) === 'blocks');
 check('just below blocks threshold is blocks', semanticLodForScale(SEMANTIC_BLOCKS_BELOW - 1e-9) === 'blocks');
-check('at blocks threshold is simplified', semanticLodForScale(SEMANTIC_BLOCKS_BELOW) === 'simplified');
-check('typical ballroom fit is blocks', semanticLodForScale(0.14) === 'blocks');
-check('mid zoom is simplified', semanticLodForScale(0.2) === 'simplified');
-check(
-  'just below full threshold is simplified',
-  semanticLodForScale(SEMANTIC_SIMPLIFIED_BELOW - 1e-9) === 'simplified',
-);
-check('at full threshold is full', semanticLodForScale(SEMANTIC_SIMPLIFIED_BELOW) === 'full');
+check('at blocks threshold is full chairs', semanticLodForScale(SEMANTIC_BLOCKS_BELOW) === 'full');
+check('typical ballroom fit is full chairs', semanticLodForScale(0.14) === 'full');
+check('mid zoom is full chairs', semanticLodForScale(0.2) === 'full');
 check('close in is full', semanticLodForScale(0.4) === 'full');
 check('non-finite scale falls back to blocks', semanticLodForScale(Number.NaN) === 'blocks');
 check('zero scale falls back to blocks', semanticLodForScale(0) === 'blocks');

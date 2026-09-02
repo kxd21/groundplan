@@ -1,26 +1,22 @@
 /**
  * Semantic zoom — how much plan geometry to draw at a given scale.
  *
- * At far-out zooms a ballroom of chairs is noise; banks read as blocks with a
- * seat count. Mid zoom keeps furniture as simple footprints. Close-in keeps
- * the full path detail the file stores.
+ * Far out, grouped seating collapses to labelled bank footprints so a
+ * ballroom is readable. Everywhere else, furniture keeps the path detail
+ * stored in the file — chairs must still look like chairs.
  *
  * Scale is the PlanCanvas view scale (UI % ≈ scale × 100). A typical 60′×40′
- * room fits around 12–15%, so the bands sit above that fit zoom — overview
- * collapses to banks, inspecting a corner reveals chairs.
+ * room fits around 12–15%.
  */
 
-export type SemanticLod = 'blocks' | 'simplified' | 'full';
+export type SemanticLod = 'blocks' | 'full';
 
 /** Below this, grouped seating collapses to bank footprints. */
-export const SEMANTIC_BLOCKS_BELOW = 0.16;
-/** Below this (and at/above blocks), furniture draws as filled bounds. */
-export const SEMANTIC_SIMPLIFIED_BELOW = 0.28;
+export const SEMANTIC_BLOCKS_BELOW = 0.12;
 
 export function semanticLodForScale(scale: number): SemanticLod {
   if (!(scale > 0) || !Number.isFinite(scale)) return 'blocks';
   if (scale < SEMANTIC_BLOCKS_BELOW) return 'blocks';
-  if (scale < SEMANTIC_SIMPLIFIED_BELOW) return 'simplified';
   return 'full';
 }
 
