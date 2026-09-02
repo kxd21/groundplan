@@ -27,8 +27,8 @@ const check = (name: string, ok: boolean, detail?: unknown) => {
 check('far out is blocks', semanticLodForScale(0.05) === 'blocks');
 check('just below blocks threshold is blocks', semanticLodForScale(SEMANTIC_BLOCKS_BELOW - 1e-9) === 'blocks');
 check('at blocks threshold is simplified', semanticLodForScale(SEMANTIC_BLOCKS_BELOW) === 'simplified');
-check('typical ballroom fit is simplified', semanticLodForScale(0.14) === 'simplified');
-check('mid zoom is simplified', semanticLodForScale(0.18) === 'simplified');
+check('typical ballroom fit is blocks', semanticLodForScale(0.14) === 'blocks');
+check('mid zoom is simplified', semanticLodForScale(0.2) === 'simplified');
 check(
   'just below full threshold is simplified',
   semanticLodForScale(SEMANTIC_SIMPLIFIED_BELOW - 1e-9) === 'simplified',

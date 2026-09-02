@@ -13,9 +13,9 @@
 export type SemanticLod = 'blocks' | 'simplified' | 'full';
 
 /** Below this, grouped seating collapses to bank footprints. */
-export const SEMANTIC_BLOCKS_BELOW = 0.12;
+export const SEMANTIC_BLOCKS_BELOW = 0.16;
 /** Below this (and at/above blocks), furniture draws as filled bounds. */
-export const SEMANTIC_SIMPLIFIED_BELOW = 0.25;
+export const SEMANTIC_SIMPLIFIED_BELOW = 0.28;
 
 export function semanticLodForScale(scale: number): SemanticLod {
   if (!(scale > 0) || !Number.isFinite(scale)) return 'blocks';
