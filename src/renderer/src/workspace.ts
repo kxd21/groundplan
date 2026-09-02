@@ -119,7 +119,8 @@ function enter(state: WorkspaceState, mode: WorkspaceMode): WorkspaceState {
         interaction: state.interaction === 'room-edit' ? 'idle' : state.interaction,
       };
     case 'setup':
-      return { ...state, mode, setupOpen: true, drawDockOpen: false };
+      // Setup is plan content inside the Inspector, not a second right dock.
+      return { ...state, mode, setupOpen: true, inspectorOpen: true, drawDockOpen: false };
     case 'draw':
       return { ...state, mode, drawDockOpen: true, setupOpen: false, interaction: 'drawing' };
     case 'room-layout':
@@ -156,7 +157,10 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
           if (state.setupOpen || state.interaction === 'room-edit') return enter(state, 'inspect');
           return { ...state, mode: 'inspect', inspectorOpen: !state.inspectorOpen };
         case 'setup':
-          return { ...state, mode: 'setup', setupOpen: !state.setupOpen, drawDockOpen: false };
+          if (state.setupOpen) {
+            return { ...state, setupOpen: false, mode: state.inspectorOpen ? 'inspect' : 'canvas' };
+          }
+          return { ...state, mode: 'setup', setupOpen: true, inspectorOpen: true, drawDockOpen: false };
         case 'draw':
           return {
             ...state,
@@ -275,8 +279,10 @@ export interface WorkspacePanels {
 export function panelsFor(state: WorkspaceState): WorkspacePanels {
   const { overlays } = state;
   const refineRoomOpen = state.interaction === 'room-edit';
+  // Setup content lives inside the Inspector (plan surface). The flag still
+  // means "Show Setup is the active plan focus" for commands and the rail.
   const createDialogOpen = state.setupOpen;
-  const inspectorVisible = state.inspectorOpen && !createDialogOpen && !refineRoomOpen;
+  const inspectorVisible = state.inspectorOpen && !refineRoomOpen;
   return {
     railOpen: state.left !== 'none',
     railSource: state.left === 'assets' ? 'equipment' : state.browseSource,
@@ -290,11 +296,11 @@ export function panelsFor(state: WorkspaceState): WorkspacePanels {
     wallEditLive: refineRoomOpen || overlays.includes('wall-edit'),
     fullCanvas:
       state.left === 'none' &&
-      !createDialogOpen &&
+      !state.inspectorOpen &&
       !state.drawDockOpen &&
       !refineRoomOpen &&
       overlays.length === 0,
-    drawDockFloat: state.drawDockOpen && (inspectorVisible || createDialogOpen || refineRoomOpen),
+    drawDockFloat: state.drawDockOpen && (inspectorVisible || refineRoomOpen),
   };
 }
 
@@ -309,7 +315,7 @@ export function workspaceStatus(state: WorkspaceState): string {
     case 'inspect':
       return wallEdit ? 'Properties · layers and properties · wall edit still on' : 'Properties · layers and properties';
     case 'setup':
-      return 'Layouts · room-fitted kits and output';
+      return 'Show Setup · brief, layout, and readiness in the Inspector';
     case 'draw':
       return 'All tools · drawing, annotation, and measurement';
     case 'room-layout':

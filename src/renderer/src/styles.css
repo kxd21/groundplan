@@ -19446,3 +19446,145 @@ a,
   font-size: 9.5px;
   line-height: 1.35;
 }
+
+/* ── Inspector plan / insert surfaces (Phase 2–3) ─────────────────────────
+ * Show Setup and Insert live inside the Inspector. They must not look like a
+ * second dock or a modal sheet floating over the plan. */
+
+.inspector-setup-host {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.inspector-setup-host > .create-dialog-sheet.is-embedded {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.inspector-setup-host .create-dialog-guidance {
+  display: grid;
+  gap: 4px;
+  margin: 0 10px 10px;
+  padding: 10px 11px;
+  background: var(--surface-2, #f4f7fa);
+  border: 1px solid var(--line, #e0e6ec);
+  border-radius: var(--radius);
+}
+
+.inspector-setup-host .create-dialog-guidance strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.inspector-setup-host .create-dialog-guidance span {
+  color: var(--ink-2, #526174);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.inspector-setup-host .create-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 10px 16px;
+}
+
+.insert-tray {
+  margin: 0 10px 12px;
+}
+
+.insert-tray-armed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 11px;
+  background: color-mix(in srgb, var(--accent, #0b6ecb) 8%, #fff);
+  border: 1px solid color-mix(in srgb, var(--accent, #0b6ecb) 22%, #e0e6ec);
+  border-radius: var(--radius);
+}
+
+.insert-tray-armed > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.insert-tray-armed strong {
+  font-size: 12.5px;
+}
+
+.insert-tray-armed small {
+  color: var(--ink-2, #526174);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insert-tray-routes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 12px;
+}
+
+.insert-tray-routes > button {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-height: 52px;
+  padding: 8px 6px;
+  color: var(--ink-2, #526174);
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #e0e6ec);
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.insert-tray-routes > button.is-on {
+  color: var(--accent, #0b6ecb);
+  background: color-mix(in srgb, var(--accent, #0b6ecb) 8%, #fff);
+  border-color: color-mix(in srgb, var(--accent, #0b6ecb) 28%, #e0e6ec);
+}
+
+.insert-tray-routes > button:disabled {
+  opacity: 0.45;
+}
+
+.insert-tray-list {
+  max-height: min(420px, 48vh);
+  overflow: auto;
+}
+
+.insert-tray-action-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px 11px;
+  background: var(--surface-2, #f4f7fa);
+  border: 1px solid var(--line, #e0e6ec);
+  border-radius: var(--radius);
+}
+
+.insert-tray-action-card > p {
+  margin: 0;
+  color: var(--ink-2, #526174);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.body.is-plan-dock > .inspector .inspector-tabs {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}

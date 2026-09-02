@@ -111,6 +111,7 @@ import ObjectPalette from './ObjectPalette.js';
 import PlanToolDock, { type PlanToolDockSide } from './PlanToolDock.js';
 import EditorToolRail from './EditorToolRail.js';
 import InsertPicker from './InsertPicker.js';
+import InsertTray from './InsertTray.js';
 import ShapeEditorWizard from './ShapeEditorWizard.js';
 import BuildStageDialog from './BuildStageDialog.js';
 import PointEditor, { type EditablePointPath } from './PointEditor.js';
@@ -393,7 +394,7 @@ type PlanFolderState = Awaited<ReturnType<GroundplanApi['planFoldersList']>>;
 type Workspace = 'plan' | 'gear' | 'inventory';
 type PlanRailSource = 'recent' | 'collections' | 'folder' | 'equipment';
 type EquipmentSource = 'inventory' | 'gear' | 'plan';
-type InspectorTab = 'properties' | 'room' | 'layers';
+type InspectorTab = 'plan' | 'properties' | 'room' | 'layers';
 
 function placeMethodStatus(method?: string, name?: string): string {
   const item = name ? ` ${name}` : '';
@@ -847,6 +848,8 @@ export function App() {
     [showHoverTipFor, clearHoverTip],
   );
   const [insertOpen, setInsertOpen] = useState(false);
+  /** Inspector Insert tray without requiring a modal catalog sheet. */
+  const [insertTrayOpen, setInsertTrayOpen] = useState(false);
   const [insertGroup, setInsertGroup] = useState<InsertGroupId | null>(null);
   const [shapeWizardOpen, setShapeWizardOpen] = useState(false);
   const [buildStageOpen, setBuildStageOpen] = useState(false);
@@ -955,6 +958,7 @@ export function App() {
   const [view, setView] = useState<Workspace>('plan');
   const [equipmentSource, setEquipmentSource] = useState<EquipmentSource>('inventory');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('layers');
+  const [setupEmbedHost, setSetupEmbedHost] = useState<HTMLElement | null>(null);
   const [wallEdit, setWallEdit] = useState<import('./wall-edit.js').WallEditSession | null>(null);
   const [wallPickIndex, setWallPickIndex] = useState<number | null>(null);
   const [wallEditGesture, setWallEditGesture] = useState<'push' | 'curve' | 'length'>('push');
@@ -1740,9 +1744,30 @@ export function App() {
             ? 'inspect'
             : 'none';
 
+  const seatingArmed =
+    tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating';
+  const stampArmed = tool.tool.kind === 'stamp';
+  /** Contextual Inspector surface: insert / object / plan — canvas always stays. */
+  const inspectorSurface: 'insert' | 'object' | 'plan' =
+    stampArmed || insertTrayOpen
+      ? 'insert'
+      : selectedIds.length > 0
+        ? 'object'
+        : 'plan';
+
+  // Show Setup opens the Inspector on the plan surface; selection transforms it
+  // into the object editor without a second dock.
+  useEffect(() => {
+    if (workspace.setupOpen && inspectorSurface === 'plan') {
+      setInspectorTab('plan');
+    }
+  }, [workspace.setupOpen, inspectorSurface]);
+
   const openCreateDialog = useCallback(() => {
     setWallPickIndex(null);
     setCreateMenuOpen(false);
+    setSelectedIds([]);
+    setInspectorTab('plan');
     dispatchWorkspace({ type: 'enter', mode: 'setup' });
     void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
     void api.listBankPresets().then(setBankPresets).catch(() => undefined);
@@ -2344,6 +2369,7 @@ export function App() {
   const finishPlacement = useCallback(() => {
     const hadSelection = selectedIds.length > 0;
     setArmedInventoryId(null);
+    setInsertTrayOpen(false);
     dispatchTool({ type: 'pick', choice: SELECT });
     if (hadSelection) {
       enterMode('inspect');
@@ -3573,9 +3599,16 @@ export function App() {
     // whatever was being typed into it.
     if (openPropertiesOnSelect && opensProperties(selectedIds.length, tool)) {
       setInspectorTab('properties');
-      dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+      setInsertTrayOpen(false);
+      // Open the Inspector without a mode hop that replaces the sheet. Setup
+      // plan content yields to the object editor while the canvas stays put.
+      if (!workspace.inspectorOpen) {
+        dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+      } else if (workspace.setupOpen) {
+        dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+      }
     }
-  }, [openPropertiesOnSelect, selectedIds, tool]);
+  }, [openPropertiesOnSelect, selectedIds, tool, workspace.inspectorOpen, workspace.setupOpen]);
 
   useEffect(() => {
     if (
@@ -3834,6 +3867,11 @@ export function App() {
         if (insertOpen) {
           e.preventDefault();
           setInsertOpen(false);
+          return;
+        }
+        if (insertTrayOpen && tool.tool.kind !== 'stamp') {
+          e.preventDefault();
+          setInsertTrayOpen(false);
           return;
         }
         if (shapeWizardOpen) {
@@ -4128,6 +4166,7 @@ export function App() {
     settingsOpen,
     shortcutsOpen,
     insertOpen,
+    insertTrayOpen,
     shapeWizardOpen,
     buildStageOpen,
     seatingOpen,
@@ -4891,7 +4930,7 @@ export function App() {
    * inspector. Setup and room-edit still borrow the right slot until Phase 2.
    */
   const planDock = view === 'plan' && !welcomeMode;
-  const rightDockOpen = planDock && (inspectorVisible || createDialogOpen || refineRoomOpen);
+  const rightDockOpen = planDock && (inspectorVisible || refineRoomOpen);
   /**
    * Whether the contextual second row has anything to say.
    *
@@ -5008,6 +5047,8 @@ export function App() {
           dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' });
           return;
         case 'mode.setup':
+          setSelectedIds([]);
+          setInspectorTab('plan');
           dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' });
           if (!workspace.setupOpen) {
             void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
@@ -5069,9 +5110,14 @@ export function App() {
           setBuildStageOpen(true);
           return;
         case 'insert.open':
-          setShellMode('place');
+          dispatchWorkspace({ type: 'enter', mode: 'place' });
           setInsertGroup(null);
-          setInsertOpen(true);
+          setInsertOpen(false);
+          setInsertTrayOpen(true);
+          if (!workspace.inspectorOpen) {
+            dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+          }
+          showStatus('Insert · configure in the Inspector, then click the plan', 2800);
           return;
         case 'shape.wizard':
           setShapeWizardOpen(true);
@@ -6662,7 +6708,7 @@ export function App() {
           railOpen && !welcomeMode ? '' : ' is-rail-hidden'
         }${
           inspectorVisible && !welcomeMode ? '' : ' is-inspector-hidden'
-        }${createDialogOpen && doc && !welcomeMode ? ' is-create-open' : ''}${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}${
+        }${welcomeMode ? ' is-welcome' : ''}${calculatorOpen ? ' is-calculator-open' : ''}${
           refineRoomOpen ? ' is-refine-open' : ''
         }${planDock ? ' is-plan-dock' : ''}${planDock && railOpen ? ' is-left-open' : ''}${planDock && !rightDockOpen ? ' is-dock-closed' : ''}`}
         style={planDock ? ({ '--dock-w': `${Math.round(dockWidth)}px` } as CSSProperties) : undefined}
@@ -6748,7 +6794,7 @@ export function App() {
                 id: 'layouts',
                 label: 'Show Setup',
                 icon: <IconGrid size={17} />,
-                active: workspace.setupOpen,
+                active: workspace.setupOpen || (inspectorVisible && inspectorTab === 'plan' && inspectorSurface === 'plan'),
                 // Reachable without a room: the brief is what you write BEFORE
                 // there is anything to draw, and gating it behind a room is
                 // what made the headcount a throwaway value in New Plan.
@@ -6759,8 +6805,12 @@ export function App() {
                 id: 'properties',
                 label: 'Properties',
                 icon: <IconSidebarRight size={17} />,
-                active: inspectorVisible,
-                onClick: () => runCommand('mode.inspect'),
+                active: inspectorVisible && inspectorTab !== 'plan',
+                onClick: () => {
+                  if (inspectorSurface === 'object') setInspectorTab('properties');
+                  else if (inspectorTab === 'plan') setInspectorTab('layers');
+                  runCommand('mode.inspect');
+                },
               },
               {
                 id: 'calculator',
@@ -8512,8 +8562,15 @@ export function App() {
 
       {doc && (
         <CreateDialog
-          open={createDialogOpen}
-          docked
+          open={
+            inspectorVisible &&
+            !welcomeMode &&
+            inspectorSurface === 'plan' &&
+            (inspectorTab === 'plan' || workspace.setupOpen)
+          }
+          docked={false}
+          embedded
+          embedHost={setupEmbedHost}
           editable={!!doc.editable}
           hasRoom={Boolean(doc.hasRoom)}
           drawingRoomOutline={isPressed(tool, roomOutlineChoice)}
@@ -8540,9 +8597,7 @@ export function App() {
           seatSpacingFt={seatSpacingFt}
           seatRowSpacingFt={seatRowSpacingFt}
           seatRowLengths={seatRowLengths}
-          seatingArmed={
-            tool.tool.kind === 'stamp' && tool.tool.stamp.what === 'seating'
-          }
+          seatingArmed={seatingArmed}
           onClose={() => dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' })}
           onOpenRoom={openRoomPanel}
           onDrawRoomOutline={() => {
@@ -8571,8 +8626,10 @@ export function App() {
             setBuildStageOpen(true);
           }}
           onInsert={() => {
-            setShellMode('place');
-            showStatus('Place · stamp from inventory or gear', 2800);
+            setInsertTrayOpen(true);
+            setInspectorTab('properties');
+            dispatchWorkspace({ type: 'enter', mode: 'place' });
+            showStatus('Insert · configure in the Inspector, then click the plan', 2800);
           }}
           onRepeat={() => {
             if (selectedIds.length !== 1) {
@@ -9129,8 +9186,24 @@ export function App() {
         >
           {planDock && (
             <DockTitlebar
-              title="Inspect"
-              sub="Layers and properties"
+              title={
+                inspectorSurface === 'insert'
+                  ? 'Insert'
+                  : inspectorSurface === 'object'
+                    ? 'Inspect'
+                    : inspectorTab === 'plan' || workspace.setupOpen
+                      ? 'Show Setup'
+                      : 'Inspect'
+              }
+              sub={
+                inspectorSurface === 'insert'
+                  ? 'Configure, then place on the plan'
+                  : inspectorSurface === 'object'
+                    ? 'Selected object'
+                    : inspectorTab === 'plan' || workspace.setupOpen
+                      ? 'Brief, layout, and readiness'
+                      : 'Layers and properties'
+              }
               trailing={
                 doc ? (
                   <span className={`inspector-access${doc.editable ? '' : ' is-readonly'}`}>
@@ -9270,21 +9343,41 @@ export function App() {
                     carried moved to the titlebar's trailing slot. */}
                 <nav className="inspector-tabs" aria-label="Plan inspector">
                   {([
+                    { id: 'plan', label: 'Plan', icon: <IconGrid size={14} /> },
                     { id: 'layers', label: 'Layers', icon: <IconLayers size={14} /> },
                     { id: 'properties', label: 'Properties', icon: <IconEdit size={14} /> },
                     { id: 'room', label: 'Room', icon: <IconDrawRect size={14} /> },
                   ] as const).map(({ id, label, icon }) => (
                     <button
                       key={id}
-                      className={inspectorTab === id ? 'active' : ''}
+                      className={
+                        inspectorSurface === 'insert' && id === 'properties'
+                          ? 'active'
+                          : inspectorTab === id && inspectorSurface !== 'insert'
+                            ? 'active'
+                            : ''
+                      }
                       onClick={() => {
+                        if (id === 'plan') {
+                          setSelectedIds([]);
+                          setInspectorTab('plan');
+                          dispatchWorkspace({ type: 'enter', mode: 'setup' });
+                          return;
+                        }
                         if (id === 'room') {
                           setInspectorTab('room');
                           return;
                         }
                         setInspectorTab(id);
+                        if (workspace.setupOpen) {
+                          dispatchWorkspace({ type: 'enter', mode: 'inspect' });
+                        }
                       }}
-                      aria-current={inspectorTab === id ? 'page' : undefined}
+                      aria-current={
+                        (inspectorSurface === 'insert' ? id === 'properties' : inspectorTab === id)
+                          ? 'page'
+                          : undefined
+                      }
                     >
                       <span className="inspector-tab-icon" aria-hidden>
                         {icon}
@@ -9362,7 +9455,50 @@ export function App() {
                 </div>
               </div>
 
-              {inspectorTab === 'properties' && (
+              {inspectorSurface === 'insert' && (
+                <InsertTray
+                  items={inventoryRows}
+                  initialGroup={insertGroup}
+                  focus={seatingArmed ? 'seating' : 'catalog'}
+                  armedLabel={
+                    tool.tool.kind === 'stamp'
+                      ? tool.tool.stamp.what === 'inventory'
+                        ? tool.tool.stamp.name
+                        : tool.tool.stamp.what === 'seating' || tool.tool.stamp.what === 'gear'
+                          ? tool.tool.stamp.description
+                          : tool.tool.stamp.what === 'label'
+                            ? tool.tool.stamp.text
+                            : 'Ready to place'
+                      : null
+                  }
+                  editable={!!doc.editable}
+                  hasRoom={Boolean(doc.hasRoom)}
+                  onPick={(id, name) => armInventory(id, name)}
+                  onPickLeaf={(leafId) => armInsertLeaf(leafId)}
+                  onUnavailable={(label) => {
+                    notify(`“${label}” is not in inventory and has no stock size: add it under Inventory first`);
+                  }}
+                  onBuildStage={() => setBuildStageOpen(true)}
+                  onSeatingFill={() => openOverlay('seating')}
+                  onSeatingStamp={() => {
+                    setSelectedIds([]);
+                    setInspectorTab('plan');
+                    dispatchWorkspace({ type: 'enter', mode: 'setup' });
+                    showStatus('Configure the bank under Stamp a seating bank, then Place on the plan', 4200);
+                  }}
+                  onDonePlacing={finishPlacement}
+                />
+              )}
+
+              {inspectorSurface === 'plan' && (inspectorTab === 'plan' || workspace.setupOpen) && (
+                <div
+                  id="inspector-setup-host"
+                  className="inspector-setup-host"
+                  ref={setSetupEmbedHost}
+                />
+              )}
+
+              {inspectorSurface !== 'insert' && inspectorTab === 'properties' && (
                 <>
               <div
                 className={`section selected-item-section${selectedIds.length ? ' has-selection' : ''}`}
@@ -10944,6 +11080,19 @@ export function App() {
                     <dd className="num">{formatBytes(doc.byteLength)}</dd>
                   </div>
                 </dl>
+                <p className="hint">
+                  Show brief, kits, and readiness live on the Plan tab — the sheet stays on screen.
+                </p>
+                <button
+                  type="button"
+                  className="btn-outline show-setup-wide-action"
+                  onClick={() => {
+                    setInspectorTab('plan');
+                    dispatchWorkspace({ type: 'enter', mode: 'setup' });
+                  }}
+                >
+                  Open Plan / Show Setup
+                </button>
 
                 {(doc.repaired || doc.warnings > 0 || !doc.editable) && (
                   <div className="notice" style={{ marginTop: 12 }}>
@@ -10964,7 +11113,7 @@ export function App() {
                 </>
               )}
 
-              {inspectorTab === 'room' && (
+              {inspectorSurface !== 'insert' && inspectorTab === 'room' && (
                 <div className="section room-inspect-gate">
                   <div className="section-title">
                     <span>Room</span>
@@ -11012,7 +11161,7 @@ export function App() {
                 </div>
               )}
 
-              {inspectorTab === 'layers' && (
+              {inspectorSurface !== 'insert' && inspectorTab === 'layers' && (
                 <>
               <div className="section background-layer-section">
                 <BackgroundLayerPanel

@@ -134,7 +134,13 @@ check('wall edit survives the setup surface', (() => {
   const state = run(INITIAL_WORKSPACE,
     { type: 'open-overlay', overlay: 'wall-edit' },
     { type: 'enter', mode: 'setup' });
-  return panelsFor(state).wallEditLive && panelsFor(state).createDialogOpen;
+  const p = panelsFor(state);
+  return p.wallEditLive && p.createDialogOpen && p.inspectorVisible;
+})());
+
+check('setup keeps the inspector visible beside the canvas', (() => {
+  const p = panelsFor(enter('setup'));
+  return p.createDialogOpen && p.inspectorVisible && p.inspectorOpen;
 })());
 
 check('the room workspace lights the wall handles without the overlay', (() => {
@@ -267,8 +273,8 @@ for (let step = 0; step < 4000 && !violation; step++) {
   if (new Set(walk.overlays).size !== walk.overlays.length) violation = `duplicate overlay: ${JSON.stringify(walk)}`;
   else if (walk.overlays.some((o) => !overlayAllowedIn(o, walk.mode)))
     violation = `overlay survived an incompatible mode: ${JSON.stringify(walk)}`;
-  else if (panels.createDialogOpen && panels.inspectorVisible)
-    violation = `setup and inspector visible in the same right slot: ${JSON.stringify(walk)}`;
+  else if (panels.createDialogOpen && !panels.inspectorVisible && !panels.refineRoomOpen)
+    violation = `setup without a visible inspector: ${JSON.stringify(walk)}`;
   else if (panels.refineRoomOpen && panels.inspectorVisible)
     violation = `room edit and inspector visible in the same right slot: ${JSON.stringify(walk)}`;
 }
