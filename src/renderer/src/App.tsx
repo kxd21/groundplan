@@ -4999,22 +4999,26 @@ export function App() {
           setView('inventory');
           return;
         case 'mode.browse':
-          setShellMode('browse');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'browse' });
           return;
         case 'mode.place':
-          setShellMode('place');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'place' });
           return;
         case 'mode.inspect':
-          setShellMode('inspect');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' });
           return;
         case 'mode.setup':
-          setShellMode('setup');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' });
+          if (!workspace.setupOpen) {
+            void api.listLayoutKits().then(setLayoutKits).catch(() => undefined);
+            void api.listBankPresets().then(setBankPresets).catch(() => undefined);
+          }
           return;
         case 'mode.draw':
-          setShellMode('draw');
+          dispatchWorkspace({ type: 'toggle-mode', mode: 'draw' });
           return;
         case 'mode.none':
-          setShellMode('none');
+          dispatchWorkspace({ type: 'focus-plan' });
           return;
         case 'view.fit':
           setFitToken((t) => t + 1);
@@ -5167,7 +5171,7 @@ export function App() {
       exportDxf,
       exportSvg,
       view,
-      setShellMode,
+      workspace.setupOpen,
       toggleGrid,
       showStackPeek,
       showSightlineMarkers,
@@ -6693,7 +6697,7 @@ export function App() {
                 label: 'Files',
                 icon: <IconFolder size={17} />,
                 active: workspace.left === 'files',
-                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'browse' }),
+                onClick: () => runCommand('mode.browse'),
               },
               {
                 id: 'assets',
@@ -6701,7 +6705,7 @@ export function App() {
                 icon: <IconPlus size={17} />,
                 active: workspace.left === 'assets',
                 disabled: !doc.editable,
-                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'place' }),
+                onClick: () => runCommand('mode.place'),
               },
               {
                 id: 'room-workspace',
@@ -6749,14 +6753,14 @@ export function App() {
                 // there is anything to draw, and gating it behind a room is
                 // what made the headcount a throwaway value in New Plan.
                 disabled: false,
-                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'setup' }),
+                onClick: () => runCommand('mode.setup'),
               },
               {
                 id: 'properties',
                 label: 'Properties',
                 icon: <IconSidebarRight size={17} />,
                 active: inspectorVisible,
-                onClick: () => dispatchWorkspace({ type: 'toggle-mode', mode: 'inspect' }),
+                onClick: () => runCommand('mode.inspect'),
               },
               {
                 id: 'calculator',

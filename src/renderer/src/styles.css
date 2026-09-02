@@ -8973,6 +8973,10 @@ a,
   font-size: 10.5px;
 }
 
+.app[data-theme='dark'] .inspector-context .link-btn {
+  color: #6da7ff;
+}
+
 .inspector-empty {
   display: grid;
   gap: 14px;
@@ -17403,7 +17407,7 @@ a,
 }
 
 .editor-workspace-action.is-active {
-  color: var(--accent-fill);
+  color: var(--ink);
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
 }
 
