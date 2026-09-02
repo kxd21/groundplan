@@ -2194,43 +2194,14 @@ export function PlanCanvas({
       )}
       {showStackPeek && peekCardItems.length >= 2 && peekCardPos && (
         <div
-          className="stack-hover-card"
-          role="dialog"
-          aria-label="Stacked items under pointer"
+          className="stack-hover-card is-compact"
+          role="status"
+          aria-label={`${peekCardItems.length} objects under cursor`}
           style={{ left: peekCardPos.x, top: peekCardPos.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <div className="stack-hover-card-header">
-            <strong>{peekCardItems.length} stacked</strong>
-          </div>
-          <ul className="stack-hover-card-list">
-            {peekCardItems.map((item, index) => {
-              const accent = STACK_PEEK_ACCENTS[index % STACK_PEEK_ACCENTS.length];
-              const elev =
-                item.elevation != null && item.elevation > 0
-                  ? formatLength(item.elevation, units)
-                  : 'floor';
-              return (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className={selection.includes(item.id) ? 'is-on' : undefined}
-                    style={{ ['--stack-accent' as string]: accent }}
-                    onClick={() => {
-                      onSelect([item.id]);
-                      onStackCycle?.(`${index + 1} of ${peekCardItems.length} · ${item.name}`);
-                    }}
-                  >
-                    <span className="stack-hover-accent" aria-hidden />
-                    <span className="stack-hover-body">
-                      <strong className="stack-hover-name">{item.name}</strong>
-                      <span className="stack-hover-meta">{elev}</span>
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <strong>{peekCardItems.length} under cursor</strong>
+          <span>Alt-click cycles · pick in Inspector</span>
         </div>
       )}
       <div className="zoom-cluster">
@@ -2818,8 +2789,6 @@ function drawStackSetOverlay(
   });
   ctx.restore();
 }
-
-const STACK_PEEK_ACCENTS = ['#7c5cfc', '#4a9eff', '#e8b84a', '#4fb879'];
 
 function roundRect(
   ctx: CanvasRenderingContext2D,

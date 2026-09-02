@@ -172,7 +172,9 @@ const api = window.groundplan;
 type LayerGroupId = 'structure' | 'content' | 'markup';
 type SelectionScope =
   | { kind: 'layer'; id: string }
-  | { kind: 'group'; id: LayerGroupId };
+  | { kind: 'group'; id: LayerGroupId }
+  /** Furniture group / seating bank selected as one unit. */
+  | { kind: 'object-group'; hubId: number };
 
 interface LayerListItem {
   selectId: number;
@@ -3182,6 +3184,7 @@ export function App() {
       if (reply.reason) notify(reply.reason);
       return;
     }
+    setSelectionScope(null);
     showStatus(reply.text ?? 'Ungrouped');
   }, [doc?.editable, notify, selectedIds, showStatus]);
 
@@ -4468,6 +4471,17 @@ export function App() {
 
   const selectionScopeMeta = useMemo(() => {
     if (!selectionScope) return null;
+    if (selectionScope.kind === 'object-group') {
+      return {
+        label: 'Grouped objects',
+        description: 'Moves and rotates as one · click again to edit a single piece',
+        tint: '#2f6fed',
+        layers: [] as typeof LAYERS,
+        allVisible: true,
+        someVisible: true,
+        objectGroup: true as const,
+      };
+    }
     const layers = selectionScope.kind === 'layer'
       ? LAYERS.filter((layer) => layer.id === selectionScope.id)
       : LAYERS.filter((layer) => layer.group === selectionScope.id);
@@ -4482,11 +4496,21 @@ export function App() {
       layers,
       allVisible: layers.every((candidate) => visible.has(candidate.id)),
       someVisible: layers.some((candidate) => visible.has(candidate.id)),
+      objectGroup: false as const,
     };
   }, [selectionScope, visible]);
 
   useEffect(() => {
     if (!selectionScope || !doc) return;
+    if (selectionScope.kind === 'object-group') {
+      // Membership is owned by object links; keep scope while the hub stays selected.
+      if (!selectedIds.includes(selectionScope.hubId) && selectedIds.length > 0) {
+        // Hub may not be the click target after expand — any member is fine.
+        return;
+      }
+      if (selectedIds.length <= 1) setSelectionScope(null);
+      return;
+    }
     const layerIds = new Set(
       selectionScope.kind === 'layer'
         ? [selectionScope.id]
@@ -7879,14 +7903,52 @@ export function App() {
                 ) {
                   void commitTextEditing(true);
                 }
-                setSelectionScope(null);
-                setSelectedIds(ids);
+                // Empty click clears.
+                if (!ids.length) {
+                  setSelectionScope(null);
+                  setSelectedIds([]);
+                  return;
+                }
+                // Multi from marquee / shift: keep as-is.
                 if (ids.length > 1) {
+                  setSelectionScope(null);
+                  setSelectedIds(ids);
                   showStatus(
                     `${ids.length.toLocaleString()} selected · Align, nudge, or drag together`,
                     2800,
                   );
+                  return;
                 }
+                const hitId = ids[0]!;
+                // Second click on a member of an already-selected bank → drill into that piece.
+                if (
+                  selectionScope?.kind === 'object-group' &&
+                  selectedIds.includes(hitId) &&
+                  selectedIds.length > 1
+                ) {
+                  setSelectionScope(null);
+                  setSelectedIds([hitId]);
+                  showStatus('Editing one piece · click empty space, then the bank again to reselect it', 3200);
+                  return;
+                }
+                void (async () => {
+                  try {
+                    const expanded = await api.expandObjectGroup([hitId]);
+                    if (expanded.length > 1) {
+                      setSelectionScope({ kind: 'object-group', hubId: hitId });
+                      setSelectedIds(expanded);
+                      showStatus(
+                        `Bank · ${expanded.length.toLocaleString()} pieces · click again to edit one`,
+                        3200,
+                      );
+                      return;
+                    }
+                  } catch {
+                    /* fall through to single select */
+                  }
+                  setSelectionScope(null);
+                  setSelectedIds([hitId]);
+                })();
               }}
               onStackCandidates={(items) => {
                 setStackCandidates(items);
@@ -9518,6 +9580,59 @@ export function App() {
                   )}
                 </div>
 
+                {selectedIds.length > 0 && (
+                  <div className="selection-hero" role="status">
+                    <div className="selection-hero-copy">
+                      <small>
+                        {selectionScope?.kind === 'object-group'
+                          ? 'Seating / object bank'
+                          : selectedIds.length > 1
+                            ? 'Multiple objects'
+                            : selection
+                              ? selection.cls.replace(/^RV/, '')
+                              : 'Selected'}
+                      </small>
+                      <strong>
+                        {selectionScope?.kind === 'object-group'
+                          ? `${selectedIds.length.toLocaleString()} pieces`
+                          : selectedIds.length > 1
+                            ? `${selectedIds.length.toLocaleString()} selected`
+                            : selection?.name ?? selection?.cls.replace(/^RV/, '') ?? 'Item'}
+                      </strong>
+                      <span>
+                        {selectionScope?.kind === 'object-group'
+                          ? 'Drag or rotate together · click again to edit one piece'
+                          : selectedIds.length > 1
+                            ? 'Align, nudge, or drag together'
+                            : selection
+                              ? `${formatLength(selection.widthUnits, unitSystem)} × ${formatLength(selection.heightUnits, unitSystem)}${
+                                  selection.angleDegrees != null ? ` · ${selection.angleDegrees}°` : ''
+                                }`
+                              : 'Inspect and edit below'}
+                      </span>
+                    </div>
+                    <div className="selection-hero-actions">
+                      {selectionScope?.kind === 'object-group' && (
+                        <button
+                          type="button"
+                          className="link-btn"
+                          onClick={() => {
+                            const keep = selectedIds[0];
+                            if (keep == null) return;
+                            setSelectionScope(null);
+                            setSelectedIds([keep]);
+                          }}
+                        >
+                          Edit one
+                        </button>
+                      )}
+                      <button type="button" className="link-btn" onClick={() => setSelectedIds([])}>
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {stackCandidates.length >= 2 && (
                   <div className="tool-group stack-pick-group stack-coach">
                     <span className="tool-label">What you’re pointing at</span>
@@ -9744,7 +9859,7 @@ export function App() {
                   </div>
                 )}
 
-                {selectionScopeMeta && selectedIds.length > 0 && (
+                {selectionScopeMeta && selectedIds.length > 0 && selectionScope?.kind !== 'object-group' && (
                   <div className="layer-selection-scope-block">
                     <div
                       className="layer-selection-scope"
@@ -9779,6 +9894,51 @@ export function App() {
                   </div>
                 )}
 
+                {selectionScope?.kind === 'object-group' && selectedIds.length > 1 && (
+                  <div className="tool-group stack-pick-group stack-coach">
+                    <span className="tool-label">Pieces in this bank</span>
+                    <p className="hint">Click a piece below to edit it alone. Clear selection, then click the bank again to reselect all.</p>
+                    <ol className="stack-pick-list stack-pick-ordered stack-hover-style-list">
+                      {selectedIds.slice(0, 24).map((id, index) => {
+                        const prim = doc.scene.primitives.find((p) => p.selectId === id);
+                        const name = prim?.owner ?? prim?.cls?.replace(/^RV/, '') ?? `Item ${id}`;
+                        const accent = ['#2f6fed', '#4a9eff', '#e8b84a', '#4fb879'][index % 4];
+                        return (
+                          <li key={id}>
+                            <button
+                              type="button"
+                              style={{ ['--stack-accent' as string]: accent }}
+                              onClick={() => {
+                                setSelectionScope(null);
+                                setSelectedIds([id]);
+                              }}
+                            >
+                              <span className="stack-hover-accent" aria-hidden />
+                              <span className="stack-hover-body">
+                                <span className="stack-hover-label">Piece {index + 1}</span>
+                                <strong className="stack-hover-name">{name}</strong>
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                    {selectedIds.length > 24 && (
+                      <p className="hint">{selectedIds.length - 24} more not listed</p>
+                    )}
+                    <div className="text-action-row">
+                      <button
+                        type="button"
+                        className="text-action"
+                        disabled={!doc.editable}
+                        onClick={() => void ungroupPlanSelection()}
+                      >
+                        Ungroup bank
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {selectedIds.length === 0 ? (
                   <div className="selected-item-empty">
                     <span className="selected-item-empty-icon" aria-hidden>
@@ -9797,7 +9957,7 @@ export function App() {
                       </span>
                     </div>
                   </div>
-                ) : selectedIds.length > 1 ? (
+                ) : selectedIds.length > 1 && selectionScope?.kind !== 'object-group' ? (
                   <>
                     <div className="selection-multi-banner" role="status">
                       <strong>{selectedIds.length.toLocaleString()} objects</strong>

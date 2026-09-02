@@ -325,6 +325,9 @@ const api = {
   pastePlanObjects: (): Promise<EditReply> => ipcRenderer.invoke('edit:clipboard-paste'),
   groupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:group', ids),
   ungroupPlanObjects: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:ungroup', ids),
+  /** Furniture group partners only (seating banks, manual groups). */
+  expandObjectGroup: (ids: number[]): Promise<number[]> =>
+    ipcRenderer.invoke('edit:expand-group', ids),
   attachStack: (parentId: number, childId: number): Promise<EditReply> =>
     ipcRenderer.invoke('edit:attach-stack', parentId, childId),
   detachStack: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:detach-stack', ids),

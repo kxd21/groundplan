@@ -861,6 +861,36 @@ function expandLinkedIds(ids: number[]): number[] {
   return [...out];
 }
 
+/** Only follow furniture `group` links — not stage↔stairs or stack-on. */
+function expandGroupIds(ids: number[]): number[] {
+  const out = new Set(ids);
+  const queue = [...ids];
+  while (queue.length) {
+    const id = queue.pop()!;
+    for (const partner of objectLinks.get(id) ?? []) {
+      if (out.has(partner)) continue;
+      const kind = objectLinkKinds.get(objectLinkPairKey(id, partner));
+      if (kind !== 'group') continue;
+      out.add(partner);
+      queue.push(partner);
+    }
+  }
+  return [...out];
+}
+
+/** Persist a bank/section as one selectable unit without touching the .rv4. */
+function groupCreatedIds(ids: number[] | undefined): void {
+  const s = session;
+  if (!s || !ids || ids.length < 2) return;
+  const members = ids.filter((id) => s.index.byId.has(id));
+  if (members.length < 2) return;
+  const hub = [...members].sort((a, b) => a - b)[0]!;
+  for (const id of members) {
+    if (id === hub) continue;
+    linkObjects(hub, id, 'group');
+  }
+}
+
 function clearObjectLinks(): void {
   objectLinks.clear();
   objectLinkKinds.clear();
@@ -3547,6 +3577,14 @@ app.whenReady().then(async () => {
     return { ok: true, text: `Grouped ${members.length} items` };
   });
 
+  handle('edit:expand-group', (_event, ids: number[]) => {
+    const s = session;
+    if (!s) return [] as number[];
+    const requested = (Array.isArray(ids) ? ids : []).filter((id) => Number.isFinite(id) && s.index.byId.has(id));
+    if (!requested.length) return [] as number[];
+    return expandGroupIds(requested).filter((id) => s.index.byId.has(id));
+  });
+
   handle('edit:ungroup', (_event, ids: number[]) => {
     const s = session;
     if (!s) return { ok: false, reason: 'open a plan first' };
@@ -4948,9 +4986,11 @@ app.whenReady().then(async () => {
       }
 
       const seedSet = new Set(seeds);
+      const created = result.created?.filter((id) => !seedSet.has(id));
+      groupCreatedIds(created);
       return {
         ...result,
-        created: result.created?.filter((id) => !seedSet.has(id)),
+        created,
       };
     });
   });
@@ -5276,9 +5316,11 @@ app.whenReady().then(async () => {
     null,
   );
 
-  handle('plan:seating-apply', (_event, request: SeatingRequestView, chair: string, table?: string) =>
-    applyEdit((s) => applySeatingModel(s, request, chair, table)),
-  );
+  handle('plan:seating-apply', (_event, request: SeatingRequestView, chair: string, table?: string) => {
+    const reply = applyEdit((s) => applySeatingModel(s, request, chair, table));
+    if (reply.ok) groupCreatedIds((reply as { created?: number[] }).created);
+    return reply;
+  });
 
   handle('plan:list-layout-kits', () => listLayoutKits(app.getPath('userData')));
 
