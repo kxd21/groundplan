@@ -5373,6 +5373,10 @@ app.whenReady().then(async () => {
           units: unitSystem(),
         });
         if (!result.ok) return { ok: false, reason: result.reason };
+        // Each seating block becomes one selectable bank (sidecar links only).
+        for (const block of result.seating ?? []) {
+          if (block.ok) groupCreatedIds(block.created);
+        }
         return {
           ok: true,
           text: result.status,
