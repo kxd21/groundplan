@@ -1,14 +1,14 @@
 /**
- * New Plan: describe the show, define the room, create.
+ * New Plan: pick a room, create the plan.
  *
- * It stays room-first — every quick-start shortcut still lands on a room in one
- * click, and the brief can be skipped outright. What changed is that the
- * headcount somebody types is now KEPT. It used to pick a room preset and then
- * be discarded, so the finished drawing had no idea how many people were meant
- * to fit in it; it is now the brief's target attendance, and the readiness check
- * measures the seat count against it for the life of the plan.
+ * Standard rooms (Boardroom / Meeting / Ballroom / Concert) create in one
+ * click — room + optional matching kit — and land on the drawing. Custom
+ * outline, site-plan trace, and exact geometry stay reachable under Customize;
+ * they are not deleted, only moved off the happy path.
  *
- * The same pure builder powers this preview and the main process write path.
+ * The brief (name, venue, headcount) is optional on this screen and is kept
+ * with the plan when filled in. The same pure builder powers the preview and
+ * the main-process write path.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -64,7 +64,8 @@ const FT = 120;
 
 type RoomChoice = NewRoomShape | 'custom';
 type WallTreatment = 'straight' | 'curve';
-type NewPlanStep = 'start' | 'room' | 'review';
+/** Compact is the default; room/review remain for Customize. */
+type NewPlanStep = 'compact' | 'room' | 'review';
 
 /** Map a guest target to a quick-start room + kit. */
 export function suggestQuickStartForGuests(guests: number): {
@@ -356,7 +357,8 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
   const [showVenue, setShowVenue] = useState('');
   const [showLayout, setShowLayout] = useState<ShowBrief['layoutType'] | ''>('');
   const [briefSkipped, setBriefSkipped] = useState(false);
-  const [step, setStep] = useState<NewPlanStep>('start');
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [step, setStep] = useState<NewPlanStep>('compact');
   const [startChoice, setStartChoice] = useState('ballroom');
   const [suggestedKitId, setSuggestedKitId] = useState<string | undefined>('bundled:banquet-120');
   const [layoutStart, setLayoutStart] = useState<'kit' | 'blank'>('kit');
@@ -592,6 +594,71 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
     setDepth(formatLength(item.depth * FT, units));
   };
 
+  /**
+   * One-click create for a quick-start card.
+   *
+   * State updates from `quickStart` are not flushed yet, so every value the
+   * write path needs is passed as an override — same API as the review step.
+   */
+  const createFromQuickStart = async (item: (typeof QUICK_START)[number]) => {
+    quickStart(item);
+    const ceilingHeight = item.ceilingFt && item.ceilingFt > 0 ? item.ceilingFt * FT : undefined;
+    const planLabel = showName.trim() || item.label;
+    if (item.sitePlan || item.custom) {
+      const guideWidth = (item.sitePlan ? 120 : 60) * FT;
+      const guideDepth = (item.sitePlan ? 80 : 40) * FT;
+      await create({
+        name: planLabel,
+        custom: {
+          guideWidth,
+          guideDepth,
+          angleLock: 'ortho',
+          showGuide: true,
+          autoDimensions: true,
+        },
+        ceilingHeight,
+        openBackground: Boolean(item.sitePlan),
+      });
+      return;
+    }
+    if (!(item.width && item.depth)) return;
+    await create({
+      name: planLabel,
+      room: {
+        shape: 'rectangle',
+        width: item.width * FT,
+        depth: item.depth * FT,
+      },
+      ceilingHeight,
+      applyKitId: item.kitId,
+    });
+  };
+
+  const createFromGuestTarget = async () => {
+    const guests = Math.floor(Number(guestTarget));
+    if (!(guests > 0)) return;
+    const pick = suggestQuickStartForGuests(guests);
+    setStartChoice('headcount');
+    setSuggestedKitId(pick.kitId);
+    setLayoutStart('kit');
+    setOpenBackgroundAfterCreate(false);
+    setShape('rectangle');
+    setWallTreatment('straight');
+    setWidth(formatLength(pick.width * FT, units));
+    setDepth(formatLength(pick.depth * FT, units));
+    setCeiling(formatLength(pick.ceilingFt * FT, units));
+    await create({
+      name: showName.trim() || pick.label,
+      room: {
+        shape: 'rectangle',
+        width: pick.width * FT,
+        depth: pick.depth * FT,
+      },
+      ceilingHeight: pick.ceilingFt * FT,
+      applyKitId: pick.kitId,
+    });
+  };
+
   const curveInputLabel = curveMethod === 'radius'
     ? 'Arc radius'
     : curveMethod === 'sagitta'
@@ -621,11 +688,15 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           <div>
             <span className="new-plan-eyebrow">New plan</span>
             <h2 id="new-plan-title">
-              {step === 'start' ? 'What is the show?' : step === 'room' ? 'Define the room' : 'Review and create'}
+              {step === 'compact'
+                ? 'Start from a room'
+                : step === 'room'
+                  ? 'Customize the room'
+                  : 'Review and create'}
             </h2>
             <p>
-              {step === 'start'
-                ? 'Describe it once and the plan gets checked against it — or skip and start from a room.'
+              {step === 'compact'
+                ? 'A standard room creates the plan immediately. Customize keeps exact shapes, curves, and empty-room starts.'
                 : step === 'room'
                   ? 'Confirm the boundary and dimensions before anything is created.'
                   : 'Name the file and choose whether to begin with a suggested layout.'}
@@ -634,30 +705,32 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           <span className="new-plan-unit-badge">{units === 'metric' ? 'Metric' : 'Imperial'}</span>
         </div>
 
-        <ol className="new-plan-steps" aria-label="New plan progress">
-          {([
-            ['start', '1', 'Show'],
-            ['room', '2', 'Room'],
-            ['review', '3', 'Create'],
-          ] as const).map(([id, number, label]) => {
-            const order = { start: 0, room: 1, review: 2 };
-            const current = order[step];
-            const item = order[id];
-            return (
-              <li key={id} className={item === current ? 'is-current' : item < current ? 'is-complete' : ''}>
-                <span>{item < current ? '✓' : number}</span>
-                <strong>{label}</strong>
-              </li>
-            );
-          })}
-        </ol>
+        {step !== 'compact' && (
+          <ol className="new-plan-steps" aria-label="Customize plan progress">
+            {([
+              ['compact', '1', 'Start'],
+              ['room', '2', 'Room'],
+              ['review', '3', 'Create'],
+            ] as const).map(([id, number, label]) => {
+              const order = { compact: 0, room: 1, review: 2 };
+              const current = order[step];
+              const item = order[id];
+              return (
+                <li key={id} className={item === current ? 'is-current' : item < current ? 'is-complete' : ''}>
+                  <span>{item < current ? '✓' : number}</span>
+                  <strong>{label}</strong>
+                </li>
+              );
+            })}
+          </ol>
+        )}
 
-        {step === 'start' && <div className="new-plan-start-step">
-        <section className="new-plan-brief" aria-label="Show brief">
+        {step === 'compact' && <div className="new-plan-start-step is-compact">
+        <section className="new-plan-brief is-compact" aria-label="Show brief">
           <div className="new-plan-brief-head">
             <div>
-              <strong>Show brief</strong>
-              <small>Kept with the plan. Everything here can be changed later in Show Setup.</small>
+              <strong>Show details</strong>
+              <small>Optional — kept with the plan and editable later in Show Setup.</small>
             </div>
             <button
               type="button"
@@ -670,7 +743,6 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                 setShowLayout('');
                 setGuestTarget('');
                 setBriefSkipped(true);
-                setStep('room');
               }}
             >
               Skip for now
@@ -688,15 +760,6 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                   setShowName(e.target.value);
                   setBriefSkipped(false);
                 }}
-              />
-            </div>
-            <div className="brief-field">
-              <label htmlFor="new-plan-show-client">Client</label>
-              <input
-                id="new-plan-show-client"
-                value={showClient}
-                disabled={busy}
-                onChange={(e) => setShowClient(e.target.value)}
               />
             </div>
             <div className="brief-field">
@@ -723,19 +786,70 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
                 ))}
               </select>
             </div>
+            <div className="brief-field">
+              <label htmlFor="new-plan-guests">Target attendance</label>
+              <input
+                id="new-plan-guests"
+                className="num"
+                type="number"
+                min={1}
+                max={5000}
+                placeholder="e.g. 120"
+                value={guestTarget}
+                disabled={busy}
+                onChange={(e) => { setGuestTarget(e.target.value); setBriefSkipped(false); }}
+              />
+            </div>
           </div>
+          <div className="new-plan-guest-row is-compact">
+            <button
+              type="button"
+              className="btn-solid"
+              disabled={busy || !(Number(guestTarget) > 0)}
+              onClick={() => void createFromGuestTarget()}
+            >
+              {Number(guestTarget) > 0
+                ? `Create ${suggestQuickStartForGuests(Number(guestTarget)).label} for ${Number(guestTarget).toLocaleString()}`
+                : 'Create from attendance'}
+            </button>
+            {Number(guestTarget) > 0 ? (
+              <p className="hint">
+                {suggestQuickStartForGuests(Number(guestTarget)).width}′ ×{' '}
+                {suggestQuickStartForGuests(Number(guestTarget)).depth}′ with matching kit. Headcount
+                is kept as the show target.
+              </p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className={`new-plan-advanced-toggle${briefOpen ? ' is-open' : ''}`}
+            aria-expanded={briefOpen}
+            disabled={busy}
+            onClick={() => setBriefOpen((open) => !open)}
+          >
+            {briefOpen ? 'Hide client field' : 'Add client'}
+          </button>
+          {briefOpen && (
+            <div className="brief-field" style={{ marginTop: 8 }}>
+              <label htmlFor="new-plan-show-client">Client</label>
+              <input
+                id="new-plan-show-client"
+                value={showClient}
+                disabled={busy}
+                onChange={(e) => setShowClient(e.target.value)}
+              />
+            </div>
+          )}
         </section>
 
-        <div className="new-plan-quick-start" role="radiogroup" aria-label="Common rooms">
-          {QUICK_START.map((item) => (
+        <div className="new-plan-quick-start" role="group" aria-label="Standard rooms">
+          {QUICK_START.filter((item) => !item.custom && !item.sitePlan).map((item) => (
             <button
               key={item.id}
               type="button"
-              role="radio"
-              aria-checked={startChoice === item.id}
               className={startChoice === item.id ? 'is-on' : undefined}
               disabled={busy}
-              onClick={() => quickStart(item)}
+              onClick={() => void createFromQuickStart(item)}
             >
               <strong>{item.label}</strong>
               <small>{item.detail}</small>
@@ -743,55 +857,25 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
           ))}
         </div>
 
-        <div className="new-plan-guest-row">
-          <label htmlFor="new-plan-guests">
-            Target attendance
-            <input
-              id="new-plan-guests"
-              className="num"
-              type="number"
-              min={1}
-              max={5000}
-              placeholder="e.g. 120"
-              value={guestTarget}
+        <div className="new-plan-compact-alt" role="group" aria-label="Other starts">
+          {QUICK_START.filter((item) => item.custom || item.sitePlan).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="btn-outline"
               disabled={busy}
-              onChange={(e) => { setGuestTarget(e.target.value); setBriefSkipped(false); }}
-            />
-          </label>
-          <button
-            type="button"
-            className="btn-solid"
-            disabled={busy || !(Number(guestTarget) > 0)}
-            onClick={() => {
-              const guests = Math.floor(Number(guestTarget));
-              if (!(guests > 0)) return;
-              const pick = suggestQuickStartForGuests(guests);
-              setStartChoice('headcount');
-              setSuggestedKitId(pick.kitId);
-              setLayoutStart('kit');
-              setOpenBackgroundAfterCreate(false);
-              setShape('rectangle');
-              setWallTreatment('straight');
-              setWidth(formatLength(pick.width * FT, units));
-              setDepth(formatLength(pick.depth * FT, units));
-              setCeiling(formatLength(pick.ceilingFt * FT, units));
-            }}
-          >
-            Use recommendation for {Number(guestTarget) > 0 ? Number(guestTarget).toLocaleString() : '…'}
-          </button>
-          {Number(guestTarget) > 0 ? (
-            <p className="hint">
-              Suggests {suggestQuickStartForGuests(Number(guestTarget)).label} (
-              {suggestQuickStartForGuests(Number(guestTarget)).width}′ ×{' '}
-              {suggestQuickStartForGuests(Number(guestTarget)).depth}′) with matching kit. The
-              number is kept as the show's target, and the seat count is checked against it.
-            </p>
-          ) : null}
+              onClick={() => void createFromQuickStart(item)}
+            >
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+            </button>
+          ))}
         </div>
+
         <div className="new-plan-start-summary" role="status">
-          <span><strong>Selected</strong><small>{startChoice === 'headcount' ? 'Headcount recommendation' : QUICK_START.find((item) => item.id === startChoice)?.label}</small></span>
-          <span><strong>Room</strong><small>{customRoom ? (openBackgroundAfterCreate ? 'Trace from site plan' : 'Draw a custom outline') : `${width} × ${depth}`}</small></span>
+          <span><strong>Creates</strong><small>Autosaved plan in Documents/Groundplan</small></span>
           <span><strong>Show</strong><small>{showName.trim() || (briefSkipped ? 'Skipped' : 'Unnamed')}{Number(guestTarget) > 0 ? ` · ${Number(guestTarget).toLocaleString()} people` : ''}</small></span>
+          <span><strong>More</strong><small>Exact shapes, curves, and empty rooms under Customize</small></span>
         </div>
         </div>}
 
@@ -1339,34 +1423,53 @@ export default function NewPlanDialog({ units, onCreated, onCancel, onError }: P
         <div className="new-plan-foot">
           <div className="new-plan-foot-meta">
             <span className="new-plan-foot-note">
-              {step === 'start'
-                ? 'Every field here is optional. Nothing is created until the final review.'
+              {step === 'compact'
+                ? 'Standard rooms create the plan immediately. Customize keeps exact geometry.'
                 : step === 'room'
                   ? 'Room geometry stays fully editable after creation.'
                   : 'Creates an autosaved plan in Documents/Groundplan.'}
             </span>
           </div>
-          {step === 'start' ? (
+          {step === 'compact' ? (
             <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
           ) : (
-            <button type="button" onClick={() => setStep(step === 'review' ? 'room' : 'start')} disabled={busy}>Back</button>
+            <button
+              type="button"
+              onClick={() => setStep(step === 'review' ? 'room' : 'compact')}
+              disabled={busy}
+            >
+              Back
+            </button>
           )}
-          <button
-            type="button"
-            className="primary"
-            onClick={() => {
-              if (step === 'start') setStep('room');
-              else if (step === 'room') setStep('review');
-              else void create({
-                applyKitId: layoutStart === 'kit' ? suggestedKitId : undefined,
-                openBackground: openBackgroundAfterCreate,
-              });
-            }}
-            disabled={busy || !roomReady}
-          >
-            {step === 'review' ? <IconPlus size={14} /> : null}
-            {busy ? 'Creating…' : step === 'start' ? 'Continue to room' : step === 'room' ? 'Review plan' : customRoom ? 'Create & continue…' : 'Create plan'}
-          </button>
+          {step === 'compact' ? (
+            <button
+              type="button"
+              className="primary"
+              disabled={busy}
+              onClick={() => {
+                setBriefSkipped(true);
+                setStep('room');
+              }}
+            >
+              Customize room…
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                if (step === 'room') setStep('review');
+                else void create({
+                  applyKitId: layoutStart === 'kit' ? suggestedKitId : undefined,
+                  openBackground: openBackgroundAfterCreate,
+                });
+              }}
+              disabled={busy || !roomReady}
+            >
+              {step === 'review' ? <IconPlus size={14} /> : null}
+              {busy ? 'Creating…' : step === 'room' ? 'Review plan' : customRoom ? 'Create & continue…' : 'Create plan'}
+            </button>
+          )}
         </div>
       </div>
     </div>

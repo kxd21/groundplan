@@ -156,11 +156,12 @@ await measure('open-new-plan', 12000, async () => {
   if (await ev('!!document.querySelector("#new-plan-name")')) {
     await setInput('#new-plan-name', 'Usability Audit');
   }
-  const continued = await click({ match: '/^Continue to room$/i' }, null);
-  if (continued) {
-    record('plan:Continue to room', true, 'clicked');
+  // Compact New Plan: Customize keeps the exact-size path.
+  const customized = await click({ match: '/Customize room/i' }, null);
+  if (customized) {
+    record('plan:Customize room', true, 'clicked');
   } else {
-    record('plan:Continue to room', true, 'skipped — sheet already on room/create step');
+    record('plan:Customize room', true, 'skipped — already on room/create step');
   }
   await sleep(350);
   if (await ev('!!document.querySelector("#new-plan-width")')) {

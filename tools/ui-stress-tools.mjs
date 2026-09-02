@@ -95,17 +95,12 @@ if (!haveCanvas) {
     return !!b;
   })()`);
   await waitFor(`!!document.querySelector('.new-plan-sheet')`, 10000);
-  // Ballroom is a room big enough to draw in, and three clicks from here.
+  // Ballroom creates the plan in one click (compact New Plan).
   await ev(`(() => {
     const b = [...document.querySelectorAll('.new-plan-quick-start button')].find((e) => /Ballroom/i.test(e.textContent || ''));
     if (b) b.click();
     return !!b;
   })()`);
-  await sleep(500);
-  for (let step = 0; step < 3; step++) {
-    await ev(`(() => { const b = document.querySelector('.new-plan-foot .primary'); if (b && !b.disabled) b.click(); return true; })()`);
-    await sleep(1100);
-  }
   haveCanvas = await waitFor(`!document.querySelector('.new-plan-sheet') && !!document.querySelector('canvas')`, 30000);
   await sleep(3500);
 }

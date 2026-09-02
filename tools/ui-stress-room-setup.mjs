@@ -212,7 +212,7 @@ if (!sheetOpen) {
     const skip = [...sheet.querySelectorAll('button')].find((b) =>
       /Skip for now/i.test(b.textContent || ''),
     );
-    const quick = [...sheet.querySelectorAll('.new-plan-quick-start button')].map((b) =>
+    const quick = [...sheet.querySelectorAll('.new-plan-quick-start button, .new-plan-compact-alt button')].map((b) =>
       (b.textContent || '').replace(/\\s+/g, ' ').trim(),
     );
     return {
@@ -241,9 +241,10 @@ if (!sheetOpen) {
   );
   record('newplan:brief is skippable', !!showStep?.skip);
   record(
-    'newplan:still three steps',
-    (showStep?.steps || []).length === 3,
-    JSON.stringify(showStep?.steps),
+    'newplan:compact create (no forced three-step wizard)',
+    (showStep?.steps || []).length === 0 ||
+      /Start from a room/i.test(showStep?.title || ''),
+    JSON.stringify({ steps: showStep?.steps, title: showStep?.title }),
   );
   record(
     'newplan:room shortcuts preserved',
@@ -296,26 +297,10 @@ if (!sheetOpen) {
   await shot(path.join(AUDIT, 'ui-stress-setup-02-brief.png'));
 
   /*
-   * Pick a room and walk the three steps. The quick-start buttons SELECT a
-   * room rather than creating one — creation is still the last thing that
-   * happens, on the Create step, which is what "Nothing is created until the
-   * final review" in the footer promises.
+   * Pick a standard room — that creates the plan immediately (Phase 4).
+   * Draw custom / site plan / Customize remain for advanced paths.
    */
   await click({ match: '/Ballroom/i', root: '.new-plan-quick-start' }, 'newplan:quick Ballroom');
-  await sleep(300);
-  const advance = async (label) => {
-    const ok = await ev(`(() => {
-      const b = document.querySelector('.new-plan-foot .primary');
-      if (!b || b.disabled) return false;
-      b.click();
-      return true;
-    })()`);
-    record(label, !!ok);
-    await sleep(700);
-  };
-  await advance('newplan:continue to room');
-  await advance('newplan:review plan');
-  await advance('newplan:create plan');
 
   const planOpened = await waitFor(
     `!document.querySelector('.new-plan-sheet') && !!document.querySelector('canvas')`,

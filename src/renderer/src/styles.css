@@ -19588,3 +19588,56 @@ a,
 .body.is-plan-dock > .inspector .inspector-tabs {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+
+/* ── Compact New Plan (Phase 4) ─────────────────────────────────────────── */
+
+.new-plan-sheet.is-compact {
+  width: min(560px, calc(100vw - 32px));
+  height: auto;
+  max-height: min(820px, calc(100vh - 32px));
+}
+
+.new-plan-start-step.is-compact {
+  display: grid;
+  gap: 14px;
+  padding: 4px 0 8px;
+}
+
+.new-plan-start-step.is-compact .new-plan-quick-start {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.new-plan-compact-alt {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.new-plan-compact-alt > button {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  min-height: 58px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.new-plan-compact-alt > button strong {
+  font-size: 13px;
+}
+
+.new-plan-compact-alt > button small {
+  color: var(--ink-2, #526174);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.new-plan-guest-row.is-compact {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.new-plan-brief.is-compact .new-plan-brief-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
