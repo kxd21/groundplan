@@ -1381,7 +1381,7 @@ export function PlanCanvas({
       drawMeasurement(ctx, readout.from, readout.to, view, paper, units);
     }
 
-    if (sightlineMarkers.length) {
+    if (sightlineMarkers.length && lod === 'full') {
       for (const marker of sightlineMarkers) {
         const sx = marker.x * view.scale + view.offsetX;
         const sy = screenY(view, marker.y);

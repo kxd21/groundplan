@@ -24,16 +24,17 @@ const check = (name: string, ok: boolean, detail?: unknown) => {
   }
 };
 
-check('far out is blocks', semanticLodForScale(0.01) === 'blocks');
+check('far out is blocks', semanticLodForScale(0.05) === 'blocks');
 check('just below blocks threshold is blocks', semanticLodForScale(SEMANTIC_BLOCKS_BELOW - 1e-9) === 'blocks');
 check('at blocks threshold is simplified', semanticLodForScale(SEMANTIC_BLOCKS_BELOW) === 'simplified');
-check('mid zoom is simplified', semanticLodForScale(0.05) === 'simplified');
+check('typical ballroom fit is simplified', semanticLodForScale(0.14) === 'simplified');
+check('mid zoom is simplified', semanticLodForScale(0.18) === 'simplified');
 check(
   'just below full threshold is simplified',
   semanticLodForScale(SEMANTIC_SIMPLIFIED_BELOW - 1e-9) === 'simplified',
 );
 check('at full threshold is full', semanticLodForScale(SEMANTIC_SIMPLIFIED_BELOW) === 'full');
-check('close in is full', semanticLodForScale(0.25) === 'full');
+check('close in is full', semanticLodForScale(0.4) === 'full');
 check('non-finite scale falls back to blocks', semanticLodForScale(Number.NaN) === 'blocks');
 check('zero scale falls back to blocks', semanticLodForScale(0) === 'blocks');
 

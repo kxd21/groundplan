@@ -5,15 +5,17 @@
  * seat count. Mid zoom keeps furniture as simple footprints. Close-in keeps
  * the full path detail the file stores.
  *
- * Scale is the PlanCanvas view scale (1.0 ≈ 100% UI zoom).
+ * Scale is the PlanCanvas view scale (UI % ≈ scale × 100). A typical 60′×40′
+ * room fits around 12–15%, so the bands sit above that fit zoom — overview
+ * collapses to banks, inspecting a corner reveals chairs.
  */
 
 export type SemanticLod = 'blocks' | 'simplified' | 'full';
 
 /** Below this, grouped seating collapses to bank footprints. */
-export const SEMANTIC_BLOCKS_BELOW = 0.03;
+export const SEMANTIC_BLOCKS_BELOW = 0.12;
 /** Below this (and at/above blocks), furniture draws as filled bounds. */
-export const SEMANTIC_SIMPLIFIED_BELOW = 0.1;
+export const SEMANTIC_SIMPLIFIED_BELOW = 0.25;
 
 export function semanticLodForScale(scale: number): SemanticLod {
   if (!(scale > 0) || !Number.isFinite(scale)) return 'blocks';
