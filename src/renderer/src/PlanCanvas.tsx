@@ -33,6 +33,14 @@ import {
   type HandleId,
   type TransformFrame,
 } from './transform-handles.js';
+import {
+  bankMemberIdSet,
+  bankOverlaysFromGroups,
+  semanticLodForScale,
+  type BankOverlay,
+  type ObjectGroupRef,
+  type SemanticLod,
+} from './semantic-zoom.js';
 
 const UNITS_PER_FOOT = 120;
 const UNITS_PER_INCH = 10;
@@ -120,6 +128,11 @@ interface Props {
   placeOnLabel?: string | null;
   /** Linked stack set for the current selection (parent + children). */
   stackSet?: Array<{ id: number; name: string; elevation: number; kind: string }> | null;
+  /**
+   * Furniture `group` banks from the sidecar — used at far zoom to draw one
+   * footprint per bank instead of every chair.
+   */
+  objectGroups?: ObjectGroupRef[];
   /** Fired once a drag ends, with the total movement in logical units. */
   onMoveSelection: (dx: number, dy: number) => void;
   /**
@@ -452,6 +465,7 @@ export function PlanCanvas({
   placeOnParentId = null,
   placeOnLabel = null,
   stackSet = null,
+  objectGroups = [],
   onMoveSelection,
   transformTarget = null,
   onResizeTo,
@@ -680,6 +694,12 @@ export function PlanCanvas({
     }
     return result;
   }, [prepared, visibleLayers]);
+
+  const bankMembers = useMemo(() => bankMemberIdSet(objectGroups), [objectGroups]);
+  const bankOverlays = useMemo(
+    () => bankOverlaysFromGroups(objectGroups, objectBounds),
+    [objectGroups, objectBounds],
+  );
 
   /**
    * The transform frame for the one selected object, or null.
@@ -996,6 +1016,11 @@ export function PlanCanvas({
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
+    const lod: SemanticLod = semanticLodForScale(scale);
+    const collapseBanks = lod === 'blocks' && bankMembers.size > 0;
+    const simplifiedFurniture = lod !== 'full';
+    const simplifiedDrawn = simplifiedFurniture ? new Set<number>() : null;
+
     for (const item of prepared) {
       const p = item.primitive;
       if (!visibleLayers.has(p.discipline)) continue;
@@ -1008,6 +1033,36 @@ export function PlanCanvas({
         item.maxY + oy < viewport.minY - viewportPad ||
         item.minY + oy > viewport.maxY + viewportPad
       ) {
+        continue;
+      }
+
+      // Far out: bank members are represented by one block each — skip chairs.
+      if (collapseBanks && p.layer === 'furniture' && bankMembers.has(p.selectId)) {
+        continue;
+      }
+
+      // Mid/far: furniture as a single filled footprint per object (cheap).
+      if (
+        simplifiedFurniture &&
+        p.layer === 'furniture' &&
+        p.type !== 'text' &&
+        p.type !== 'dimension'
+      ) {
+        if (simplifiedDrawn!.has(p.selectId)) continue;
+        simplifiedDrawn!.add(p.selectId);
+        const b = objectBounds.get(p.selectId);
+        if (!b) continue;
+        const isHovered = !isSelected && hover != null && p.selectId === hover;
+        drawSimplifiedFootprint(
+          ctx,
+          b,
+          ox,
+          oy,
+          view,
+          isSelected ? '#4d94ff' : isHovered ? '#8bb9ff' : paper ? item.paperColor : item.darkColor,
+          item.style.fill && !isSelected && !isHovered ? item.style.fill : null,
+          paper,
+        );
         continue;
       }
 
@@ -1105,6 +1160,10 @@ export function PlanCanvas({
           break;
         }
       }
+    }
+
+    if (collapseBanks && bankOverlays.length) {
+      drawBankBlocks(ctx, bankOverlays, view, selectionSet, hover, nudge, paper);
     }
 
     // One editable object in select mode gets the real transform frame; every
@@ -1346,6 +1405,8 @@ export function PlanCanvas({
     scene,
     prepared,
     objectBounds,
+    bankMembers,
+    bankOverlays,
     view,
     size,
     visibleLayers,
@@ -2620,6 +2681,101 @@ function drawTransformFrame(
 }
 
 /** An honest bounds highlight, for anything the transform frame does not cover. */
+/**
+ * Mid/far zoom furniture: one axis-aligned footprint instead of full paths.
+ * Cheap enough to keep hundreds of chairs readable as massing without path cost.
+ */
+function drawSimplifiedFootprint(
+  ctx: CanvasRenderingContext2D,
+  b: Bounds,
+  ox: number,
+  oy: number,
+  view: View,
+  stroke: string,
+  fill: string | null,
+  paper: boolean,
+): void {
+  const left = (b.minX + ox) * view.scale + view.offsetX;
+  const right = (b.maxX + ox) * view.scale + view.offsetX;
+  const top = screenY(view, b.maxY + oy);
+  const bottom = screenY(view, b.minY + oy);
+  const w = Math.max(1, right - left);
+  const h = Math.max(1, bottom - top);
+  ctx.save();
+  if (fill) {
+    ctx.fillStyle = fill;
+    ctx.globalAlpha = 0.55;
+    ctx.fillRect(left, top, w, h);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.fillStyle = paper ? 'rgba(60, 72, 88, 0.14)' : 'rgba(180, 200, 220, 0.18)';
+    ctx.fillRect(left, top, w, h);
+  }
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = Math.max(0.8, Math.min(1.4, view.scale * 40));
+  ctx.strokeRect(left + 0.5, top + 0.5, w - 1, h - 1);
+  ctx.restore();
+}
+
+/** Far zoom: one labelled block per seating/furniture bank. */
+function drawBankBlocks(
+  ctx: CanvasRenderingContext2D,
+  banks: BankOverlay[],
+  view: View,
+  selectionSet: Set<number>,
+  hover: number | null,
+  nudge: { dx: number; dy: number } | null,
+  paper: boolean,
+): void {
+  for (const bank of banks) {
+    const selected = bank.memberIds.some((id) => selectionSet.has(id));
+    const hovered = !selected && hover != null && bank.memberIds.includes(hover);
+    const dx = selected && nudge ? nudge.dx : 0;
+    const dy = selected && nudge ? nudge.dy : 0;
+    const left = (bank.minX + dx) * view.scale + view.offsetX;
+    const right = (bank.maxX + dx) * view.scale + view.offsetX;
+    const top = screenY(view, bank.maxY + dy);
+    const bottom = screenY(view, bank.minY + dy);
+    const w = Math.max(2, right - left);
+    const h = Math.max(2, bottom - top);
+    ctx.save();
+    ctx.fillStyle = selected
+      ? paper
+        ? 'rgba(77, 148, 255, 0.22)'
+        : 'rgba(77, 148, 255, 0.28)'
+      : hovered
+        ? paper
+          ? 'rgba(120, 160, 210, 0.2)'
+          : 'rgba(140, 180, 230, 0.22)'
+        : paper
+          ? 'rgba(70, 90, 120, 0.16)'
+          : 'rgba(150, 175, 205, 0.2)';
+    ctx.fillRect(left, top, w, h);
+    ctx.strokeStyle = selected ? '#4d94ff' : hovered ? '#8bb9ff' : paper ? 'rgba(50, 70, 100, 0.55)' : 'rgba(170, 195, 225, 0.55)';
+    ctx.lineWidth = selected ? 2 : 1.2;
+    ctx.strokeRect(left + 0.5, top + 0.5, w - 1, h - 1);
+
+    const shortSide = Math.min(w, h);
+    if (shortSide >= 22) {
+      const label =
+        bank.count >= 8 ? `${bank.count.toLocaleString()} seats` : `${bank.count.toLocaleString()}`;
+      const fontPx = Math.max(9, Math.min(14, shortSide * 0.28));
+      ctx.font = `600 ${fontPx}px -apple-system, "Segoe UI", system-ui, sans-serif`;
+      ctx.fillStyle = selected
+        ? paper
+          ? '#0b4f9c'
+          : '#cfe3ff'
+        : paper
+          ? 'rgba(30, 45, 70, 0.88)'
+          : 'rgba(220, 230, 245, 0.9)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, left + w / 2, top + h / 2);
+    }
+    ctx.restore();
+  }
+}
+
 function drawSelectionFrame(
   ctx: CanvasRenderingContext2D,
   b: { minX: number; minY: number; maxX: number; maxY: number },

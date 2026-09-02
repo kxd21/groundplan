@@ -669,6 +669,10 @@ export function App() {
     nodeId: number | null;
   } | null>(null);
   const [selectionScope, setSelectionScope] = useState<SelectionScope | null>(null);
+  /** Furniture group banks for semantic-zoom block footprints on the canvas. */
+  const [objectGroups, setObjectGroups] = useState<Array<{ hubId: number; memberIds: number[] }>>(
+    [],
+  );
   /** The details panel describes one object; with a group, that is the first. */
   const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -1383,6 +1387,8 @@ export function App() {
     setView('plan');
     setInspectorTab('layers');
     setSelectedIds([]);
+    setSelectionScope(null);
+    setObjectGroups([]);
     setSelection(null);
     setTextEditingId(null);
     setTextEditingOriginal(null);
@@ -3174,6 +3180,8 @@ export function App() {
       if (reply.reason) notify(reply.reason);
       return;
     }
+    const groups = await api.listObjectGroups();
+    setObjectGroups(Array.isArray(groups) ? groups : []);
     showStatus(reply.text ?? 'Grouped');
   }, [doc?.editable, notify, selectedIds, showStatus]);
 
@@ -3185,6 +3193,8 @@ export function App() {
       return;
     }
     setSelectionScope(null);
+    const groups = await api.listObjectGroups();
+    setObjectGroups(Array.isArray(groups) ? groups : []);
     showStatus(reply.text ?? 'Ungrouped');
   }, [doc?.editable, notify, selectedIds, showStatus]);
 
@@ -4647,6 +4657,21 @@ export function App() {
     () => countFurniture(doc?.scene.inventory ?? []),
     [doc?.scene.inventory],
   );
+
+  // Banks live in the links sidecar; refresh when the plan or seating mass changes.
+  useEffect(() => {
+    if (!doc?.path) {
+      setObjectGroups([]);
+      return;
+    }
+    let cancelled = false;
+    void api.listObjectGroups().then((groups) => {
+      if (!cancelled) setObjectGroups(Array.isArray(groups) ? groups : []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc?.path, furnitureCounts.chairs, furnitureCounts.tables]);
 
   /**
    * What the Setup checklist reports, READ OFF THE DRAWING.
@@ -7896,6 +7921,7 @@ export function App() {
               sightlineMarkers={sightlineMarkers}
               fitToken={fitToken}
               selection={selectedIds}
+              objectGroups={objectGroups}
               onSelect={(ids) => {
                 if (
                   textEditingId != null &&

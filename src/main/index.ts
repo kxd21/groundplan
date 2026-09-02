@@ -3585,6 +3585,31 @@ app.whenReady().then(async () => {
     return expandGroupIds(requested).filter((id) => s.index.byId.has(id));
   });
 
+  /** All furniture `group` banks — for semantic-zoom block footprints. */
+  handle('edit:list-object-groups', () => {
+    const s = session;
+    if (!s) return [] as Array<{ hubId: number; memberIds: number[] }>;
+    const visited = new Set<number>();
+    const groups: Array<{ hubId: number; memberIds: number[] }> = [];
+    for (const id of objectLinks.keys()) {
+      if (visited.has(id) || !s.index.byId.has(id)) continue;
+      let hasGroup = false;
+      for (const partner of objectLinks.get(id) ?? []) {
+        if (objectLinkKinds.get(objectLinkPairKey(id, partner)) === 'group') {
+          hasGroup = true;
+          break;
+        }
+      }
+      if (!hasGroup) continue;
+      const members = expandGroupIds([id]).filter((member) => s.index.byId.has(member));
+      if (members.length < 2) continue;
+      for (const member of members) visited.add(member);
+      const hub = [...members].sort((a, b) => a - b)[0]!;
+      groups.push({ hubId: hub, memberIds: members });
+    }
+    return groups;
+  });
+
   handle('edit:ungroup', (_event, ids: number[]) => {
     const s = session;
     if (!s) return { ok: false, reason: 'open a plan first' };

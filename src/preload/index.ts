@@ -328,6 +328,9 @@ const api = {
   /** Furniture group partners only (seating banks, manual groups). */
   expandObjectGroup: (ids: number[]): Promise<number[]> =>
     ipcRenderer.invoke('edit:expand-group', ids),
+  /** Every furniture group bank in the open plan (semantic zoom / bank labels). */
+  listObjectGroups: (): Promise<Array<{ hubId: number; memberIds: number[] }>> =>
+    ipcRenderer.invoke('edit:list-object-groups'),
   attachStack: (parentId: number, childId: number): Promise<EditReply> =>
     ipcRenderer.invoke('edit:attach-stack', parentId, childId),
   detachStack: (ids: number[]): Promise<EditReply> => ipcRenderer.invoke('edit:detach-stack', ids),
