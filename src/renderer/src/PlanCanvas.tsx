@@ -33,6 +33,7 @@ import {
   type HandleId,
   type TransformFrame,
 } from './transform-handles.js';
+import { distanceToSegment, hitTest, hitTestCandidates } from './plan-hit.js';
 
 const UNITS_PER_FOOT = 120;
 const UNITS_PER_INCH = 10;
@@ -218,17 +219,6 @@ interface PreparedPrimitive extends Bounds {
   style: DrawingStyle;
 }
 
-/** Distance from a point to a line segment, used for hit-testing. */
-function distanceToSegment(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const lengthSq = dx * dx + dy * dy;
-  if (lengthSq === 0) return Math.hypot(px - x0, py - y0);
-  let t = ((px - x0) * dx + (py - y0) * dy) / lengthSq;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
-}
-
 function wallChordMeta(wall: { startX: number; startY: number; endX: number; endY: number; bulge?: number }) {
   const dx = wall.endX - wall.startX;
   const dy = wall.endY - wall.startY;
@@ -288,116 +278,6 @@ function hitTestWall(
     if (d <= tolerance && (!best || d < best.distance)) best = { index: wall.index, distance: d };
   }
   return best?.index ?? null;
-}
-
-/** Even-odd polygon containment so filled equipment can be selected inside its outline. */
-function pointInPolygon(x: number, y: number, pts: number[]): boolean {
-  if (pts.length < 6) return false;
-  let inside = false;
-  for (let i = 0, j = pts.length - 2; i < pts.length; j = i, i += 2) {
-    const xi = pts[i];
-    const yi = pts[i + 1];
-    const xj = pts[j];
-    const yj = pts[j + 1];
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-/**
- * Finds every object under a point, nearest first.
- *
- * Ties break toward the physically smaller object, so a chair that overlaps a
- * table sorts ahead of the table. Callers that only need one winner use
- * `hitTest` (first candidate).
- */
-function hitTestCandidates(
-  prepared: PreparedPrimitive[],
-  visible: Set<string>,
-  x: number,
-  y: number,
-  tolerance: number,
-  locked?: Set<string>,
-): Array<{ id: number; distance: number; size: number; name: string }> {
-  const hits: Array<{ id: number; distance: number; size: number; name: string }> = [];
-  const seen = new Set<number>();
-
-  for (const item of prepared) {
-    const p = item.primitive;
-    if (!visible.has(p.discipline)) continue;
-    // A locked layer is visible but not touchable: that is the whole point of
-    // locking the Architecture layer while placing chairs on top of it.
-    if (locked?.has(p.discipline)) continue;
-    if (seen.has(p.selectId)) continue;
-
-    let distance = Infinity;
-
-    // Cheap reject before the per-segment work.
-    if (
-      x < item.minX - tolerance ||
-      x > item.maxX + tolerance ||
-      y < item.minY - tolerance ||
-      y > item.maxY + tolerance
-    ) {
-      continue;
-    }
-
-    if (p.type === 'text') {
-      const dx = Math.max(item.minX - x, 0, x - item.maxX);
-      const dy = Math.max(item.minY - y, 0, y - item.maxY);
-      distance = Math.hypot(dx, dy);
-    } else if (p.pts.length === 2) {
-      distance = Math.hypot(x - p.pts[0], y - p.pts[1]);
-    } else {
-      for (let i = 0; i + 3 < p.pts.length; i += 2) {
-        distance = Math.min(distance, distanceToSegment(x, y, p.pts[i], p.pts[i + 1], p.pts[i + 2], p.pts[i + 3]));
-      }
-      // Furniture is picked by its BODY, not just its outline.
-      //
-      // `primitiveTypeFor` maps RVSegmentRect to 'polygon' but RVSegmentPoly to
-      // 'polyline', and a Room Viewer round table is a poly. So a stage could be
-      // clicked anywhere on its fill while a table could only be hit within the
-      // pick tolerance of its 1px edge — 0.56 ft at 12% zoom, which is less than
-      // half a chair. A scan of 34 points across a banquet row selected nothing.
-      //
-      // Walls and regions stay edge-picked on purpose: their rings enclose the
-      // whole floor, so an interior test there would swallow every click on
-      // empty ground and break marquee selection.
-      const closedBody =
-        p.type === 'polygon' || (p.layer === 'furniture' && p.pts.length >= 6);
-      if (closedBody && p.pts.length >= 4) {
-        distance = Math.min(
-          distance,
-          distanceToSegment(x, y, p.pts[p.pts.length - 2], p.pts[p.pts.length - 1], p.pts[0], p.pts[1]),
-        );
-        if (pointInPolygon(x, y, p.pts)) distance = 0;
-      }
-    }
-
-    if (distance > tolerance) continue;
-    const size = Math.max(1, (item.maxX - item.minX) * (item.maxY - item.minY));
-    const name = p.owner || p.text || `Object ${p.selectId}`;
-    seen.add(p.selectId);
-    hits.push({ id: p.selectId, distance, size, name });
-  }
-
-  hits.sort((a, b) => {
-    if (Math.abs(a.distance - b.distance) > 1) return a.distance - b.distance;
-    return a.size - b.size;
-  });
-  return hits;
-}
-
-/** Finds the object nearest a point (first of `hitTestCandidates`). */
-function hitTest(
-  prepared: PreparedPrimitive[],
-  visible: Set<string>,
-  x: number,
-  y: number,
-  tolerance: number,
-  locked?: Set<string>,
-): number | null {
-  return hitTestCandidates(prepared, visible, x, y, tolerance, locked)[0]?.id ?? null;
 }
 
 /** COLORREF (0x00BBGGRR) to a CSS colour. */
